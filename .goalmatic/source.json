@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "provider": "github",
+  "siteId": "bdb60277-0253-4c0a-b8c4-9a380231c548",
+  "projectMode": "vue",
+  "productionBranch": "main",
+  "previewBranch": "preview"
+}

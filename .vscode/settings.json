@@ -1,0 +1,12 @@
+{
+  "tailwindCSS.experimental.configFile": ".goalmatic/tailwind.css",
+  "tailwindCSS.includeLanguages": {
+    "vue": "html"
+  },
+  "tailwindCSS.emmetCompletions": true,
+  "files.exclude": {
+    "**/.goalmatic/sync.json": true,
+    "**/node_modules": true,
+    "**/dist": true
+  }
+}
