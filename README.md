@@ -1,14 +1,26 @@
-# Bookings Owner Workspace
+# Bookings
 
-This repository is the source authority for a Goalmatic project.
+Bookings is a Goalmatic App for service configuration, weekly availability, secure public booking links, and appointment management.
 
-## Run locally
+Owners use their existing Goalmatic identity and selected account. The App stores profiles, schedules, services, and bookings in installation-bound Goalmatic Tables. Guests enter through an expiring public grant that exposes only the declared booking actions.
+
+## Local development
 
 ```bash
 yarn install --frozen-lockfile
 yarn dev
 ```
 
-The default `preview` branch is the editable integration branch. Create feature branches from `preview`, select them in Site Builder for an isolated hosted working copy, and target `preview` with pull requests. The `main` branch contains read-only reviewed release candidates. A Git push never publishes the deployed App.
+Localhost uses browser-local preview data and labels it clearly. Hosted builds never fall back to preview data.
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before submitting a change.
+## Build
+
+```bash
+yarn build
+```
+
+## Source and releases
+
+`preview` is the editable branch. `main` is the read-only Store candidate. A push updates source and previews only. Production changes through the App Store release flow using an immutable tested build.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for records, trust boundaries, and release limits.

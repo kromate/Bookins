@@ -1,110 +1,53 @@
 <template>
-  <div class="app-shell">
-    <header class="topbar">
-      <RouterLink class="brand" to="/" aria-label="Bookings workspace home">
-        <span class="brand-mark" aria-hidden="true">B</span>
-        <span>Bookings</span>
-      </RouterLink>
-      <nav class="desktop-nav" aria-label="Primary navigation">
-        <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" class="nav-link">{{ item.label }}</RouterLink>
-      </nav>
-      <div class="top-actions">
-        <span class="account-badge"><span class="status-dot"></span>{{ authLabel }}</span>
-        <button class="button button-quiet menu-button" type="button" @click="menuOpen = !menuOpen" :aria-expanded="menuOpen">Menu</button>
-        <button class="button button-primary" type="button" @click="signIn">Sign in with Goalmatic</button>
-      </div>
-    </header>
-    <div v-if="menuOpen" class="mobile-menu">
-      <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" class="mobile-link" @click="menuOpen = false">{{ item.label }}</RouterLink>
+  <RouterView v-if="isPublicRoute" />
+  <div v-else class="app-shell">
+    <aside class="sidebar" :class="{ open: menuOpen }">
+      <RouterLink class="brand" to="/" @click="menuOpen = false"><span class="brand-mark">B</span><span>Bookings</span></RouterLink>
+      <nav aria-label="Primary navigation"><RouterLink v-for="item in navItems" :key="item.to" :to="item.to" @click="menuOpen = false"><span>{{ item.icon }}</span>{{ item.label }}</RouterLink></nav>
+      <div class="sidebar-foot"><span class="runtime-dot" :class="{ live: !localPreview }"></span>{{ localPreview ? 'Local preview' : accountLabel }}</div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <button class="mobile-menu" type="button" aria-label="Open navigation" @click="menuOpen = !menuOpen">☰</button>
+        <div><strong>{{ profileName }}</strong><small>{{ state.profile?.timezone || 'Set your timezone' }}</small></div>
+        <button class="quiet" type="button" @click="refresh">Refresh</button>
+      </header>
+      <main>
+        <div v-if="loading" class="state-card">Loading your Booking App…</div>
+        <div v-else-if="error" class="state-card error" role="alert"><strong>Bookings could not load.</strong><p>{{ error }}</p><button type="button" @click="refresh">Try again</button></div>
+        <RouterView v-else />
+      </main>
     </div>
-    <main class="page-wrap"><RouterView /></main>
-    <footer class="utility-footer"><span>Private workspace draft</span><span>Local state only · no sample records</span></footer>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, provide, reactive, ref, watch } from 'vue'
+import { computed, onMounted, provide, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { isLocalPreview, loadOwnerWorkspace } from './booking.js'
 
-const menuOpen = ref(false)
-const auth = ref(false)
-const authMessage = ref('')
-const workspace = reactive({
-  businessName: '',
-  timezone: 'UTC',
-  services: [],
-  availability: [
-    { day: 'Monday', active: false, start: '09:00', end: '17:00' },
-    { day: 'Tuesday', active: false, start: '09:00', end: '17:00' },
-    { day: 'Wednesday', active: false, start: '09:00', end: '17:00' },
-    { day: 'Thursday', active: false, start: '09:00', end: '17:00' },
-    { day: 'Friday', active: false, start: '09:00', end: '17:00' },
-    { day: 'Saturday', active: false, start: '10:00', end: '14:00' },
-    { day: 'Sunday', active: false, start: '10:00', end: '14:00' }
-  ],
-  bookings: []
-})
-
+const route = useRoute()
+const isPublicRoute = computed(() => route.path === '/book')
+const menuOpen = ref(false), loading = ref(false), error = ref(''), accountLabel = ref('Goalmatic workspace')
+const state = reactive({ profile: null, schedules: [], services: [], bookings: [] })
+const localPreview = isLocalPreview
+const profileName = computed(() => state.profile?.['display-name'] || 'Booking workspace')
 const navItems = [
-  { label: 'Overview', to: '/' }, { label: 'Services', to: '/services' },
-  { label: 'Availability', to: '/availability' }, { label: 'Bookings', to: '/bookings' }, { label: 'Settings', to: '/settings' }
+  { label: 'Overview', to: '/', icon: '⌂' }, { label: 'Services', to: '/services', icon: '◇' },
+  { label: 'Availability', to: '/availability', icon: '◷' }, { label: 'Bookings', to: '/bookings', icon: '▣' },
+  { label: 'Settings', to: '/settings', icon: '⚙' },
 ]
-const authLabel = computed(() => auth.value ? 'Goalmatic account' : 'Preview mode')
-provide('workspace', workspace)
-provide('auth', auth)
-
-function signIn() {
-  authMessage.value = ''
-  if (window.GoalmaticAuth?.loginWithGoogle) {
-    window.GoalmaticAuth.loginWithGoogle().then(() => { auth.value = true }).catch(() => { authMessage.value = 'Sign-in is unavailable right now.' })
-  } else {
-    auth.value = !auth.value
-    authMessage.value = auth.value ? 'Preview access enabled.' : 'Preview access disabled.'
-  }
+async function refresh() {
+  if (isPublicRoute.value) return
+  loading.value = true; error.value = ''
+  try {
+    if (window.GoalmaticAuth?.getUser) { const user = await window.GoalmaticAuth.getUser(); accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace' }
+    Object.assign(state, await loadOwnerWorkspace())
+  } catch (reason) { error.value = reason?.message || 'Try again in a moment.' } finally { loading.value = false }
 }
-onMounted(() => {
-  if (window.GoalmaticAuth?.isAuthenticated) auth.value = window.GoalmaticAuth.isAuthenticated()
-})
-watch(authMessage, (value) => { if (value) setTimeout(() => { authMessage.value = '' }, 3500) })
+provide('bookingState', state); provide('refreshBookings', refresh); provide('localPreview', localPreview); onMounted(refresh)
 </script>
 
 <style>
-:root { font-family: Inter, Arial, sans-serif; color: #17202a; background: #f7f8fa; font-synthesis: none; --bg:#f7f8fa; --surface:#fff; --text:#17202a; --muted:#657180; --accent:#2563eb; --border:#dce1e8; --danger:#b42318; --success:#176b45; --radius:10px; }
-* { box-sizing: border-box; }
-body { margin:0; min-width:320px; background:var(--bg); }
-button, input, select, textarea { font:inherit; }
-button, a, input, select, textarea { min-height:44px; }
-button { cursor:pointer; }
-button:disabled { cursor:not-allowed; opacity:.55; }
-a { color:inherit; }
-:focus-visible { outline:3px solid #93b4ff; outline-offset:2px; }
-.topbar { height:72px; display:flex; align-items:center; gap:30px; padding:0 28px; background:var(--surface); border-bottom:1px solid var(--border); }
-.brand { display:flex; align-items:center; gap:10px; font-weight:750; text-decoration:none; letter-spacing:-.02em; }
-.brand-mark { width:32px; height:32px; display:grid; place-items:center; color:#fff; background:var(--accent); border-radius:8px; font-weight:800; }
-.desktop-nav { display:flex; gap:4px; flex:1; }
-.nav-link, .mobile-link { padding:10px 12px; min-height:44px; display:inline-flex; align-items:center; text-decoration:none; color:var(--muted); border-radius:7px; font-size:14px; }
-.nav-link.router-link-active, .mobile-link.router-link-active { color:var(--text); background:#edf3ff; font-weight:700; }
-.top-actions { display:flex; align-items:center; gap:10px; }
-.account-badge { display:flex; align-items:center; gap:7px; color:var(--muted); font-size:12px; white-space:nowrap; }
-.status-dot { width:8px; height:8px; border-radius:50%; background:#a8b0ba; }
-.button { border:1px solid var(--border); border-radius:8px; padding:0 14px; min-height:44px; font-weight:700; background:var(--surface); color:var(--text); }
-.button-primary { border-color:var(--accent); color:#fff; background:var(--accent); }
-.button-quiet { background:transparent; }
-.menu-button, .mobile-menu { display:none; }
-.page-wrap { max-width:1440px; margin:0 auto; padding:40px 28px 56px; }
-.utility-footer { display:flex; justify-content:space-between; padding:18px 28px; color:var(--muted); font-size:12px; border-top:1px solid var(--border); }
-.page-header { display:flex; justify-content:space-between; gap:24px; align-items:flex-end; margin-bottom:30px; }
-.eyebrow { margin:0 0 9px; color:#315da8; font-size:12px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
-h1,h2,h3,p { margin-top:0; } h1 { margin-bottom:10px; font-size:clamp(30px,4vw,48px); line-height:1.05; letter-spacing:-.04em; } h2 { font-size:24px; letter-spacing:-.025em; } h3 { font-size:16px; }
-.lede { max-width:62ch; color:var(--muted); line-height:1.6; }
-.grid { display:grid; gap:18px; } .grid-3 { grid-template-columns:repeat(3,1fr); } .grid-2 { grid-template-columns:repeat(2,1fr); }
-.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:22px; box-shadow:0 8px 24px rgba(23,32,42,.05); }
-.card h2:last-child, .card p:last-child { margin-bottom:0; }
-.card-label { color:var(--muted); font-size:12px; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
-.empty { padding:42px 22px; text-align:center; border:1px dashed #aeb8c5; border-radius:var(--radius); background:#fbfcfd; }
-.empty p { color:var(--muted); line-height:1.55; }
-.field { display:grid; gap:7px; margin-bottom:16px; } label { font-size:13px; font-weight:700; } input, select, textarea { width:100%; border:1px solid #aeb8c5; border-radius:8px; padding:0 12px; color:var(--text); background:#fff; } textarea { padding-top:12px; min-height:96px; resize:vertical; }
-.form-actions { display:flex; gap:10px; flex-wrap:wrap; } .muted { color:var(--muted); } .success { color:var(--success); } .error { color:var(--danger); }
-@media (max-width:800px) { .topbar { padding:0 18px; gap:12px; } .desktop-nav { display:none; } .top-actions { margin-left:auto; } .top-actions .button-primary { display:none; } .menu-button { display:inline-flex; align-items:center; justify-content:center; } .mobile-menu { display:flex; flex-wrap:wrap; gap:4px; padding:10px 18px; background:#fff; border-bottom:1px solid var(--border); } .page-wrap { padding:28px 18px 42px; } .grid-3, .grid-2 { grid-template-columns:1fr; } .page-header { align-items:flex-start; flex-direction:column; } }
-@media (max-width:480px) { .account-badge { display:none; } .utility-footer { flex-direction:column; gap:6px; padding:16px 18px; } }
-@media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; transition:none !important; } }
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#171b2d;background:#f6f7fb;font-synthesis:none;--ink:#171b2d;--muted:#697087;--surface:#fff;--line:#e3e5ee;--accent:#3346db;--accent-soft:#eef0ff;--danger:#b42318;--success:#147a4d;--radius:16px}*{box-sizing:border-box}body{margin:0;min-width:320px;background:#f6f7fb}button,input,select,textarea{font:inherit}button,a,input,select,textarea{min-height:44px}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}:focus-visible{outline:3px solid #9da8ff;outline-offset:2px}.app-shell{display:grid;grid-template-columns:244px 1fr;min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:26px 18px 20px;background:#fff;border-right:1px solid var(--line);display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:11px;padding:0 8px 26px;color:var(--ink);font-size:19px;font-weight:800;text-decoration:none}.brand-mark{display:grid;place-items:center;width:34px;height:34px;border-radius:11px;color:#fff;background:var(--accent)}.sidebar nav{display:grid;gap:5px}.sidebar nav a{display:flex;align-items:center;gap:12px;padding:0 12px;border-radius:10px;color:var(--muted);font-size:14px;font-weight:650;text-decoration:none}.sidebar nav a.router-link-active{color:#2435c1;background:var(--accent-soft)}.sidebar-foot{margin-top:auto;padding:16px 10px 0;border-top:1px solid var(--line);color:var(--muted);font-size:12px}.runtime-dot{display:inline-block;width:8px;height:8px;margin-right:7px;border-radius:50%;background:#aeb3c3}.runtime-dot.live{background:#1a9a62}.workspace{min-width:0}.topbar{height:72px;padding:0 32px;display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line)}.topbar div{display:grid;gap:2px}.topbar small{color:var(--muted)}.quiet{padding:0 14px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font-weight:700}.mobile-menu{display:none;border:0;background:transparent;font-size:23px}.workspace main{max-width:1320px;margin:0 auto;padding:36px 32px 64px}.state-card{max-width:680px;margin:80px auto;padding:28px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;text-align:center}.state-card.error{color:var(--danger)}.state-card p{color:var(--muted)}.state-card button,.primary,.secondary,.danger{padding:0 16px;border-radius:10px;font-weight:750}.primary{border:1px solid var(--accent);color:#fff;background:var(--accent)}.secondary{border:1px solid var(--line);color:var(--ink);background:#fff}.danger{border:1px solid #f1c5c1;color:var(--danger);background:#fff8f7}.page-header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:26px}.eyebrow{margin:0 0 8px;color:#3b4ccd;font-size:12px;font-weight:850;letter-spacing:.09em;text-transform:uppercase}h1,h2,h3,p{margin-top:0}h1{margin-bottom:8px;font-size:clamp(32px,4vw,50px);line-height:1.04;letter-spacing:-.045em}h2{letter-spacing:-.025em}.lede,.muted{color:var(--muted);line-height:1.6}.grid{display:grid;gap:16px}.grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}.grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:22px;border:1px solid var(--line);border-radius:var(--radius);background:#fff;box-shadow:0 10px 28px rgba(28,35,76,.045)}.metric{font-size:34px;font-weight:800;letter-spacing:-.04em}.label{color:var(--muted);font-size:12px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}.empty{padding:42px 22px;border:1px dashed #b9bece;border-radius:var(--radius);background:#fbfbfd;text-align:center}.field{display:grid;gap:7px;margin-bottom:16px}.field label{font-size:13px;font-weight:750}.field input,.field select,.field textarea{width:100%;padding:0 12px;border:1px solid #b9bece;border-radius:10px;background:#fff;color:var(--ink)}.field textarea{min-height:100px;padding-top:12px;resize:vertical}.form-actions{display:flex;gap:10px;flex-wrap:wrap}.notice{padding:13px 15px;margin-bottom:18px;border-radius:10px;color:var(--success);background:#eaf7f1}.notice.error{color:var(--danger);background:#fff0ef}.modal-backdrop{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:20px;background:rgba(18,23,50,.5)}.modal{width:min(620px,100%);max-height:90vh;overflow:auto}.chip{display:inline-flex;align-items:center;min-height:28px;padding:0 9px;border-radius:999px;background:#eef0f5;color:#565e73;font-size:12px;font-weight:800}.chip.confirmed{color:#147a4d;background:#e8f6ef}.chip.cancelled{color:var(--danger);background:#fff0ef}@media(max-width:900px){.app-shell{grid-template-columns:1fr}.sidebar{position:fixed;z-index:30;width:244px;transform:translateX(-100%);transition:transform .18s}.sidebar.open{transform:translateX(0)}.mobile-menu{display:block}.topbar{padding:0 18px;justify-content:flex-start;gap:14px}.topbar .quiet{margin-left:auto}.workspace main{padding:28px 18px 52px}.grid-3,.grid-2{grid-template-columns:1fr}.page-header{align-items:flex-start;flex-direction:column}}@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 </style>
