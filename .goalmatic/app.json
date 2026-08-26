@@ -1,0 +1,228 @@
+{
+  "schemaVersion": 3,
+  "contractVersion": "2.0.0",
+  "packageId": "338fb637-59a1-42f0-b158-dedb92110dff",
+  "siteId": "bdb60277-0253-4c0a-b8c4-9a380231c548",
+  "slug": "bookings",
+  "name": "Bookings",
+  "shortDescription": "Configure services and availability, share a secure booking page, and manage appointments.",
+  "description": "Bookings gives each Goalmatic account a focused owner workspace for services, weekly availability, secure public booking links, and confirmed appointment management. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
+  "category": "productivity",
+  "version": "0.1.0",
+  "releaseType": "minor",
+  "releaseNotes": "Initial release with owner configuration, public booking links, conflict-safe slot reservation, on-screen confirmation, and owner cancellation.",
+  "sourceVersionId": "__LATEST_SAVED_VERSION__",
+  "entrypoint": "/",
+  "accent": "#3346db",
+  "screenshots": [],
+  "visibility": "public",
+  "allowFork": false,
+  "publisher": {
+    "accountId": "tcGHgY62tebsnRr4AMqNRu0XVCo1",
+    "subjectId": "tcGHgY62tebsnRr4AMqNRu0XVCo1",
+    "displayName": "Goalmatic",
+    "verified": true
+  },
+  "seo": {
+    "title": "Bookings by Goalmatic",
+    "description": "Configure services and availability, share a secure booking page, and manage appointments.",
+    "keywords": ["bookings", "appointments", "availability", "scheduling", "Goalmatic"]
+  },
+  "privacyPolicyUrl": "https://goalmatic.io/privacy",
+  "supportUrl": "https://goalmatic.io/support",
+  "externalDomains": [],
+  "capabilities": [
+    {
+      "id": "profiles-data",
+      "kind": "tables",
+      "displayName": "Store booking profile",
+      "description": "Creates an account-scoped Table for the public booking identity and link metadata.",
+      "operations": ["tables.records-list", "tables.record-create", "tables.record-update"],
+      "required": true,
+      "logicalResourceId": "profiles",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "schedules-data",
+      "kind": "tables",
+      "displayName": "Store availability",
+      "description": "Creates an account-scoped Table for weekly schedules, timezone, notice, and booking horizon.",
+      "operations": ["tables.records-list", "tables.record-create", "tables.record-update"],
+      "required": true,
+      "logicalResourceId": "schedules",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "services-data",
+      "kind": "tables",
+      "displayName": "Store services",
+      "description": "Creates an account-scoped Table for active public and private service definitions.",
+      "operations": ["tables.records-list", "tables.record-create", "tables.record-update", "tables.record-delete"],
+      "required": true,
+      "logicalResourceId": "services",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "bookings-data",
+      "kind": "tables",
+      "displayName": "Store bookings",
+      "description": "Creates an account-scoped Table for confirmed and cancelled appointments with unique slot reservations.",
+      "operations": ["tables.records-list", "tables.record-get", "tables.record-create", "tables.record-update"],
+      "required": true,
+      "logicalResourceId": "bookings",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "booking-public",
+      "kind": "tools",
+      "displayName": "Receive public bookings",
+      "description": "Allows an expiring booking link to read its public page, list openings, and create one conflict-safe booking.",
+      "operations": ["booking.page-get", "booking.openings-list", "booking.create"],
+      "required": true
+    },
+    {
+      "id": "booking-owner",
+      "kind": "tools",
+      "displayName": "Manage bookings",
+      "description": "Lets the installed owner manage booking lifecycle actions from the selected Goalmatic account.",
+      "operations": ["booking.cancel"],
+      "required": false
+    }
+  ],
+  "publicRuntime": {
+    "routes": [
+      { "id": "booking-page", "path": "/book", "page": "pages/Book.vue", "grantDefinitionId": "booking-link" }
+    ],
+    "grants": [
+      {
+        "id": "booking-link",
+        "defaultTtlDays": 365,
+        "maxTtlDays": 365,
+        "actions": [
+          {
+            "id": "page-get",
+            "kind": "query",
+            "operationId": "booking.page-get",
+            "capabilityId": "booking-public",
+            "inputSchema": { "type": "object", "additionalProperties": false },
+            "outputSchema": { "type": "object" },
+            "boundInput": {
+              "profileTableId": { "resourceKind": "table", "logicalResourceId": "profiles" },
+              "scheduleTableId": { "resourceKind": "table", "logicalResourceId": "schedules" },
+              "serviceTableId": { "resourceKind": "table", "logicalResourceId": "services" }
+            }
+          },
+          {
+            "id": "openings-list",
+            "kind": "query",
+            "operationId": "booking.openings-list",
+            "capabilityId": "booking-public",
+            "inputSchema": { "type": "object", "required": ["serviceId", "fromDate", "throughDate"] },
+            "outputSchema": { "type": "object" },
+            "boundInput": {
+              "profileTableId": { "resourceKind": "table", "logicalResourceId": "profiles" },
+              "scheduleTableId": { "resourceKind": "table", "logicalResourceId": "schedules" },
+              "serviceTableId": { "resourceKind": "table", "logicalResourceId": "services" },
+              "bookingTableId": { "resourceKind": "table", "logicalResourceId": "bookings" }
+            }
+          },
+          {
+            "id": "booking-create",
+            "kind": "command",
+            "operationId": "booking.create",
+            "capabilityId": "booking-public",
+            "inputSchema": { "type": "object", "required": ["serviceId", "startsAt", "contact"] },
+            "outputSchema": { "type": "object" },
+            "boundInput": {
+              "profileTableId": { "resourceKind": "table", "logicalResourceId": "profiles" },
+              "scheduleTableId": { "resourceKind": "table", "logicalResourceId": "schedules" },
+              "serviceTableId": { "resourceKind": "table", "logicalResourceId": "services" },
+              "bookingTableId": { "resourceKind": "table", "logicalResourceId": "bookings" }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "resources": {
+    "tables": [
+      {
+        "id": "profiles",
+        "name": "Booking Profiles",
+        "description": "Public booking identity and link metadata for the installed account.",
+        "fields": [
+          { "id": "display-name", "name": "Display name", "type": "text", "required": true },
+          { "id": "bio", "name": "Bio", "type": "textarea" },
+          { "id": "photo-url", "name": "Photo URL", "type": "url" },
+          { "id": "timezone", "name": "Timezone", "type": "text", "required": true },
+          { "id": "public-link-url", "name": "Public link URL", "type": "url" },
+          { "id": "public-link-expires-at", "name": "Public link expires at", "type": "date" },
+          { "id": "updated-at", "name": "Updated at", "type": "date" }
+        ]
+      },
+      {
+        "id": "schedules",
+        "name": "Booking Schedules",
+        "description": "Recurring weekly availability for one bookable resource.",
+        "fields": [
+          { "id": "name", "name": "Name", "type": "text", "required": true },
+          { "id": "timezone", "name": "Timezone", "type": "text", "required": true },
+          { "id": "weekly-windows-json", "name": "Weekly windows", "type": "textarea", "required": true },
+          { "id": "slot-interval-minutes", "name": "Slot interval minutes", "type": "number", "required": true },
+          { "id": "minimum-notice-minutes", "name": "Minimum notice minutes", "type": "number", "required": true },
+          { "id": "booking-horizon-days", "name": "Booking horizon days", "type": "number", "required": true },
+          { "id": "active", "name": "Active", "type": "boolean", "required": true },
+          { "id": "revision", "name": "Revision", "type": "text", "required": true },
+          { "id": "updated-at", "name": "Updated at", "type": "date" }
+        ]
+      },
+      {
+        "id": "services",
+        "name": "Booking Services",
+        "description": "Bookable services and their schedule, visibility, duration, and display price.",
+        "fields": [
+          { "id": "slug", "name": "Slug", "type": "text", "required": true, "preventDuplicates": true },
+          { "id": "name", "name": "Name", "type": "text", "required": true },
+          { "id": "description", "name": "Description", "type": "textarea", "required": true },
+          { "id": "duration-minutes", "name": "Duration minutes", "type": "number", "required": true },
+          { "id": "schedule-id", "name": "Schedule ID", "type": "text", "required": true },
+          { "id": "price", "name": "Display price", "type": "number" },
+          { "id": "currency", "name": "Currency", "type": "text" },
+          { "id": "visibility", "name": "Visibility", "type": "select", "required": true, "options": ["public", "private"] },
+          { "id": "active", "name": "Active", "type": "boolean", "required": true },
+          { "id": "revision", "name": "Revision", "type": "text", "required": true },
+          { "id": "updated-at", "name": "Updated at", "type": "date" }
+        ]
+      },
+      {
+        "id": "bookings",
+        "name": "Bookings",
+        "description": "Confirmed and cancelled bookings with a unique schedule-slot reservation.",
+        "fields": [
+          { "id": "reference", "name": "Reference", "type": "text", "required": true, "preventDuplicates": true },
+          { "id": "service-id", "name": "Service ID", "type": "text", "required": true },
+          { "id": "service-name", "name": "Service name", "type": "text", "required": true },
+          { "id": "schedule-id", "name": "Schedule ID", "type": "text", "required": true },
+          { "id": "starts-at", "name": "Starts at", "type": "date", "required": true },
+          { "id": "ends-at", "name": "Ends at", "type": "date", "required": true },
+          { "id": "timezone", "name": "Timezone", "type": "text", "required": true },
+          { "id": "guest-name", "name": "Guest name", "type": "text", "required": true },
+          { "id": "guest-email", "name": "Guest email", "type": "email", "required": true },
+          { "id": "guest-phone", "name": "Guest phone", "type": "text" },
+          { "id": "notes", "name": "Notes", "type": "textarea" },
+          { "id": "status", "name": "Status", "type": "select", "required": true, "options": ["confirmed", "cancelled"] },
+          { "id": "reservation-key", "name": "Reservation key", "type": "text", "required": true, "preventDuplicates": true },
+          { "id": "created-at", "name": "Created at", "type": "date", "required": true },
+          { "id": "cancelled-at", "name": "Cancelled at", "type": "date" },
+          { "id": "cancellation-reason", "name": "Cancellation reason", "type": "textarea" }
+        ]
+      }
+    ],
+    "agents": [],
+    "workflows": [],
+    "tools": [],
+    "nodes": []
+  },
+  "updatePolicy": { "automaticWithoutNewCapabilities": true },
+  "uninstallPolicy": { "retainDataDays": 30, "exposeTablesAfterUninstall": true }
+}
