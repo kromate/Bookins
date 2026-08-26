@@ -1,6 +1,6 @@
 # Bookings
 
-Bookings is a Goalmatic App for service configuration, weekly availability, secure public booking links, and appointment management.
+Bookings is a Goalmatic App for service configuration, weekly availability, secure public booking links, appointment management, and contact history derived from bookings.
 
 Owners use their existing Goalmatic identity and selected account. The App stores profiles, schedules, services, and bookings in installation-bound Goalmatic Tables. Guests enter through an expiring public grant that exposes only the declared booking actions.
 
