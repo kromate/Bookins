@@ -10,10 +10,9 @@ function recordList(result) {
 }
 
 function savedRecord(result) { return result?.record || result?.data?.record || result?.data || result }
-function localState() { try { return JSON.parse(localStorage.getItem('bookings-local-preview') || '{}') } catch { return {} } }
-function saveLocal(state) { localStorage.setItem('bookings-local-preview', JSON.stringify(state)) }
-function localTable(name) { const state = localState(); return Array.isArray(state[name]) ? state[name] : [] }
-function setLocalTable(name, records) { const state = localState(); state[name] = records; saveLocal(state) }
+const localPreviewState = Object.create(null)
+function localTable(name) { return Array.isArray(localPreviewState[name]) ? localPreviewState[name] : [] }
+function setLocalTable(name, records) { localPreviewState[name] = records }
 function runtimeData() {
   if (window.GoalmaticData) return window.GoalmaticData
   if (isLocalPreview) return null
