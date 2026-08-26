@@ -13,9 +13,9 @@
 import { computed, inject, ref } from 'vue'
 const state=inject('bookingState'),localPreview=inject('localPreview'),copied=ref(false),now=Date.now()
 const activeServices=computed(()=>state.services.filter(item=>item.active!==false&&item.visibility==='public').length)
-const upcoming=computed(()=>state.bookings.filter(item=>item.status!=='cancelled'&&Date.parse(item['starts-at'])>now).length)
-const openDays=computed(()=>{try{return new Set(JSON.parse(state.schedules[0]?.['weekly-windows-json']||'[]').map(item=>item.weekday)).size}catch{return 0}})
-const publicUrl=computed(()=>state.profile?.['public-link-url']||'')
+const upcoming=computed(()=>state.bookings.filter(item=>item.status!=='cancelled'&&Date.parse(item['starts_at'])>now).length)
+const openDays=computed(()=>{try{return new Set(JSON.parse(state.schedules[0]?.['weekly_windows_json']||'[]').map(item=>item.weekday)).size}catch{return 0}})
+const publicUrl=computed(()=>state.profile?.['public_link_url']||'')
 const ready=computed(()=>!!state.profile&&!!state.schedules.length&&!!activeServices.value&&!!publicUrl.value)
 const nextSetup=computed(()=>!state.profile?{to:'/settings',label:'Create profile'}:!state.schedules.length?{to:'/availability',label:'Set availability'}:!activeServices.value?{to:'/services',label:'Create service'}:{to:'/settings',label:'Manage public link'})
 async function copy(){await navigator.clipboard.writeText(publicUrl.value);copied.value=true;setTimeout(()=>copied.value=false,1600)}
