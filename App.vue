@@ -35,6 +35,7 @@ const profileName = computed(() => state.profile?.['display_name'] || 'Booking w
 const navItems = [
   { label: 'Overview', to: '/', icon: '⌂' }, { label: 'Services', to: '/services', icon: '◇' },
   { label: 'Availability', to: '/availability', icon: '◷' }, { label: 'Bookings', to: '/bookings', icon: '▣' },
+  { label: 'Contacts', to: '/contacts', icon: '◎' },
   { label: 'Settings', to: '/settings', icon: '⚙' },
 ]
 async function refresh() {

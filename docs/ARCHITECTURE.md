@@ -23,7 +23,7 @@ The pinned App manifest declares `/book` and three named guest actions. The inst
 
 ## Provider truth
 
-Bookings v0.1.0 guarantees on-screen confirmation and owner dashboard visibility. A non-zero price is informational and described as arranged with the owner. Email delivery, Calendar writes, online payment, payout, guest cancellation, and rescheduling are not claimed until their provider paths are connected and proved.
+Bookings v0.2.0 guarantees on-screen confirmation, owner dashboard visibility, and a read-only Contacts view derived from booking history. A non-zero price is informational and described as arranged with the owner. Email delivery, Calendar writes, online payment, payout, guest cancellation, and rescheduling are not claimed until their provider paths are connected and proved.
 
 ## Uninstall and release
 
