@@ -1,5 +1,5 @@
 import { createApp, defineAsyncComponent } from 'vue'
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import './.goalmatic/tailwind.css'
 
@@ -21,7 +21,7 @@ function routeFromFile(file) {
 
 const routes = Object.entries(pageModules).map(([source, load]) => ({ path: routeFromFile(source), component: load }))
 if (routes.some((route) => route.path === '/')) routes.push({ path: '/:pathMatch(.*)*', redirect: '/' })
-const router = createRouter({ history: createWebHashHistory(), routes })
+const router = createRouter({ history: createWebHistory(), routes })
 const app = createApp(App)
 for (const [source, load] of Object.entries(componentModules)) {
   const name = source.split('/').pop().replace(/\.vue$/, '')
