@@ -1,6 +1,8 @@
 const TABLES = { profiles: 'profiles', schedules: 'schedules', services: 'services', bookings: 'bookings' }
 
-export const isLocalPreview = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+export function isLocalPreview() {
+  return ['localhost', '127.0.0.1'].includes(window.location.hostname) && !window.GoalmaticApp
+}
 
 function recordList(result) {
   if (Array.isArray(result)) return result
@@ -15,7 +17,7 @@ function localTable(name) { return Array.isArray(localPreviewState[name]) ? loca
 function setLocalTable(name, records) { localPreviewState[name] = records }
 function runtimeData() {
   if (window.GoalmaticData) return window.GoalmaticData
-  if (isLocalPreview) return null
+  if (isLocalPreview()) return null
   throw new Error('Launch Bookings from Goalmatic to access this workspace.')
 }
 
@@ -67,7 +69,7 @@ export function cancelBooking(booking, reason) {
 }
 export async function createPublicLink(subject = { kind: 'profile' }) {
   if (!window.GoalmaticShares?.create) {
-    if (!isLocalPreview) throw new Error('Public links are unavailable outside the installed App runtime.')
+    if (!isLocalPreview()) throw new Error('Public links are unavailable outside the installed App runtime.')
     const token = crypto.randomUUID().replaceAll('-', '').padEnd(43, '0').slice(0, 43)
     return { token, routePath: '/book', expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString() }
   }
@@ -78,7 +80,7 @@ export async function revokePublicLink(url) {
   if (token && window.GoalmaticShares?.revoke) await window.GoalmaticShares.revoke(token)
 }
 export async function loadGuestPage() {
-  if (isLocalPreview) {
+  if (isLocalPreview()) {
     const profile = localTable(TABLES.profiles)[0] || {}
     return { profile: { displayName: profile['display_name'] || 'Local booking preview', bio: profile.bio || '', photoUrl: profile['photo_url'] || null, timezone: profile.timezone || 'UTC' }, services: localTable(TABLES.services).filter(item => item.active !== false && item.visibility === 'public').map(item => ({ id: item.id, name: item.name, description: item.description, durationMinutes: item['duration_minutes'], price: item.price || 0, currency: item.currency || 'NGN' })) }
   }
@@ -86,7 +88,7 @@ export async function loadGuestPage() {
   return window.GoalmaticGuest.query('page-get', {})
 }
 export function loadGuestOpenings(serviceId, fromDate, throughDate) {
-  if (!isLocalPreview) return window.GoalmaticGuest.query('openings-list', { serviceId, fromDate, throughDate })
+  if (!isLocalPreview()) return window.GoalmaticGuest.query('openings-list', { serviceId, fromDate, throughDate })
   const service = localTable(TABLES.services).find(item => item.id === serviceId)
   const schedule = localTable(TABLES.schedules).find(item => item.id === service?.['schedule_id'])
   if (!service || !schedule) return Promise.resolve({ openings: [] })
@@ -103,7 +105,7 @@ export function loadGuestOpenings(serviceId, fromDate, throughDate) {
   return Promise.resolve({ openings })
 }
 export async function submitGuestBooking(input, idempotencyKey) {
-  if (!isLocalPreview) return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
+  if (!isLocalPreview()) return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
   const service = localTable(TABLES.services).find(item => item.id === input.serviceId), scheduleId = service?.['schedule_id'], reservationKey = `${scheduleId}|${new Date(input.startsAt).toISOString()}`
   if (localTable(TABLES.bookings).some(item => item['reservation_key'] === reservationKey && item.status !== 'cancelled')) throw new Error('This time was booked by someone else.')
   const endsAt = new Date(Date.parse(input.startsAt) + Number(service['duration_minutes']) * 60000).toISOString(), reference = `LOCAL-${idempotencyKey.slice(0, 8).toUpperCase()}`

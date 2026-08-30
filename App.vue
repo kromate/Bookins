@@ -30,7 +30,7 @@ const route = useRoute()
 const isPublicRoute = computed(() => route.path === '/book')
 const menuOpen = ref(false), loading = ref(false), error = ref(''), accountLabel = ref('Goalmatic workspace')
 const state = reactive({ profile: null, schedules: [], services: [], bookings: [] })
-const localPreview = isLocalPreview
+const localPreview = isLocalPreview()
 const profileName = computed(() => state.profile?.['display_name'] || 'Booking workspace')
 const navItems = [
   { label: 'Overview', to: '/', icon: '⌂' }, { label: 'Services', to: '/services', icon: '◇' },
