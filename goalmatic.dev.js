@@ -58,6 +58,7 @@ function waitForGoalmaticSignIn(runtime) {
 }
 
 async function configureGoalmaticRuntime() {
+  if (window.GoalmaticApp?.execute && window.GoalmaticAuth?.config?.installationAuth) return
   if (!goalmaticApiKey) {
     showRuntimeNotice('Offline preview. Goalmatic account data and credits are not connected.', 'offline')
     return
