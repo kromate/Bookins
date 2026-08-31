@@ -28,34 +28,6 @@ function createGoalmaticRuntimeCard() {
   return card
 }
 
-function showGoalmaticRuntimeLoading() {
-  const overlay = createGoalmaticRuntimeOverlay()
-  overlay.dataset.goalmaticRuntimeLoading = 'bootstrap'
-  overlay.setAttribute('role', 'status')
-  overlay.setAttribute('aria-live', 'polite')
-  overlay.setAttribute('aria-busy', 'true')
-  const card = createGoalmaticRuntimeCard()
-  const spinner = document.createElement('div')
-  spinner.setAttribute('aria-hidden', 'true')
-  spinner.style.cssText = 'box-sizing:border-box;width:38px;height:38px;margin:0 auto 18px;border:3px solid #e4deef;border-top-color:#5a32d6;border-radius:999px'
-  if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches && typeof spinner.animate === 'function') {
-    spinner.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 800, iterations: Infinity })
-  }
-  const title = document.createElement('h1')
-  title.style.cssText = 'margin:0;font-size:22px'
-  title.textContent = 'Starting your local App'
-  const copy = document.createElement('p')
-  copy.style.cssText = 'margin:10px 0 0;color:#746d80'
-  copy.textContent = 'Connecting to Goalmatic and checking your workspace access.'
-  const hint = document.createElement('p')
-  hint.style.cssText = 'margin:12px 0 0;color:#9a93a5;font-size:12px'
-  hint.textContent = 'This usually takes a moment.'
-  card.append(spinner, title, copy, hint)
-  overlay.append(card)
-  document.body.append(overlay)
-  return overlay
-}
-
 function showGoalmaticRuntimeError(message) {
   const overlay = document.querySelector('[data-goalmatic-runtime-loading]') || createGoalmaticRuntimeOverlay()
   delete overlay.dataset.goalmaticRuntimeLoading
@@ -148,19 +120,26 @@ async function waitForGoalmaticRuntimeReady(goalmaticRuntime) {
 }
 
 async function configureGoalmaticRuntime() {
-  if (window.GoalmaticApp?.execute && window.GoalmaticAuth?.config?.installationAuth) return
+  if (window.GoalmaticApp?.execute && window.GoalmaticAuth?.config?.installationAuth) return null
   if (!goalmaticApiKey) {
     showRuntimeNotice('Offline preview. Goalmatic account data and credits are not connected.', 'offline')
-    return
+    return null
   }
-  showGoalmaticRuntimeLoading()
   const { initializeGoalmatic } = await import(/* @vite-ignore */ GOALMATIC_APP_SDK_URL)
   if (typeof initializeGoalmatic !== 'function') throw new Error('The Goalmatic SDK is missing initializeGoalmatic')
-  const goalmaticRuntime = initializeGoalmatic(goalmaticApiBase
+  return initializeGoalmatic(goalmaticApiBase
     ? { apiKey: goalmaticApiKey, apiBase: goalmaticApiBase }
     : { apiKey: goalmaticApiKey })
-  await waitForGoalmaticRuntimeReady(goalmaticRuntime)
-  await waitForGoalmaticSignIn(goalmaticRuntime)
+}
+
+async function settleGoalmaticRuntime(goalmaticRuntime) {
+  if (!goalmaticRuntime) return
+  try {
+    await waitForGoalmaticRuntimeReady(goalmaticRuntime)
+    await waitForGoalmaticSignIn(goalmaticRuntime)
+  } catch (error) {
+    showRuntimeNotice(error instanceof Error ? error.message : 'Goalmatic could not restore this local App session.', 'error')
+  }
 }
 
 const pageModules = import.meta.glob('./pages/**/*.vue')
@@ -182,8 +161,9 @@ function routeFromFile(file) {
 const routes = Object.entries(pageModules).map(([source, load]) => ({ path: routeFromFile(source), component: load }))
 if (routes.some((route) => route.path === '/')) routes.push({ path: '/:pathMatch(.*)*', redirect: '/' })
 async function start() {
+  let goalmaticRuntime = null
   try {
-    await configureGoalmaticRuntime()
+    goalmaticRuntime = await configureGoalmaticRuntime()
   } catch {
     showRuntimeNotice('Goalmatic runtime could not start. Check VITE_GOALMATIC_API_KEY and its allowed origin.', 'error')
     return
@@ -196,6 +176,7 @@ async function start() {
   }
   app.use(router)
   app.mount('#app')
+  void settleGoalmaticRuntime(goalmaticRuntime)
 }
 
 void start()
