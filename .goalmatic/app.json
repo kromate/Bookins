@@ -4,18 +4,22 @@
   "packageId": "338fb637-59a1-42f0-b158-dedb92110dff",
   "siteId": "bdb60277-0253-4c0a-b8c4-9a380231c548",
   "slug": "bookings",
-  "name": "Bookings",
-  "shortDescription": "Configure services and availability, share a secure booking page, and manage appointments and contacts.",
-  "description": "Bookings gives each Goalmatic account a focused owner workspace for services, weekly availability, secure public booking links, appointment management, and a contact history derived from bookings. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
+  "name": "Bookins",
+  "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
+  "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, and keep contact history together. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
   "version": "0.3.0",
   "releaseType": "minor",
-  "releaseNotes": "Add a read-only Contacts view derived from booking history, with booking totals, confirmed counts, and recent activity. No new permissions or data stores.",
+  "releaseNotes": "Refresh the Bookins owner workspace and public booking flow with clearer setup guidance, faster navigation, an in-memory local sample workspace, African currency options, responsive booking screens, and a complete Store media set. No new permissions or data stores.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
-  "accent": "#3346db",
-  "screenshots": [],
+  "accent": "#2336dc",
+  "screenshots": [
+    "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F53a893506ea21c9508e655c5ea2039c897b0c248cb81d2b3c12097b76437ec1e%2Fscreenshot-1440x900.png?alt=media&token=f302be33-ca82-4c2a-b45f-130fb7f7f7b2",
+    "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fe7711052f2064e1699c35e862a22a9ab917cee56483637dbecf6159fb7462453%2Fscreenshot-1440x900.png?alt=media&token=47877579-714e-47f2-b2c0-9b87a479f359",
+    "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F49263e8d777bf8dd72167bfe3ce8e6c28c2a4f09e602094563417c60d4825992%2Fscreenshot-675x1200.png?alt=media&token=d817330e-f809-45fe-81c7-e6a727133789"
+  ],
   "visibility": "public",
   "allowFork": false,
   "publisher": {
@@ -25,8 +29,8 @@
     "verified": true
   },
   "seo": {
-    "title": "Bookings",
-    "description": "Configure services and availability, share a secure booking page, and manage appointments and contacts.",
+    "title": "Bookins by Goalmatic",
+    "description": "Set availability, share a secure booking link, and manage appointments from one workspace.",
     "image": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F2f336ae3b4fe765df289b3ce811aa013b816a617de8778e5406a77d29215746e%2Fsocial-1200x630.png?alt=media&token=c7c7c767-90ca-4e70-acaa-15f080004b4c"
   },
   "privacyPolicyUrl": "https://goalmatic.io/privacy",
