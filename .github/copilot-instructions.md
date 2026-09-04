@@ -1,0 +1,1 @@
+Follow the repository's AGENTS.md. Preserve Goalmatic's project mode, use project-local source, keep secrets out of files, verify locally before syncing the draft or pushing Git, and never publish without an explicit user action.

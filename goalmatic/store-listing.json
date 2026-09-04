@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "locale": "en",
+  "variantKey": "default",
+  "visibility": "public",
+  "headline": "Bookings that work for African businesses",
+  "summary": "Bookins helps African service businesses set availability, share a secure booking link, and manage confirmed appointments from one Goalmatic workspace. Payments, calendar writes, and email delivery remain clearly unavailable until connected.",
+  "bestFor": [
+    "Consultants",
+    "coaches",
+    "creators",
+    "service businesses"
+  ],
+  "benefits": [
+    {
+      "id": "benefit-1",
+      "title": "One secure booking link",
+      "description": "Share a release-pinned page that exposes only your public profile, active services, and available times.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-2",
+      "title": "Hours that fit your business",
+      "description": "Set weekly availability, timezone, minimum notice, and how far ahead guests can book.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-3",
+      "title": "Services with African pricing",
+      "description": "Create focused offers with clear durations and currencies including NGN, GHS, KES, ZAR, and XOF.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-4",
+      "title": "A clear appointment view",
+      "description": "Find upcoming, past, and cancelled bookings with guest details and contact history in one workspace.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-5",
+      "title": "Conflict-safe guest booking",
+      "description": "Bookins rechecks availability before confirmation so two guests cannot reserve the same start time.",
+      "mediaId": null
+    }
+  ],
+  "howItWorks": [
+    {
+      "id": "choose-workspace",
+      "title": "Set up your booking profile",
+      "description": "Add the public name, bio, photo, and timezone guests should see.",
+      "mediaId": null
+    },
+    {
+      "id": "review-access",
+      "title": "Choose hours and services",
+      "description": "Set your weekly schedule, notice rules, service durations, visibility, and display prices.",
+      "mediaId": null
+    },
+    {
+      "id": "open-app",
+      "title": "Share your booking link",
+      "description": "Guests choose a service and available time, enter their details, and receive an on-screen confirmation.",
+      "mediaId": null
+    }
+  ],
+  "media": [
+    {
+      "id": "media-1",
+      "kind": "image",
+      "role": "hero",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F53a893506ea21c9508e655c5ea2039c897b0c248cb81d2b3c12097b76437ec1e%2Fscreenshot-1440x900.png?alt=media&token=f302be33-ca82-4c2a-b45f-130fb7f7f7b2",
+      "width": 1440,
+      "height": 900,
+      "mimeType": "image/png",
+      "alt": "Bookins dashboard with services, upcoming bookings, and setup progress",
+      "caption": "Manage availability, services, booking links, and upcoming appointments from one workspace.",
+      "order": 0,
+      "theme": "light",
+      "device": "desktop"
+    },
+    {
+      "id": "screenshot-e7711052f2064e16",
+      "kind": "image",
+      "role": "gallery",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fe7711052f2064e1699c35e862a22a9ab917cee56483637dbecf6159fb7462453%2Fscreenshot-1440x900.png?alt=media&token=47877579-714e-47f2-b2c0-9b87a479f359",
+      "width": 1440,
+      "height": 900,
+      "mimeType": "image/png",
+      "alt": "Bookins services screen with duration, visibility, and pricing",
+      "caption": "Create clear services with African currencies and honest payment status.",
+      "order": 1,
+      "theme": "light",
+      "device": "desktop"
+    },
+    {
+      "id": "screenshot-49263e8d777bf8dd",
+      "kind": "image",
+      "role": "gallery",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F49263e8d777bf8dd72167bfe3ce8e6c28c2a4f09e602094563417c60d4825992%2Fscreenshot-675x1200.png?alt=media&token=d817330e-f809-45fe-81c7-e6a727133789",
+      "width": 675,
+      "height": 1200,
+      "mimeType": "image/png",
+      "alt": "Mobile Bookins booking page showing available time slots",
+      "caption": "Guests choose a service and an available time in a focused mobile flow.",
+      "order": 2,
+      "theme": "light",
+      "device": "mobile"
+    }
+  ],
+  "prerequisites": [
+    "A Goalmatic account and workspace"
+  ],
+  "faq": [],
+  "seo": {
+    "title": "Bookins",
+    "description": "Set availability, share a secure booking link, and manage appointments from one workspace.",
+    "image": {
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F2f336ae3b4fe765df289b3ce811aa013b816a617de8778e5406a77d29215746e%2Fsocial-1200x630.png?alt=media&token=c7c7c767-90ca-4e70-acaa-15f080004b4c",
+      "width": 1200,
+      "height": 630,
+      "mimeType": "image/png",
+      "alt": "Bookins scheduling workspace and public booking flow"
+    }
+  }
+}

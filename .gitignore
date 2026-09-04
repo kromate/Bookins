@@ -3,4 +3,12 @@ node_modules/
 dist/
 .env
 .env.*
+!.env.example
 .DS_Store
+.goalmatic/conflicts/
+.goalmatic/trash/
+build/
+.nuxt/
+.output/
+public/brand/*.png
+public/bookins/listing/*.png

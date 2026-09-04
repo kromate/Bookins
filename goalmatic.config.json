@@ -1,0 +1,7 @@
+{
+  "schema": "https://goalmatic.site/schemas/project-config-v1.json",
+  "siteId": "bdb60277-0253-4c0a-b8c4-9a380231c548",
+  "name": "Bookins",
+  "projectMode": "vue",
+  "sourceRoot": "."
+}

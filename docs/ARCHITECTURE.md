@@ -1,8 +1,8 @@
-# Bookings architecture
+# Bookins architecture
 
 ## Product boundary
 
-Bookings owns the owner dashboard, guest booking page, schedule rules, service visibility, booking copy, and migration mapping. Goalmatic owns identity, account selection, installation bindings, Tables, public grant admission, platform execution, audit, credits, integrations, and App lifecycle.
+Bookins owns the owner dashboard, guest booking page, schedule rules, service visibility, booking copy, and migration mapping. Goalmatic owns identity, account selection, installation bindings, Tables, public grant admission, platform execution, audit, credits, integrations, and App lifecycle.
 
 ## Records
 
@@ -23,7 +23,7 @@ The pinned App manifest declares `/book` and three named guest actions. The inst
 
 ## Provider truth
 
-Bookings v0.2.0 guarantees on-screen confirmation, owner dashboard visibility, and a read-only Contacts view derived from booking history. A non-zero price is informational and described as arranged with the owner. Email delivery, Calendar writes, online payment, payout, guest cancellation, and rescheduling are not claimed until their provider paths are connected and proved.
+Bookins v0.3.0 guarantees on-screen confirmation, owner dashboard visibility, and a read-only Contacts view derived from booking history. A non-zero price is informational and described as arranged with the owner. Email delivery, Calendar writes, online payment, payout, guest cancellation, and rescheduling are not claimed until their provider paths are connected and proved.
 
 ## Uninstall and release
 

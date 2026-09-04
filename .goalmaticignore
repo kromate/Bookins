@@ -1,0 +1,11 @@
+.goalmatic/sync.json
+.goalmatic/conflicts/
+.goalmatic/trash/
+.git/
+node_modules/
+dist/
+build/
+.nuxt/
+.output/
+.env
+.env.*
