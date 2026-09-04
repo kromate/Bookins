@@ -30,9 +30,9 @@ Production-local keys accept only exact registered loopback origins. The consent
 screen requires an explicit production warning confirmation. Never put a private
 account key or provider secret in a `VITE_*` variable. Never commit `.env.local`.
 
-If no Web Key is configured, Bookins seeds a browser-local sample workspace and
-labels it clearly. Local changes survive a reload in that browser. If a configured
-key is invalid or its origin is not allowed, startup
+If no Web Key is configured, Bookins seeds an in-memory local sample workspace and
+labels it clearly. Reloading resets that sample. If a configured key is invalid or
+its origin is not allowed, startup
 fails visibly instead of falling back to sample data. Hosted builds never use
 preview data.
 

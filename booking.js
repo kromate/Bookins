@@ -1,5 +1,4 @@
 const TABLES = { profiles: 'profiles', schedules: 'schedules', services: 'services', bookings: 'bookings' }
-const LOCAL_STORAGE_KEY = 'bookins.local-preview.v5'
 const localPreviewState = Object.create(null)
 
 export function isLocalPreview() {
@@ -67,20 +66,9 @@ function createLocalPreviewState() {
 
 function hydrateLocalPreview() {
   if (localPreviewState.hydrated || !isLocalPreview()) return
-  let saved = null
-  try { saved = JSON.parse(window.localStorage.getItem(LOCAL_STORAGE_KEY) || 'null') } catch { saved = null }
-  const source = saved && typeof saved === 'object' ? saved : createLocalPreviewState()
+  const source = createLocalPreviewState()
   for (const table of Object.values(TABLES)) localPreviewState[table] = Array.isArray(source[table]) ? source[table] : []
-  const profile = localPreviewState.profiles[0]
-  if (profile?.public_link_url?.endsWith('#local-preview')) profile.public_link_url = `${window.location.origin}/book#local-preview`
   localPreviewState.hydrated = true
-  persistLocalPreview()
-}
-
-function persistLocalPreview() {
-  if (!isLocalPreview()) return
-  const data = Object.fromEntries(Object.values(TABLES).map(table => [table, localPreviewState[table] || []]))
-  window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data))
 }
 
 function localTable(name) {
@@ -90,7 +78,6 @@ function localTable(name) {
 
 function setLocalTable(name, records) {
   localPreviewState[name] = records
-  persistLocalPreview()
 }
 
 function runtimeData() {

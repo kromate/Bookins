@@ -10,7 +10,7 @@
   "category": "productivity",
   "version": "0.3.0",
   "releaseType": "minor",
-  "releaseNotes": "Refresh the Bookins owner workspace and public booking flow with clearer setup guidance, faster navigation, persistent local preview data, African currency options, and responsive booking screens. No new permissions or data stores.",
+  "releaseNotes": "Refresh the Bookins owner workspace and public booking flow with clearer setup guidance, faster navigation, an in-memory local sample workspace, African currency options, and responsive booking screens. No new permissions or data stores.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "accent": "#2336dc",
