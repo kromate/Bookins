@@ -1,0 +1,16 @@
+{
+  "$schema": "https://goalmatic.site/schemas/seo-config-v1.json",
+  "title": "Bookins",
+  "description": "Set your availability, share one secure link, and manage bookings with Bookins.",
+  "image": "/brand/og-image.png",
+  "favicon": "/brand/favicon.png",
+  "robots": "index, follow",
+  "hreflang": {},
+  "pages": {
+    "/": {
+      "title": "Bookins",
+      "description": "Set your availability, share one secure link, and manage bookings with Bookins.",
+      "image": "/brand/og-image.png"
+    }
+  }
+}

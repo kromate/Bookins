@@ -175,8 +175,8 @@ async function start() {
     app.component(name, defineAsyncComponent(load))
   }
   app.use(router)
+  await settleGoalmaticRuntime(goalmaticRuntime)
   app.mount('#app')
-  void settleGoalmaticRuntime(goalmaticRuntime)
 }
 
 void start()

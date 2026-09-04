@@ -1,6 +1,6 @@
-# Bookings
+# Bookins
 
-Bookings is a Goalmatic App for service configuration, weekly availability, secure public booking links, appointment management, and contact history derived from bookings.
+Bookins is a Goalmatic App for service configuration, weekly availability, secure public booking links, appointment management, and contact history derived from bookings.
 
 Owners use their existing Goalmatic identity and selected account. The App stores profiles, schedules, services, and bookings in installation-bound Goalmatic Tables. Guests enter through an expiring public grant that exposes only the declared booking actions.
 
@@ -30,8 +30,9 @@ Production-local keys accept only exact registered loopback origins. The consent
 screen requires an explicit production warning confirmation. Never put a private
 account key or provider secret in a `VITE_*` variable. Never commit `.env.local`.
 
-If no Web Key is configured, Bookings uses browser-local preview data and labels
-it clearly. If a configured key is invalid or its origin is not allowed, startup
+If no Web Key is configured, Bookins seeds a browser-local sample workspace and
+labels it clearly. Local changes survive a reload in that browser. If a configured
+key is invalid or its origin is not allowed, startup
 fails visibly instead of falling back to sample data. Hosted builds never use
 preview data.
 
