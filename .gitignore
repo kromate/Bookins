@@ -10,3 +10,5 @@ dist/
 build/
 .nuxt/
 .output/
+public/brand/*.png
+public/bookins/listing/*.png
