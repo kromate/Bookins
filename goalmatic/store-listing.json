@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "locale": "en",
+  "variantKey": "default",
+  "visibility": "public",
+  "headline": "Configure services and availability, share a secure booking page, and manage appointments and contac",
+  "summary": "Bookings gives each Goalmatic account a focused owner workspace for services, weekly availability, secure public booking links, appointment management, and a contact history derived from bookings. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
+  "bestFor": [
+    "Productivity workflows"
+  ],
+  "benefits": [
+    {
+      "id": "benefit-1",
+      "title": "Store booking profile",
+      "description": "Creates an account-scoped Table for the public booking identity and link metadata.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-2",
+      "title": "Store availability",
+      "description": "Creates an account-scoped Table for weekly schedules, timezone, notice, and booking horizon.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-3",
+      "title": "Store services",
+      "description": "Creates an account-scoped Table for active public and private service definitions.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-4",
+      "title": "Store bookings",
+      "description": "Creates an account-scoped Table for confirmed and cancelled appointments with unique slot reservations.",
+      "mediaId": null
+    },
+    {
+      "id": "benefit-5",
+      "title": "Receive public bookings",
+      "description": "Allows an expiring booking link to read its public page, list openings, and create one conflict-safe booking.",
+      "mediaId": null
+    }
+  ],
+  "howItWorks": [
+    {
+      "id": "choose-workspace",
+      "title": "Choose a workspace",
+      "description": "Use your Goalmatic account and select where this App should work.",
+      "mediaId": null
+    },
+    {
+      "id": "review-access",
+      "title": "Review access",
+      "description": "See the declared resources, permissions, and connected accounts before continuing.",
+      "mediaId": null
+    },
+    {
+      "id": "open-app",
+      "title": "Open the App",
+      "description": "Start with the installed Store release in the workspace you selected.",
+      "mediaId": null
+    }
+  ],
+  "media": [
+    {
+      "id": "media-1",
+      "kind": "image",
+      "role": "hero",
+      "url": "https://goalmatic.io/api/og/image/apps/bookings.png",
+      "posterUrl": null,
+      "width": 1200,
+      "height": 630,
+      "mimeType": "image/png",
+      "alt": "Bookings product preview 1",
+      "caption": "Explore the main Bookings experience.",
+      "order": 0,
+      "theme": null,
+      "device": "responsive"
+    }
+  ],
+  "prerequisites": [
+    "A Goalmatic account and workspace"
+  ],
+  "faq": [],
+  "seo": {
+    "title": "Bookings",
+    "description": "Configure services and availability, share a secure booking page, and manage appointments and contacts.",
+    "image": {
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F2f336ae3b4fe765df289b3ce811aa013b816a617de8778e5406a77d29215746e%2Fsocial-1200x630.png?alt=media&token=c7c7c767-90ca-4e70-acaa-15f080004b4c",
+      "width": 1200,
+      "height": 630,
+      "mimeType": "image/png",
+      "alt": "Bookings App preview by Goalmatic"
+    }
+  }
+}
