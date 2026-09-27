@@ -8,9 +8,9 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, and keep contact history together. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "releaseType": "patch",
-  "releaseNotes": "Add the Goalmatic feedback button to the private Bookins workspace. Built-in delivery collects text feedback through Feedback Studio; this release adds no AI answers, media receiver, or new data store.",
+  "releaseNotes": "Open feedback instantly from bundled App code. Add separate desktop and mobile button position and spacing controls. Built-in delivery remains text-only; hosted AI answers are not enabled.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -29,7 +29,7 @@
     "verified": true
   },
   "seo": {
-    "title": "Bookins by Goalmatic",
+    "title": "Bookins",
     "description": "Set availability, share a secure booking link, and manage appointments from one workspace.",
     "image": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F2f336ae3b4fe765df289b3ce811aa013b816a617de8778e5406a77d29215746e%2Fsocial-1200x630.png?alt=media&token=c7c7c767-90ca-4e70-acaa-15f080004b4c"
   },
