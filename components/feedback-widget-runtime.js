@@ -962,7 +962,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 	pe.alt = "", pe.referrerPolicy = "no-referrer";
 	let me = V("h2"), he = V("p"), ge = H("×", Tt, "close");
 	ge.setAttribute("aria-label", "Close feedback");
-	let _e = H("←", () => nt("home"), "back");
+	let _e = H("←", () => Y("home"), "back");
 	_e.setAttribute("aria-label", "Back"), de.append(_e, pe, me, he, ge);
 	let ve = V("div", "", "body"), L = V("form"), ye = V("div", "", "types");
 	ye.setAttribute("aria-label", "Feedback type");
@@ -1013,7 +1013,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		let o = V("span");
 		return o.append(V("strong", t), V("small", n)), i.append(a, o, V("span", "›", "chevron")), i;
 	}
-	let Ke = Ge("ask", "Ask a question", "", () => nt("ask")), qe = Ge("launcher", "Share feedback", "An idea, a problem, or something you love", () => nt("feedback")), Je = V("nav", "", "home-links");
+	let Ke = Ge("ask", "Ask a question", "", () => Y("ask")), qe = Ge("launcher", "Share feedback", "An idea, a problem, or something you love", () => Y("feedback")), Je = V("nav", "", "home-links");
 	Je.setAttribute("aria-label", "Help links");
 	let Ye = V("p", "Feedback Studio by Goalmatic", "brand");
 	We.append(Ke, qe, Je, Ye);
@@ -1023,15 +1023,15 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 	q.rows = 1, q.maxLength = 1e3, q.placeholder = "Ask a question…", q.setAttribute("aria-label", "Your question");
 	let Qe = V("button", "↑");
 	Qe.type = "submit", Qe.setAttribute("aria-label", "Send question"), Ze.append(q, Qe), Xe.append(K, Ze), ve.append(We, Xe, L), I.append(de, ve), N.append(I, P), a.append(M);
-	let J = "feedback", $e = !1, Y = [], et = () => m.aiEnabled || m.links.length > 0;
-	function tt() {
-		let e = J !== "home" && et();
+	let J = "feedback", $e = !1, et = [], tt = () => m.aiEnabled || m.links.length > 0;
+	function nt() {
+		let e = J !== "home" && tt();
 		de.classList.toggle("is-compact", e), _e.hidden = !e;
 		let t = h?.name ? h.name.split(/\s+/)[0] : "";
-		me.textContent = J === "ask" ? m.aiName : J === "feedback" && et() ? "Share feedback" : J === "home" && t ? `Hi ${t} 👋` : m.title;
+		me.textContent = J === "ask" ? m.aiName : J === "feedback" && tt() ? "Share feedback" : J === "home" && t ? `Hi ${t} 👋` : m.title;
 	}
-	function nt(e, { focus: t = !0 } = {}) {
-		J = et() ? e : "feedback", We.hidden = J !== "home", Xe.hidden = J !== "ask", L.hidden = J !== "feedback" || !!O, O && (O.hidden = J !== "feedback"), tt(), J === "ask" && !Y.length && rt("bot", m.aiIntro), t && !I.hidden && (J === "ask" ? q.focus() : J === "feedback" && !O ? R.focus() : We.querySelector("button")?.focus());
+	function Y(e, { focus: t = !0 } = {}) {
+		J = tt() ? e : "feedback", We.hidden = J !== "home", Xe.hidden = J !== "ask", L.hidden = J !== "feedback" || !!O, O && (O.hidden = J !== "feedback"), nt(), J === "ask" && !et.length && rt("bot", m.aiIntro), t && !I.hidden && (J === "ask" ? q.focus() : J === "feedback" && !O ? R.focus() : We.querySelector("button")?.focus());
 	}
 	function rt(e, t, n = []) {
 		let r = V("div", t, `bubble ${e}`);
@@ -1043,18 +1043,18 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 			}
 			r.append(e);
 		}
-		return K.append(r), e === "bot" && Y.push({
+		return K.append(r), e === "bot" && et.push({
 			role: "assistant",
 			content: t
 		}), r.scrollIntoView?.({ block: "end" }), r;
 	}
 	function it() {
-		let e = Y.find((e) => e.role === "user")?.content || "";
-		if (R.value = e.slice(0, 180), z.value = Y.map((e) => `${e.role === "user" ? "Me" : m.aiName}: ${e.content}`).join("\n\n").slice(0, 8e3), m.categories.includes("question")) {
+		let e = et.find((e) => e.role === "user")?.content || "";
+		if (R.value = e.slice(0, 180), z.value = et.map((e) => `${e.role === "user" ? "Me" : m.aiName}: ${e.content}`).join("\n\n").slice(0, 8e3), m.categories.includes("question")) {
 			E = "question";
 			for (let [e, t] of j) t.setAttribute("aria-pressed", String(e === E));
 		}
-		nt("feedback");
+		Y("feedback");
 	}
 	function at(e) {
 		let t = typeof e?.answer == "string" ? e.answer.trim().slice(0, 4e3) : "";
@@ -1077,7 +1077,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 	async function ot(e) {
 		let t = {
 			question: e,
-			history: Y.slice(-10),
+			history: et.slice(-10),
 			user: h,
 			context: bt(),
 			...r ? { boardId: r } : {}
@@ -1107,7 +1107,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		let t = q.value.trim();
 		if (!t || $e) return;
 		let n = D;
-		$e = !0, Qe.disabled = !0, q.value = "", K.querySelectorAll(".handoff").forEach((e) => e.remove()), rt("me", t), Y.push({
+		$e = !0, Qe.disabled = !0, q.value = "", K.querySelectorAll(".handoff").forEach((e) => e.remove()), rt("me", t), et.push({
 			role: "user",
 			content: t
 		});
@@ -1128,7 +1128,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		e.key === "Enter" && !e.shiftKey && !e.isComposing && st(e);
 	});
 	function ct() {
-		Y.splice(0), K.replaceChildren(), $e = !1, Qe.disabled = !1, q.value = "";
+		et.splice(0), K.replaceChildren(), $e = !1, Qe.disabled = !1, q.value = "";
 	}
 	function lt() {
 		Ke.hidden = !m.aiEnabled, Ke.querySelector("small").textContent = "Get help or send your question to the team", Je.replaceChildren(), Je.hidden = !m.links.length;
@@ -1136,7 +1136,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 			let t = V("a");
 			t.href = e.url, t.target = "_blank", t.rel = "noopener noreferrer", t.append(V("span", e.label), V("span", "↗")), Je.append(t);
 		}
-		Ye.hidden = !m.showBranding, !et() && J !== "feedback" ? nt("feedback", { focus: !1 }) : tt();
+		Ye.hidden = !m.showBranding, !tt() && J !== "feedback" ? Y("feedback", { focus: !1 }) : nt();
 	}
 	function X(e) {
 		v || (W.className = "status error", W.textContent = e?.message || String(e));
@@ -1254,7 +1254,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 	function vt() {
 		D += 1, ct(), y = !1, $({ restoreFocus: !1 }), Q.cancel(), w?.(), w = null, M.style.pointerEvents = "";
 		for (let e of A) URL.revokeObjectURL(e.url);
-		A.splice(0), C = null, E = m.categories[0], x = null, S = "", G.value = "", L.reset(), L.hidden = !1, O?.remove(), O = null, W.className = "status", W.textContent = "";
+		A.splice(0), C = null, E = m.categories[0], x = null, S = "", G.value = "", L.reset(), O?.remove(), O = null, Y(tt() ? "home" : "feedback", { focus: !1 }), W.className = "status", W.textContent = "";
 		for (let [e, t] of j) t.setAttribute("aria-pressed", String(e === E));
 		ae = !1, dt({ force: !0 }), _t(), ht(), Z();
 	}
@@ -1390,8 +1390,8 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 			let t = V("div", "", "success");
 			t.append(V("strong", "Feedback received"), V("p", m.successMessage), H("Send another", () => {
 				t.remove(), O = null, L.hidden = !1, R.focus();
-			}, "secondary")), et() && t.append(H("Back to home", () => {
-				t.remove(), O = null, nt("home");
+			}, "secondary")), tt() && t.append(H("Back to home", () => {
+				t.remove(), O = null, Y("home");
 			}, "secondary")), O = t, L.hidden = !0, ve.append(t);
 		} catch (e) {
 			!v && n === D && X(e);
@@ -1405,7 +1405,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		e.shiftKey && N.activeElement === n ? (e.preventDefault(), r?.focus()) : !e.shiftKey && N.activeElement === r && (e.preventDefault(), n?.focus());
 	});
 	function St() {
-		return !!(R.value || z.value || q.value || Y.length || A.length);
+		return !!(R.value || z.value || q.value || et.length || A.length);
 	}
 	function Ct() {
 		let e = typeof l == "function" ? l() : null;
@@ -1419,7 +1419,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		se = !0;
 	}
 	function wt({ focus: e = !0 } = {}) {
-		v || ((!se || !St()) && Ct(), re = e, ne = e ? document.activeElement : null, I.hidden = !1, Et(), et() && J === "feedback" && !O && !R.value && !z.value && nt("home", { focus: !1 }), e && ge.focus());
+		v || ((!se || !St()) && Ct(), re = e, ne = e ? document.activeElement : null, I.hidden = !1, Et(), tt() && J === "feedback" && !O && !R.value && !z.value && Y("home", { focus: !1 }), e && ge.focus());
 	}
 	function Tt() {
 		$({ restoreFocus: !1 }), Q.cancel(), w?.(), w = null, I.hidden = !0, P.hidden = !1, Et(), re && (ne?.isConnected ? ne : P)?.focus?.(), ne = null, re = !1;
@@ -1484,7 +1484,7 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 	function At(e) {
 		(b || R.value || z.value || A.length) && (e.preventDefault(), e.returnValue = "");
 	}
-	return window.addEventListener("beforeunload", At), window.addEventListener("resize", Dt), Ot(), ut(), dt({ force: !0 }), nt(et() ? "home" : "feedback", { focus: !1 }), {
+	return window.addEventListener("beforeunload", At), window.addEventListener("resize", Dt), Ot(), ut(), dt({ force: !0 }), Y(tt() ? "home" : "feedback", { focus: !1 }), {
 		open: wt,
 		close: Tt,
 		update: kt,
