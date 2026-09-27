@@ -3,6 +3,7 @@ import { computed, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import BookinsLogo from './components/BookinsLogo.vue'
+import GoalmaticFeedback from './components/GoalmaticFeedback.vue'
 import { copyText, isLocalPreview, loadOwnerWorkspace } from './booking.js'
 
 const route = useRoute()
@@ -71,6 +72,7 @@ onMounted(refresh)
 <template>
   <RouterView v-if="isPublicRoute" />
   <div v-else class="app-shell">
+    <GoalmaticFeedback />
     <aside class="sidebar" :class="{ open: menuOpen }">
       <div class="sidebar-brand">
         <RouterLink to="/" aria-label="Bookins home"><BookinsLogo /></RouterLink>
