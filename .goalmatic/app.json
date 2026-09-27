@@ -8,7 +8,7 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, and keep contact history together. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "releaseType": "minor",
   "releaseNotes": "Refresh the Bookins owner workspace and public booking flow with clearer setup guidance, faster navigation, an in-memory local sample workspace, African currency options, responsive booking screens, and a complete Store media set. No new permissions or data stores.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
@@ -35,7 +35,9 @@
   },
   "privacyPolicyUrl": "https://goalmatic.io/privacy",
   "supportUrl": "https://goalmatic.io/support",
-  "externalDomains": [],
+  "externalDomains": [
+    "feedback-studio.apps.goalmatic.io"
+  ],
   "publicRuntime": {
     "grants": [
       {
