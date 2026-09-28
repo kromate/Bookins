@@ -1,9 +1,10 @@
 <script setup>
-import { computed, onMounted, provide, reactive, ref, watch } from 'vue'
+import { defineAsyncComponent, computed, onMounted, provide, reactive, ref, watch } from 'vue'
+// The feedback button loads after the App so its widget runtime never delays the first screen.
+const GoalmaticFeedback = defineAsyncComponent(() => import('./components/GoalmaticFeedback.vue'))
 import { useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import BookinsLogo from './components/BookinsLogo.vue'
-import GoalmaticFeedback from './components/GoalmaticFeedback.vue'
 import { copyText, isLocalPreview, loadOwnerWorkspace } from './booking.js'
 
 const route = useRoute()
@@ -25,6 +26,22 @@ const navItems = [
   { label: 'Settings', shortLabel: 'Settings', to: '/settings', icon: 'settings', section: 'MANAGE' },
 ]
 
+// Static page intros let the first-load skeleton show real headings while workspace data loads.
+const pageIntros = {
+  '/': { eyebrow: 'Workspace overview', title: 'Run your booking day with less back-and-forth.', lede: 'Set your hours, share one link, and keep every confirmed appointment in view.', layout: 'overview' },
+  '/services': { eyebrow: 'Your offerings', title: 'Services', lede: 'Create the sessions people can book. Each service uses your shared availability and can be paused without losing its history.', layout: 'cards' },
+  '/availability': { eyebrow: 'Working hours', title: 'Availability', lede: 'Choose when guests can book you. Times are shown in your booking timezone and confirmed slots are removed automatically.', layout: 'split' },
+  '/bookings': { eyebrow: 'Appointments', title: 'Bookings', lede: 'See who is coming, what they booked, and the details they shared. Cancelled appointments stay in history.', layout: 'list' },
+  '/contacts': { eyebrow: 'Guest history', title: 'Contacts', lede: 'Every guest appears once, with their booking history kept together. Contacts are read-only and come directly from appointments.', layout: 'cards' },
+  '/settings': { eyebrow: 'Configuration', title: 'Settings', lede: 'Shape what guests see and manage the release-pinned link that connects them to this Bookins workspace.', layout: 'split' },
+}
+const overviewMetrics = [
+  { label: 'Active services', sub: 'Ready to book' },
+  { label: 'Upcoming', sub: 'Confirmed appointments' },
+  { label: 'This month', sub: 'Bookings received' },
+  { label: 'Open weekdays', sub: '' },
+]
+
 const primaryNav = navItems.filter(item => item.section === 'WORKSPACE')
 const manageNav = navItems.filter(item => item.section === 'MANAGE')
 const mobileNav = [navItems[0], navItems[1], navItems[3], navItems[2]]
@@ -33,19 +50,21 @@ const profileName = computed(() => state.profile?.display_name || 'Booking works
 const initials = computed(() => profileName.value.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('').toUpperCase() || 'B')
 const publicUrl = computed(() => state.profile?.public_link_url || '')
 const currentPage = computed(() => navItems.find(item => item.to === '/' ? route.path === '/' : route.path.startsWith(item.to)) || navItems[0])
+const pageIntro = computed(() => pageIntros[currentPage.value.to] || pageIntros['/'])
 
 async function refresh() {
   if (isPublicRoute.value || loading.value) return
   loading.value = true
   error.value = ''
   try {
-    if (window.GoalmaticAuth?.getUser) {
-      const user = await window.GoalmaticAuth.getUser()
-      accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
-    } else if (localPreview) {
-      accountLabel.value = 'Sample workspace'
-    }
-    Object.assign(state, await loadOwnerWorkspace())
+    // The account label and workspace Tables are independent, so load them together.
+    const [user, workspace] = await Promise.all([
+      window.GoalmaticAuth?.getUser ? window.GoalmaticAuth.getUser() : null,
+      loadOwnerWorkspace(),
+    ])
+    if (window.GoalmaticAuth?.getUser) accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
+    else if (localPreview) accountLabel.value = 'Sample workspace'
+    Object.assign(state, workspace)
     loaded.value = true
   } catch (reason) {
     error.value = reason?.message || 'Bookins could not load this workspace.'
@@ -121,7 +140,7 @@ onMounted(refresh)
           <button class="icon-button mobile-menu" type="button" aria-label="Open navigation" @click="menuOpen = true"><AppIcon name="menu" /></button>
           <RouterLink class="mobile-brand" to="/"><BookinsLogo compact /><span>Bookins</span></RouterLink>
         </div>
-        <div class="topbar-title"><strong>{{ currentPage.label }}</strong><small>{{ profileName }} · {{ state.profile?.timezone || 'Set your timezone' }}</small></div>
+        <div class="topbar-title"><strong>{{ currentPage.label }}</strong><small v-if="loaded">{{ profileName }} · {{ state.profile?.timezone || 'Set your timezone' }}</small><span v-else-if="!error" class="skeleton-line skeleton-topbar" aria-hidden="true" /></div>
         <div class="topbar-actions">
           <button class="icon-button" :class="{ spinning: loading && loaded }" type="button" :disabled="loading" aria-label="Refresh workspace" @click="refresh"><AppIcon name="refresh" :size="18" /></button>
         </div>
@@ -133,13 +152,32 @@ onMounted(refresh)
       <div v-if="error && loaded" class="mode-banner error" role="alert"><span>{{ error }}</span><button type="button" @click="refresh">Try again</button></div>
 
       <main :aria-busy="loading">
-        <div v-if="loading && !loaded" class="page-skeleton" aria-hidden="true">
-          <span class="skeleton-line skeleton-copy" />
-          <span class="skeleton-line skeleton-title" />
-          <span class="skeleton-line skeleton-copy" />
-          <div class="skeleton-cards"><span v-for="index in 3" :key="index" class="skeleton-block" /></div>
+        <div v-if="!loaded && !error" class="page-skeleton">
+          <span class="visually-hidden" role="status">Loading your workspace…</span>
+          <div class="page-header">
+            <div><p class="eyebrow">{{ pageIntro.eyebrow }}</p><h1>{{ pageIntro.title }}</h1><p class="lede">{{ pageIntro.lede }}</p></div>
+            <span class="skeleton-block skeleton-action" aria-hidden="true" />
+          </div>
+          <template v-if="pageIntro.layout === 'overview'">
+            <div class="grid grid-4">
+              <article v-for="metric in overviewMetrics" :key="metric.label" class="card skeleton-metric"><span class="skeleton-block skeleton-icon" aria-hidden="true" /><div><span class="label">{{ metric.label }}</span><span class="skeleton-line skeleton-number" aria-hidden="true" /><p v-if="metric.sub" class="metric-sub">{{ metric.sub }}</p><span v-else class="skeleton-line skeleton-sub" aria-hidden="true" /></div></article>
+            </div>
+            <div class="skeleton-split">
+              <article class="card"><p class="eyebrow">Up next</p><h2>Upcoming bookings</h2><span v-for="index in 3" :key="index" class="skeleton-block skeleton-row" aria-hidden="true" /></article>
+              <div class="skeleton-side">
+                <article class="card"><p class="eyebrow">Launch checklist</p><span class="skeleton-line skeleton-heading" aria-hidden="true" /><span v-for="index in 4" :key="index" class="skeleton-line skeleton-step" aria-hidden="true" /></article>
+                <article class="card"><p class="eyebrow">Booking link</p><span class="skeleton-line skeleton-heading" aria-hidden="true" /><p class="muted">Guests only see the services and times you make available.</p><span class="skeleton-block skeleton-button" aria-hidden="true" /></article>
+              </div>
+            </div>
+          </template>
+          <div v-else-if="pageIntro.layout === 'split'" class="skeleton-split" aria-hidden="true">
+            <span class="skeleton-block skeleton-main" />
+            <div class="skeleton-side"><span v-for="index in 2" :key="index" class="skeleton-block" /></div>
+          </div>
+          <div v-else-if="pageIntro.layout === 'list'" class="skeleton-list" aria-hidden="true"><span v-for="index in 4" :key="index" class="skeleton-block" /></div>
+          <div v-else class="skeleton-cards" aria-hidden="true"><span v-for="index in 3" :key="index" class="skeleton-block" /></div>
         </div>
-        <div v-else-if="error && !loaded" class="card state-card" role="alert">
+        <div v-else-if="!loaded" class="card state-card" role="alert">
           <span class="empty-icon">!</span>
           <h1>Bookins could not load.</h1>
           <p class="muted">{{ error }}</p>
