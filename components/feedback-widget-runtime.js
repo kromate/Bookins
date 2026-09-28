@@ -346,14 +346,14 @@ function w(e) {
 		} catch {}
 	}
 }
-function ne(e, t) {
+function T(e, t) {
 	return e?.name === "NotAllowedError" || e?.name === "SecurityError" ? x(`${t === "voice" ? "Microphone" : t === "video" ? "Camera and microphone" : "Screen sharing"} permission was not granted.`, "CAPTURE_PERMISSION_DENIED") : e?.name === "NotFoundError" || e?.name === "DevicesNotFoundError" ? x(`No available ${t === "voice" ? "microphone" : t === "video" ? "camera or microphone" : "screen source"} was found.`, "CAPTURE_DEVICE_MISSING") : e?.name === "NotReadableError" || e?.name === "TrackStartError" ? x("The selected device or screen could not be started. Close other apps using it and try again.", "CAPTURE_DEVICE_BUSY") : e?.name === "AbortError" ? x("Capture was cancelled before it started.", "CAPTURE_ABORTED") : e instanceof Error ? e : x("Capture could not start.", "CAPTURE_FAILED");
 }
-function re(e, t) {
+function ne(e, t) {
 	let n = y[e === "voice" ? "voice" : "video"];
 	return typeof t.isTypeSupported == "function" && n.find((e) => t.isTypeSupported(e)) || "";
 }
-function T(e, t) {
+function re(e, t) {
 	return `feedback-${e}-${(/* @__PURE__ */ new Date()).toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z")}.${b[S(t)] || "webm"}`;
 }
 function E(e, t) {
@@ -409,7 +409,7 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 		let f;
 		try {
 			if (f = await n(), i || d !== r) return w(f), !1;
-			let l = re(e, a), p;
+			let l = ne(e, a), p;
 			try {
 				p = new a(f, l ? { mimeType: l } : void 0);
 			} catch {
@@ -442,7 +442,7 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 				if (!m.discard && o === m) {
 					if (m.sizeExceeded || m.bytes > _.maxFileBytes) c(x("The recording reached the 20 MB attachment limit.", "RECORDING_TOO_LARGE"));
 					else if (m.bytes > 0) {
-						let r = S(p.mimeType || m.chunks[0]?.type || l) || (e === "voice" ? "audio/webm" : "video/webm"), i = new Blob(m.chunks, { type: r }), a = new File([i], T(e, r), {
+						let r = S(p.mimeType || m.chunks[0]?.type || l) || (e === "voice" ? "audio/webm" : "video/webm"), i = new Blob(m.chunks, { type: r }), a = new File([i], re(e, r), {
 							type: r,
 							lastModified: Date.now()
 						});
@@ -475,7 +475,7 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 				}
 			}, _.maxRecordingSeconds * 1e3), s("recording", e, { elapsedMs: 0 }), !0;
 		} catch (t) {
-			return w(f), d !== r || i ? !1 : (o = null, s("idle"), c(ne(t, e)));
+			return w(f), d !== r || i ? !1 : (o = null, s("idle"), c(T(t, e)));
 		}
 	}
 	async function f() {
@@ -508,7 +508,7 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 			d.drawImage(u, 0, 0, l.width, l.height);
 			let f = await D(l);
 			if (i || n !== r) return !1;
-			let p = new File([f], T(e, "image/png"), {
+			let p = new File([f], re(e, "image/png"), {
 				type: "image/png",
 				lastModified: Date.now()
 			});
@@ -517,7 +517,7 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 				durationMs: 0
 			})), !0;
 		} catch (e) {
-			return n !== r || i ? !1 : c(ne(e, "screen"));
+			return n !== r || i ? !1 : c(T(e, "screen"));
 		} finally {
 			u && (u.pause(), u.srcObject = null), w(a), o?.generation === n && (o = null), !i && n === r && s("idle");
 		}
@@ -568,63 +568,63 @@ function ie({ onState: e, onRecording: t, onError: n } = {}) {
 }
 //#endregion
 //#region src/widget/elementPicker.js
-var ae = "[data-feedback-private],[data-private],input,textarea,select,[contenteditable]:not([contenteditable=\"false\"])", O = 80, oe = 12;
-function k(e) {
-	return String(e || "").replace(/\s+/g, " ").trim().slice(0, O);
+var O = "[data-feedback-private],[data-private],input,textarea,select,[contenteditable]:not([contenteditable=\"false\"])", ae = 80, k = 12;
+function A(e) {
+	return String(e || "").replace(/\s+/g, " ").trim().slice(0, ae);
 }
-function se(e) {
+function oe(e) {
 	return !!(e && e.nodeType === 1);
 }
-function A(e) {
-	return !!e.closest?.(ae);
+function se(e) {
+	return !!e.closest?.(O);
 }
-function ce(e) {
+function j(e) {
 	return globalThis.CSS?.escape ? globalThis.CSS.escape(e) : String(e).replace(/(^-?\d)|[^a-zA-Z0-9_-]/g, (e) => `\\${e.codePointAt(0).toString(16)} `);
 }
-function j(e, t) {
+function ce(e, t) {
 	try {
 		return e.querySelectorAll(t).length === 1;
 	} catch {
 		return !1;
 	}
 }
-function M(e, t) {
+function le(e, t) {
 	let n = [], r = e;
-	for (let e = 0; r && e < oe; e += 1) {
+	for (let e = 0; r && e < k; e += 1) {
 		let e = r.tagName.toLowerCase(), i = 1, a = r.previousElementSibling;
 		for (; a;) a.tagName === r.tagName && (i += 1), a = a.previousElementSibling;
 		n.unshift(`${e}:nth-of-type(${i})`);
 		let o = n.join(" > ");
-		if (j(t, o)) return o;
+		if (ce(t, o)) return o;
 		r = r.parentElement;
 	}
 	return n.join(" > ");
 }
-function N(e, t, n) {
+function M(e, t, n) {
 	if (!n && e.id && e.id.length <= 120) {
-		let n = `#${ce(e.id)}`;
-		if (j(t, n)) return n;
+		let n = `#${j(e.id)}`;
+		if (ce(t, n)) return n;
 	}
-	return M(e, t);
+	return le(e, t);
 }
-function le(e, t) {
+function N(e, t) {
 	let n = t.defaultView.NodeFilter, r = t.createTreeWalker(e, n.SHOW_TEXT, { acceptNode(e) {
-		return e.parentElement?.closest(ae) ? n.FILTER_REJECT : n.FILTER_ACCEPT;
+		return e.parentElement?.closest(O) ? n.FILTER_REJECT : n.FILTER_ACCEPT;
 	} }), i = "";
-	for (; r.nextNode() && i.length <= O;) i += ` ${r.currentNode.nodeValue}`;
-	return k(i);
+	for (; r.nextNode() && i.length <= ae;) i += ` ${r.currentNode.nodeValue}`;
+	return A(i);
 }
-function P(e, t) {
-	let n = k(e.getAttribute("aria-label"));
+function ue(e, t) {
+	let n = A(e.getAttribute("aria-label"));
 	if (n) return n;
 	let r = e.getAttribute("aria-labelledby");
 	if (r) {
-		let e = r.split(/\s+/).map((e) => t.getElementById(e)).filter((e) => e && !A(e)).map((e) => le(e, t)).join(" ");
-		if (k(e)) return k(e);
+		let e = r.split(/\s+/).map((e) => t.getElementById(e)).filter((e) => e && !se(e)).map((e) => N(e, t)).join(" ");
+		if (A(e)) return A(e);
 	}
-	return e.tagName.toLowerCase() === "img" ? k(e.alt) : le(e, t);
+	return e.tagName.toLowerCase() === "img" ? A(e.alt) : N(e, t);
 }
-function F(e) {
+function P(e) {
 	try {
 		let t = new URL(e.defaultView.location.href);
 		return `${t.origin}${t.pathname}`;
@@ -632,21 +632,21 @@ function F(e) {
 		return "";
 	}
 }
-function ue(e, t) {
+function F(e, t) {
 	return e?.closest?.("[data-feedback-picker-ui]") ? !0 : !e || !t ? !1 : (Array.isArray(t) ? t : [t]).some((t) => typeof t == "function" ? t(e) === !0 : typeof t == "string" ? !!e.closest?.(t) : !(!t || typeof t.contains != "function" || t !== e && !t.contains(e)));
 }
-function I(e, t, n) {
-	let r = typeof e.composedPath == "function" ? e.composedPath() : [], i = se(e.target) ? e.target : r.find(se);
-	if (i) return ue(i, n) ? null : i;
+function de(e, t, n) {
+	let r = typeof e.composedPath == "function" ? e.composedPath() : [], i = oe(e.target) ? e.target : r.find(oe);
+	if (i) return F(i, n) ? null : i;
 	let a = e.touches?.[0] || e.changedTouches?.[0] || e, o = Number.isFinite(a.clientX) && Number.isFinite(a.clientY) ? t.elementFromPoint(a.clientX, a.clientY) : null;
-	return o && !ue(o, n) ? o : null;
+	return o && !F(o, n) ? o : null;
 }
-function de(e, t) {
-	let n = A(e), r = e.getBoundingClientRect(), i = t.defaultView;
+function I(e, t) {
+	let n = se(e), r = e.getBoundingClientRect(), i = t.defaultView;
 	return Object.freeze({
-		selector: N(e, t, n),
+		selector: M(e, t, n),
 		tagName: e.tagName.toLowerCase(),
-		label: n ? "" : P(e, t),
+		label: n ? "" : ue(e, t),
 		rect: Object.freeze({
 			x: r.x,
 			y: r.y,
@@ -657,7 +657,7 @@ function de(e, t) {
 			width: i.innerWidth,
 			height: i.innerHeight
 		}),
-		pageUrl: F(t)
+		pageUrl: P(t)
 	});
 }
 function fe({ document: e = globalThis.document, onPick: t, onCancel: n, exclude: r } = {}) {
@@ -731,16 +731,16 @@ function fe({ document: e = globalThis.document, onPick: t, onCancel: n, exclude
 		});
 	}
 	function h(t) {
-		m(I(t, e, r));
+		m(de(t, e, r));
 	}
 	function g() {
 		d?.isConnected ? m(d) : m(null);
 	}
 	function ee(n) {
-		let i = I(n, e, r);
+		let i = de(n, e, r);
 		if (!i) return;
 		n.preventDefault(), n.stopImmediatePropagation();
-		let a = de(i, e);
+		let a = I(i, e);
 		p(), typeof t == "function" && t(a);
 	}
 	function _() {
@@ -765,40 +765,40 @@ var pe = /* @__PURE__ */ new Set([
 	"name",
 	"company",
 	"attributes"
-]), me = /* @__PURE__ */ new Set(["id", "name"]), he = /* @__PURE__ */ new Set([
+]), L = /* @__PURE__ */ new Set(["id", "name"]), me = /* @__PURE__ */ new Set([
 	"__proto__",
 	"prototype",
 	"constructor"
 ]);
-function ge(e) {
+function he(e) {
 	if (!e || typeof e != "object" || Array.isArray(e)) return !1;
 	let t = Object.getPrototypeOf(e);
 	return t === Object.prototype || t === null;
 }
-function _e(e, t) {
-	if (!ge(e)) throw Error(`${t} must be a plain object.`);
+function ge(e, t) {
+	if (!he(e)) throw Error(`${t} must be a plain object.`);
+}
+function _e(e, t, n) {
+	for (let r of Object.keys(e)) if (me.has(r) || !t.has(r)) throw Error(`${n} contains an unsupported field: ${r}.`);
 }
 function ve(e, t, n) {
-	for (let r of Object.keys(e)) if (he.has(r) || !t.has(r)) throw Error(`${n} contains an unsupported field: ${r}.`);
-}
-function L(e, t, n) {
 	if (typeof e != "string") throw Error(`${t} must be a string.`);
 	let r = e.trim();
 	if (!r) throw Error(`${t} cannot be empty.`);
 	if (r.length > n) throw Error(`${t} must be ${n} characters or fewer.`);
 	return r;
 }
-function ye(e) {
-	let t = L(e, "User email", 254);
+function R(e) {
+	let t = ve(e, "User email", 254);
 	if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) throw Error("User email must be a valid email address.");
 	return t;
 }
-function be(e) {
+function ye(e) {
 	if (!e || e.length > 64) throw Error("User attribute keys must be 1 to 64 characters.");
-	if (he.has(e)) throw Error(`User attributes contain an unsupported key: ${e}.`);
+	if (me.has(e)) throw Error(`User attributes contain an unsupported key: ${e}.`);
 	return e;
 }
-function xe(e, t) {
+function be(e, t) {
 	if (e === null || typeof e == "boolean") return e;
 	if (typeof e == "number") {
 		if (!Number.isFinite(e)) throw Error(`User attribute ${t} must be a finite number.`);
@@ -810,72 +810,72 @@ function xe(e, t) {
 	}
 	throw Error(`User attribute ${t} must be a string, number, boolean, or null.`);
 }
-function R(e, { patch: t = !1 } = {}) {
+function xe(e, { patch: t = !1 } = {}) {
 	if (t && e === null) return null;
-	_e(e, "User company"), ve(e, me, "User company");
+	ge(e, "User company"), _e(e, L, "User company");
 	let n = {};
 	for (let [r, i] of [["id", 128], ["name", 100]]) if (Object.hasOwn(e, r)) {
-		if (z(e[r])) {
+		if (Se(e[r])) {
 			t && (n[r] = null);
 			continue;
 		}
-		n[r] = L(e[r], `Company ${r}`, i);
+		n[r] = ve(e[r], `Company ${r}`, i);
 	}
 	return n;
 }
-function Se(e, { patch: t = !1 } = {}) {
+function z(e, { patch: t = !1 } = {}) {
 	if (t && e === null) return null;
-	_e(e, "User attributes");
+	ge(e, "User attributes");
 	let n = Object.entries(e);
 	if (n.length > 30) throw Error("Use at most 30 user attributes.");
 	let r = {};
-	for (let [e, i] of n) be(e), r[e] = t && i === null ? null : xe(i, e);
+	for (let [e, i] of n) ye(e), r[e] = t && i === null ? null : be(i, e);
 	return r;
 }
-var z = (e) => e == null || typeof e == "string" && !e.trim();
-function Ce(e, { patch: t = !1 } = {}) {
-	_e(e, t ? "User update" : "User"), ve(e, pe, t ? "User update" : "User");
+var Se = (e) => e == null || typeof e == "string" && !e.trim();
+function B(e, { patch: t = !1 } = {}) {
+	ge(e, t ? "User update" : "User"), _e(e, pe, t ? "User update" : "User");
 	let n = {};
 	for (let [r, i] of [["id", 128], ["name", 80]]) if (Object.hasOwn(e, r)) {
-		if (z(e[r])) {
+		if (Se(e[r])) {
 			t && (n[r] = null);
 			continue;
 		}
-		n[r] = L(e[r], `User ${r}`, i);
+		n[r] = ve(e[r], `User ${r}`, i);
 	}
 	if (Object.hasOwn(e, "email")) {
-		if (z(e.email)) t && (n.email = null);
+		if (Se(e.email)) t && (n.email = null);
 		else try {
-			n.email = ye(e.email);
+			n.email = R(e.email);
 		} catch (e) {
 			console.warn("[Feedback Studio] Ignoring user email:", e.message), t && (n.email = null);
 		}
 	}
-	return Object.hasOwn(e, "company") && (e.company != null || t) && (n.company = R(e.company, { patch: t })), Object.hasOwn(e, "attributes") && (n.attributes = Se(e.attributes, { patch: t })), n;
+	return Object.hasOwn(e, "company") && (e.company != null || t) && (n.company = xe(e.company, { patch: t })), Object.hasOwn(e, "attributes") && (n.attributes = z(e.attributes, { patch: t })), n;
 }
-function B(e) {
+function Ce(e) {
 	return e ? (e.company && Object.freeze(e.company), e.attributes && Object.freeze(e.attributes), Object.freeze(e)) : null;
 }
-function we(e) {
+function V(e) {
 	if (e == null) return null;
-	let t = Ce(e);
-	return Object.keys(t).length ? B(t) : null;
+	let t = B(e);
+	return Object.keys(t).length ? Ce(t) : null;
 }
-function Te(e) {
+function we(e) {
 	try {
-		return we(e);
+		return V(e);
 	} catch (e) {
 		return console.warn("[Feedback Studio] User details were ignored:", e.message), null;
 	}
 }
-function Ee(e) {
-	let t = we(e);
+function Te(e) {
+	let t = V(e);
 	return t ? t.id ? `id:${t.id}` : t.email ? `email:${t.email.toLowerCase()}` : null : null;
 }
-function De(e, t) {
-	let n = we(e);
+function Ee(e, t) {
+	let n = V(e);
 	if (t === null) return null;
-	let r = Ce(t, { patch: !0 }), i = Object.hasOwn(r, "id") && (r.id ?? null) !== (n?.id ?? null), a = !n?.id && Object.hasOwn(r, "email") && (r.email?.toLowerCase() ?? null) !== (n?.email?.toLowerCase() ?? null), o = i || a ? {} : { ...n || {} };
+	let r = B(t, { patch: !0 }), i = Object.hasOwn(r, "id") && (r.id ?? null) !== (n?.id ?? null), a = !n?.id && Object.hasOwn(r, "email") && (r.email?.toLowerCase() ?? null) !== (n?.email?.toLowerCase() ?? null), o = i || a ? {} : { ...n || {} };
 	for (let e of [
 		"id",
 		"email",
@@ -885,7 +885,7 @@ function De(e, t) {
 		if (r.company === null) delete o.company;
 		else {
 			let e = { ...o.company || {} };
-			for (let t of me) Object.hasOwn(r.company, t) && (r.company[t] === null ? delete e[t] : e[t] = r.company[t]);
+			for (let t of L) Object.hasOwn(r.company, t) && (r.company[t] === null ? delete e[t] : e[t] = r.company[t]);
 			Object.keys(e).length ? o.company = e : delete o.company;
 		}
 	}
@@ -898,11 +898,11 @@ function De(e, t) {
 			Object.keys(e).length ? o.attributes = e : delete o.attributes;
 		}
 	}
-	return B(o);
+	return Ce(o);
 }
 //#endregion
 //#region src/widget/mount.js
-var Oe = 4096, ke = 16777216, Ae = "\n  :host {\n    all: initial;\n    font-family: var(--font);\n    font-size: 14px;\n    line-height: 1.5;\n    color: var(--text);\n    position: relative;\n    z-index: 2147483000;\n  }\n  * { box-sizing: border-box; }\n  button, input, textarea, select { font: inherit; outline-offset: 3px; }\n  button { min-height: 40px; border: 0; cursor: pointer; }\n  button:disabled { opacity: .5; cursor: not-allowed; }\n  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {\n    outline: 3px solid var(--accent);\n  }\n  button, textarea, input, select { border-radius: 10px; }\n  input, textarea, select {\n    width: 100%;\n    padding: 10px 12px;\n    background: var(--surface);\n    color: var(--text);\n    border: 1px solid var(--line);\n  }\n  textarea { resize: vertical; min-height: 112px; }\n  label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; margin-bottom: 14px; }\n  label span { color: var(--muted); font-weight: 400; }\n  a { color: inherit; }\n  p, h2 { margin: 0; }\n  .launcher {\n    position: fixed;\n    bottom: var(--launcher-edge-y);\n    right: var(--launcher-edge-x);\n    display: grid;\n    place-items: center;\n    width: 56px;\n    height: 56px;\n    min-width: 56px;\n    min-height: 56px;\n    padding: 0;\n    background: var(--accent);\n    color: var(--on-accent);\n    box-shadow: 0 4px 18px #102b2826;\n    border-radius: 50%;\n  }\n  .launcher svg { width: 24px; height: 24px; }\n  .launcher img { width: 34px; height: 34px; object-fit: contain; border-radius: 7px; }\n  .launcher.is-pill { display: inline-flex; align-items: center; gap: 8px; width: auto; height: 50px; min-height: 50px; padding: 0 20px 0 16px; border-radius: 999px; font-weight: 650; font-size: 14px; white-space: nowrap; }\n  .launcher.is-pill svg, .launcher.is-pill img { width: 22px; height: 22px; }\n  .panel {\n    position: fixed;\n    right: var(--panel-edge-x);\n    bottom: var(--panel-edge-y);\n    width: min(var(--panel-width, 380px), max(0px, calc(100vw - var(--panel-edge-x) - var(--panel-opposite-edge-x))));\n    max-width: max(0px, calc(100vw - var(--panel-edge-x) - var(--panel-opposite-edge-x)));\n    max-height: min(720px, var(--panel-max-height), max(0px, calc(100dvh - var(--panel-edge-y) - var(--panel-top-gutter))));\n    display: flex;\n    flex-direction: column;\n    background: var(--surface);\n    color: var(--text);\n    border: 1px solid var(--line);\n    border-radius: var(--radius);\n    box-shadow: 0 18px 60px #122e2a2b;\n    overflow: hidden;\n  }\n  .panel[hidden], .launcher[hidden], [hidden] { display: none !important; }\n  .head { padding: 24px 22px 20px; background: var(--accent); color: var(--on-accent); position: relative; }\n  .head img { width: 38px; height: 38px; object-fit: contain; margin-bottom: 16px; border-radius: 8px; }\n  .head h2 { font-size: 21px; line-height: 1.25; letter-spacing: -.5px; padding-right: 28px; }\n  .head p { font-size: 12px; margin-top: 9px; opacity: .9; line-height: 1.6; }\n  .head.is-plain { background: var(--surface); color: var(--text); border-bottom: 1px solid var(--line); }\n  .head.is-plain p { color: var(--muted); opacity: 1; }\n  .close { position: absolute; right: 12px; top: 12px; width: 36px; min-height: 36px; background: transparent; color: inherit; font-size: 24px; }\n  .body { padding: 20px 22px; overflow: auto; overscroll-behavior: contain; }\n  .types { display: flex; gap: 6px; margin-bottom: 18px; }\n  .types button { font-size: 11px; flex: 1; border: 1px solid var(--line); background: var(--surface); color: var(--muted); padding: 7px; }\n  .types button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); background: var(--soft); }\n  .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 15px; }\n  .tools button {\n    background: var(--soft);\n    color: var(--text);\n    border: 1px solid var(--line);\n    padding: 9px 4px;\n    font-size: 11px;\n    display: grid;\n    justify-items: center;\n    gap: 4px;\n  }\n  .tools svg { width: 18px; height: 18px; stroke-width: 1.8; }\n  .hint { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 8px 0; }\n  .user-summary { margin: -3px 0 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); color: var(--muted); font-size: 11px; }\n  .user-summary summary { cursor: pointer; color: var(--text); overflow-wrap: anywhere; }\n  .user-summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 9px; margin: 9px 0 0; }\n  .user-summary dt { font-weight: 650; color: var(--muted); }\n  .user-summary dd { margin: 0; overflow-wrap: anywhere; }\n  .send { background: var(--accent); color: var(--on-accent); font-weight: 650; width: 100%; padding: 12px; min-height: 46px; }\n  .status { font-size: 12px; line-height: 1.5; margin: 12px 0; color: var(--text); overflow-wrap: anywhere; }\n  .status.error { color: #c1343d; }\n  .brand { font-size: 10px; color: var(--muted); text-align: center; margin-top: 12px; }\n  .attachments { display: grid; gap: 10px; margin: 12px 0; }\n  .attachment { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--soft); }\n  .attachment img, .attachment video { display: block; width: 100%; max-height: 180px; object-fit: contain; background: #1026220a; }\n  .attachment audio { width: 100%; height: 40px; }\n  .attachment-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 11px; }\n  .attachment-row span { flex: 1; overflow-wrap: anywhere; }\n  .attachment button { background: transparent; color: var(--muted); font-size: 11px; padding: 5px; min-height: 32px; }\n  .recording { padding: 13px; border: 1px solid #df8d87; border-radius: 10px; background: #ffefec; color: #882b29; font-size: 12px; margin-bottom: 14px; }\n  .recording button { padding: 6px 12px; background: #fff; color: #882b29; margin: 8px 6px 0 0; }\n  .tag { font-size: 11px; padding: 10px; border: 1px solid var(--line); background: var(--soft); border-radius: 10px; overflow-wrap: anywhere; margin-bottom: 12px; }\n  .tag button { background: none; color: var(--muted); min-height: 28px; }\n  .back { position: absolute; left: 12px; top: 12px; width: 36px; min-height: 36px; background: transparent; color: inherit; font-size: 20px; }\n  .head.is-compact { display: flex; align-items: center; gap: 10px; padding: 14px 52px 14px 54px; min-height: 64px; }\n  .head.is-compact img { width: 28px; height: 28px; margin: 0; }\n  .head.is-compact h2 { font-size: 16px; padding: 0; }\n  .head.is-compact p { display: none; }\n  .home { display: grid; gap: 10px; }\n  .home-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); text-align: left; box-shadow: 0 1px 2px #0000000a; }\n  .home-card:hover { border-color: var(--accent); }\n  .home-card .icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--soft); color: var(--accent); }\n  .home-card .icon svg { width: 18px; height: 18px; }\n  .home-card strong { display: block; font-size: 14px; }\n  .home-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; }\n  .home-card .chevron { margin-left: auto; color: var(--muted); font-size: 18px; }\n  .home-links { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }\n  .home-links a { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; color: var(--text); font-size: 13px; text-decoration: none; }\n  .home-links a + a { border-top: 1px solid var(--line); }\n  .home-links a:hover { background: var(--soft); }\n  .home-links a span:last-child { color: var(--accent); }\n  .ask { display: flex; flex-direction: column; gap: 10px; min-height: 300px; }\n  .log { display: grid; gap: 10px; align-content: start; flex: 1; }\n  .bubble { max-width: 88%; padding: 10px 13px; border-radius: 14px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }\n  .bubble.bot { justify-self: start; background: var(--soft); color: var(--text); border-bottom-left-radius: 4px; }\n  .bubble.me { justify-self: end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }\n  .bubble.error { background: #fdeeee; color: #8a2a2f; }\n  .bubble .sources { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; white-space: normal; }\n  .bubble .sources a { color: var(--accent); }\n  .meta { justify-self: start; margin-top: -4px; color: var(--muted); font-size: 11px; }\n  .typing { justify-self: start; padding: 10px 13px; border-radius: 14px; background: var(--soft); color: var(--muted); font-size: 13px; }\n  .handoff { justify-self: start; min-height: 32px; padding: 6px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font-size: 12px; }\n  .composer { display: flex; align-items: flex-end; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }\n  .composer:focus-within { border-color: var(--accent); }\n  .composer textarea { min-height: 40px; max-height: 120px; padding: 8px; border: 0; resize: none; background: transparent; }\n  .composer textarea:focus-visible { outline: none; }\n  .composer button { flex: none; width: 38px; min-height: 38px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 16px; }\n  .success { text-align: center; padding: 24px 8px; display: grid; gap: 16px; }\n  .success strong { font-size: 19px; }\n  .secondary { padding: 9px 14px; background: var(--soft); color: var(--text); border: 1px solid var(--line); }\n  .consent { font-size: 11px; color: var(--muted); font-weight: 400; display: flex; align-items: start; gap: 8px; }\n  .consent input { width: 16px; height: 16px; margin: 2px 0; accent-color: var(--accent); flex-shrink: 0; }\n  .redaction {\n    width: min(760px, calc(100vw - 32px));\n    max-width: 760px;\n    max-height: calc(100dvh - 32px);\n    margin: auto;\n    padding: 20px;\n    color: var(--text);\n    background: var(--surface);\n    border: 1px solid var(--line);\n    border-radius: 16px;\n    box-shadow: 0 24px 80px #102b2852;\n    overflow: auto;\n  }\n  .redaction::backdrop { background: #0b1f1c80; }\n  .redaction h2 { font-size: 18px; line-height: 1.3; }\n  .redaction canvas {\n    display: block;\n    width: auto;\n    height: auto;\n    max-width: 100%;\n    max-height: min(60vh, 620px);\n    margin: 16px auto;\n    touch-action: none;\n    cursor: crosshair;\n    border: 1px solid var(--line);\n  }\n  .redaction-actions { display: flex; justify-content: flex-end; gap: 8px; }\n  :host([data-left]) .launcher { left: var(--launcher-edge-x); right: auto; }\n  :host([data-left]) .panel { left: var(--panel-edge-x); right: auto; }\n  :host([data-inline]) { position: relative; display: block; z-index: 1; width: 100%; height: 100%; }\n  :host([data-inline]) .panel {\n    position: absolute;\n    bottom: var(--panel-edge-y);\n    max-height: min(var(--panel-max-height), max(0px, calc(100% - var(--panel-edge-y) - var(--panel-top-gutter))));\n    width: min(var(--panel-width, 370px), max(0px, calc(100% - var(--panel-edge-x) - var(--panel-opposite-edge-x))));\n    right: var(--panel-edge-x);\n    max-width: max(0px, calc(100% - var(--panel-edge-x) - var(--panel-opposite-edge-x)));\n  }\n  :host([data-inline]) .launcher { position: absolute; bottom: var(--launcher-edge-y); right: var(--launcher-edge-x); }\n  :host([data-inline][data-left]) .panel { left: var(--panel-edge-x); right: auto; }\n  :host([data-inline][data-left]) .launcher { left: var(--launcher-edge-x); right: auto; }\n  @media (max-width: 440px) {\n    .body { padding: 16px; }\n    .head { padding: 20px; }\n    input, textarea, select { font-size: 16px; }\n    .redaction { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; }\n  }\n  :host([data-mobile]) .body { padding: 16px; }\n  :host([data-mobile]) .head { padding: 20px; }\n  :host([data-mobile]) input, :host([data-mobile]) textarea, :host([data-mobile]) select { font-size: 16px; }\n  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }\n", je = Object.freeze({
+var De = 4096, Oe = 16777216, ke = "\n  :host {\n    all: initial;\n    font-family: var(--font);\n    font-size: 14px;\n    line-height: 1.5;\n    color: var(--text);\n    position: relative;\n    z-index: 2147483000;\n  }\n  * { box-sizing: border-box; }\n  button, input, textarea, select { font: inherit; outline-offset: 3px; }\n  button { min-height: 40px; border: 0; cursor: pointer; }\n  button:disabled { opacity: .5; cursor: not-allowed; }\n  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {\n    outline: 3px solid var(--accent);\n  }\n  button, textarea, input, select { border-radius: 10px; }\n  input, textarea, select {\n    width: 100%;\n    padding: 10px 12px;\n    background: var(--surface);\n    color: var(--text);\n    border: 1px solid var(--line);\n  }\n  textarea { resize: vertical; min-height: 112px; }\n  label { display: grid; gap: 6px; font-size: 12px; font-weight: 600; margin-bottom: 14px; }\n  label span { color: var(--muted); font-weight: 400; }\n  a { color: inherit; }\n  p, h2 { margin: 0; }\n  .launcher {\n    position: fixed;\n    bottom: var(--launcher-edge-y);\n    right: var(--launcher-edge-x);\n    display: grid;\n    place-items: center;\n    width: 56px;\n    height: 56px;\n    min-width: 56px;\n    min-height: 56px;\n    padding: 0;\n    background: var(--accent);\n    color: var(--on-accent);\n    box-shadow: 0 4px 18px #102b2826;\n    border-radius: 50%;\n  }\n  .launcher svg { width: 24px; height: 24px; }\n  .launcher img { width: 34px; height: 34px; object-fit: contain; border-radius: 7px; }\n  .launcher.is-pill { display: inline-flex; align-items: center; gap: 8px; width: auto; height: 50px; min-height: 50px; padding: 0 20px 0 16px; border-radius: 999px; font-weight: 650; font-size: 14px; white-space: nowrap; }\n  .launcher.is-pill svg, .launcher.is-pill img { width: 22px; height: 22px; }\n  .panel {\n    position: fixed;\n    right: var(--panel-edge-x);\n    bottom: var(--panel-edge-y);\n    width: min(var(--panel-width, 380px), max(0px, calc(100vw - var(--panel-edge-x) - var(--panel-opposite-edge-x))));\n    max-width: max(0px, calc(100vw - var(--panel-edge-x) - var(--panel-opposite-edge-x)));\n    max-height: min(720px, var(--panel-max-height), max(0px, calc(100dvh - var(--panel-edge-y) - var(--panel-top-gutter))));\n    display: flex;\n    flex-direction: column;\n    background: var(--surface);\n    color: var(--text);\n    border: 1px solid var(--line);\n    border-radius: var(--radius);\n    box-shadow: 0 18px 60px #122e2a2b;\n    overflow: hidden;\n  }\n  .panel[hidden], .launcher[hidden], [hidden] { display: none !important; }\n  .head { padding: 24px 22px 20px; background: var(--accent); color: var(--on-accent); position: relative; }\n  .head img { width: 38px; height: 38px; object-fit: contain; margin-bottom: 16px; border-radius: 8px; }\n  .head h2 { font-size: 21px; line-height: 1.25; letter-spacing: -.5px; padding-right: 28px; }\n  .head p { font-size: 12px; margin-top: 9px; opacity: .9; line-height: 1.6; }\n  .head.is-plain { background: var(--surface); color: var(--text); border-bottom: 1px solid var(--line); }\n  .head.is-plain p { color: var(--muted); opacity: 1; }\n  .close { position: absolute; right: 12px; top: 12px; width: 36px; min-height: 36px; background: transparent; color: inherit; font-size: 24px; }\n  .body { padding: 20px 22px; overflow: auto; overscroll-behavior: contain; }\n  .types { display: flex; gap: 6px; margin-bottom: 18px; }\n  .types button { font-size: 11px; flex: 1; border: 1px solid var(--line); background: var(--surface); color: var(--muted); padding: 7px; }\n  .types button[aria-pressed=true] { border-color: var(--accent); color: var(--accent); background: var(--soft); }\n  .tools { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 15px; }\n  .tools button {\n    background: var(--soft);\n    color: var(--text);\n    border: 1px solid var(--line);\n    padding: 9px 4px;\n    font-size: 11px;\n    display: grid;\n    justify-items: center;\n    gap: 4px;\n  }\n  .tools svg { width: 18px; height: 18px; stroke-width: 1.8; }\n  .hint { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 8px 0; }\n  .user-summary { margin: -3px 0 14px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); color: var(--muted); font-size: 11px; }\n  .user-summary summary { cursor: pointer; color: var(--text); overflow-wrap: anywhere; }\n  .user-summary dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 9px; margin: 9px 0 0; }\n  .user-summary dt { font-weight: 650; color: var(--muted); }\n  .user-summary dd { margin: 0; overflow-wrap: anywhere; }\n  .send { background: var(--accent); color: var(--on-accent); font-weight: 650; width: 100%; padding: 12px; min-height: 46px; }\n  .status { font-size: 12px; line-height: 1.5; margin: 12px 0; color: var(--text); overflow-wrap: anywhere; }\n  .status.error { color: #c1343d; }\n  .brand { font-size: 10px; color: var(--muted); text-align: center; margin-top: 12px; }\n  .attachments { display: grid; gap: 10px; margin: 12px 0; }\n  .attachment { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--soft); }\n  .attachment img, .attachment video { display: block; width: 100%; max-height: 180px; object-fit: contain; background: #1026220a; }\n  .attachment audio { width: 100%; height: 40px; }\n  .attachment-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; font-size: 11px; }\n  .attachment-row span { flex: 1; overflow-wrap: anywhere; }\n  .attachment button { background: transparent; color: var(--muted); font-size: 11px; padding: 5px; min-height: 32px; }\n  .recording { padding: 13px; border: 1px solid #df8d87; border-radius: 10px; background: #ffefec; color: #882b29; font-size: 12px; margin-bottom: 14px; }\n  .recording button { padding: 6px 12px; background: #fff; color: #882b29; margin: 8px 6px 0 0; }\n  .tag { font-size: 11px; padding: 10px; border: 1px solid var(--line); background: var(--soft); border-radius: 10px; overflow-wrap: anywhere; margin-bottom: 12px; }\n  .tag button { background: none; color: var(--muted); min-height: 28px; }\n  .back { position: absolute; left: 12px; top: 12px; width: 36px; min-height: 36px; background: transparent; color: inherit; font-size: 20px; }\n  .head.is-compact { display: flex; align-items: center; gap: 10px; padding: 14px 52px 14px 54px; min-height: 64px; }\n  .head.is-compact img { width: 28px; height: 28px; margin: 0; }\n  .head.is-compact h2 { font-size: 16px; padding: 0; }\n  .head.is-compact p { display: none; }\n  .home { display: grid; gap: 10px; }\n  .home-card { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); text-align: left; box-shadow: 0 1px 2px #0000000a; }\n  .home-card:hover { border-color: var(--accent); }\n  .home-card .icon { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--soft); color: var(--accent); }\n  .home-card .icon svg { width: 18px; height: 18px; }\n  .home-card strong { display: block; font-size: 14px; }\n  .home-card small { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; }\n  .home-card .chevron { margin-left: auto; color: var(--muted); font-size: 18px; }\n  .home-links { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }\n  .home-links a { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; color: var(--text); font-size: 13px; text-decoration: none; }\n  .home-links a + a { border-top: 1px solid var(--line); }\n  .home-links a:hover { background: var(--soft); }\n  .home-links a span:last-child { color: var(--accent); }\n  .ask { display: flex; flex-direction: column; gap: 10px; min-height: 300px; }\n  .log { display: grid; gap: 10px; align-content: start; flex: 1; }\n  .bubble { max-width: 88%; padding: 10px 13px; border-radius: 14px; font-size: 13px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }\n  .bubble.bot { justify-self: start; background: var(--soft); color: var(--text); border-bottom-left-radius: 4px; }\n  .bubble.me { justify-self: end; background: var(--accent); color: var(--on-accent); border-bottom-right-radius: 4px; }\n  .bubble.error { background: #fdeeee; color: #8a2a2f; }\n  .bubble .sources { display: grid; gap: 4px; margin-top: 8px; font-size: 12px; white-space: normal; }\n  .bubble .sources a { color: var(--accent); }\n  .meta { justify-self: start; margin-top: -4px; color: var(--muted); font-size: 11px; }\n  .typing { justify-self: start; padding: 10px 13px; border-radius: 14px; background: var(--soft); color: var(--muted); font-size: 13px; }\n  .handoff { justify-self: start; min-height: 32px; padding: 6px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font-size: 12px; }\n  .composer { display: flex; align-items: flex-end; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }\n  .composer:focus-within { border-color: var(--accent); }\n  .composer textarea { min-height: 40px; max-height: 120px; padding: 8px; border: 0; resize: none; background: transparent; }\n  .composer textarea:focus-visible { outline: none; }\n  .composer button { flex: none; width: 38px; min-height: 38px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 16px; }\n  .success { text-align: center; padding: 24px 8px; display: grid; gap: 16px; }\n  .success strong { font-size: 19px; }\n  .secondary { padding: 9px 14px; background: var(--soft); color: var(--text); border: 1px solid var(--line); }\n  .consent { font-size: 11px; color: var(--muted); font-weight: 400; display: flex; align-items: start; gap: 8px; }\n  .consent input { width: 16px; height: 16px; margin: 2px 0; accent-color: var(--accent); flex-shrink: 0; }\n  .redaction {\n    width: min(760px, calc(100vw - 32px));\n    max-width: 760px;\n    max-height: calc(100dvh - 32px);\n    margin: auto;\n    padding: 20px;\n    color: var(--text);\n    background: var(--surface);\n    border: 1px solid var(--line);\n    border-radius: 16px;\n    box-shadow: 0 24px 80px #102b2852;\n    overflow: auto;\n  }\n  .redaction::backdrop { background: #0b1f1c80; }\n  .redaction h2 { font-size: 18px; line-height: 1.3; }\n  .redaction canvas {\n    display: block;\n    width: auto;\n    height: auto;\n    max-width: 100%;\n    max-height: min(60vh, 620px);\n    margin: 16px auto;\n    touch-action: none;\n    cursor: crosshair;\n    border: 1px solid var(--line);\n  }\n  .redaction-actions { display: flex; justify-content: flex-end; gap: 8px; }\n  :host([data-left]) .launcher { left: var(--launcher-edge-x); right: auto; }\n  :host([data-left]) .panel { left: var(--panel-edge-x); right: auto; }\n  :host([data-inline]) { position: relative; display: block; z-index: 1; width: 100%; height: 100%; }\n  :host([data-inline]) .panel {\n    position: absolute;\n    bottom: var(--panel-edge-y);\n    max-height: min(var(--panel-max-height), max(0px, calc(100% - var(--panel-edge-y) - var(--panel-top-gutter))));\n    width: min(var(--panel-width, 370px), max(0px, calc(100% - var(--panel-edge-x) - var(--panel-opposite-edge-x))));\n    right: var(--panel-edge-x);\n    max-width: max(0px, calc(100% - var(--panel-edge-x) - var(--panel-opposite-edge-x)));\n  }\n  :host([data-inline]) .launcher { position: absolute; bottom: var(--launcher-edge-y); right: var(--launcher-edge-x); }\n  :host([data-inline][data-left]) .panel { left: var(--panel-edge-x); right: auto; }\n  :host([data-inline][data-left]) .launcher { left: var(--launcher-edge-x); right: auto; }\n  @media (max-width: 440px) {\n    .body { padding: 16px; }\n    .head { padding: 20px; }\n    input, textarea, select { font-size: 16px; }\n    .redaction { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 14px; }\n  }\n  :host([data-mobile]) .body { padding: 16px; }\n  :host([data-mobile]) .head { padding: 20px; }\n  :host([data-mobile]) input, :host([data-mobile]) textarea, :host([data-mobile]) select { font-size: 16px; }\n  @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }\n", Ae = Object.freeze({
 	launcher: ["<path d=\"M5 4h14a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-6 3V6a2 2 0 0 1 2-2Z\"/>", "<path d=\"M7 10h10M7 14h6\"/>"],
 	lightbulb: ["<path d=\"M9 18h6M10 21h4\"/>", "<path d=\"M12 3a6 6 0 0 0-3.6 10.8c.7.6 1.1 1.3 1.1 2.2h5c0-.9.4-1.6 1.1-2.2A6 6 0 0 0 12 3Z\"/>"],
 	help: ["<circle cx=\"12\" cy=\"12\" r=\"9\"/>", "<path d=\"M9.5 9.2a2.6 2.6 0 0 1 5 .9c0 1.7-2.5 2.3-2.5 3.9M12 17h.01\"/>"],
@@ -921,50 +921,61 @@ var Oe = 4096, ke = 16777216, Ae = "\n  :host {\n    all: initial;\n    font-fam
 	screenshot: ["<path d=\"M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3\"/>", "<circle cx=\"12\" cy=\"12\" r=\"3\"/>"],
 	element: ["<path d=\"m5 3 6.5 16 2.2-6.3L20 10.5 5 3Z\"/>", "<path d=\"m14 14 4 4\"/>"]
 });
-function V(e, t, n) {
+function H(e, t, n) {
 	let r = document.createElement(e);
 	return t && (r.textContent = t), n && (r.className = n), r;
 }
-function H(e, t, n) {
-	let r = V("button", e, n);
+function U(e, t, n) {
+	let r = H("button", e, n);
 	return r.type = "button", r.addEventListener("click", t), r;
 }
-function Me(e) {
+function je(e) {
 	let t = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-	return t.setAttribute("viewBox", "0 0 24 24"), t.setAttribute("fill", "none"), t.setAttribute("stroke", "currentColor"), t.setAttribute("stroke-linecap", "round"), t.setAttribute("stroke-linejoin", "round"), t.setAttribute("aria-hidden", "true"), t.innerHTML = je[e].join(""), t;
+	return t.setAttribute("viewBox", "0 0 24 24"), t.setAttribute("fill", "none"), t.setAttribute("stroke", "currentColor"), t.setAttribute("stroke-linecap", "round"), t.setAttribute("stroke-linejoin", "round"), t.setAttribute("aria-hidden", "true"), t.innerHTML = Ae[e].join(""), t;
 }
-var Ne = () => globalThis.crypto?.randomUUID?.() || `feedback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-function Pe(e, t) {
-	let n = Math.min(1, Oe / e, Oe / t), r = Math.min(1, Math.sqrt(ke / (e * t))), i = Math.min(n, r);
+var Me = () => globalThis.crypto?.randomUUID?.() || `feedback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+function Ne(e, t) {
+	let n = Math.min(1, De / e, De / t), r = Math.min(1, Math.sqrt(Oe / (e * t))), i = Math.min(n, r);
 	return {
 		width: Math.max(1, Math.round(e * i)),
 		height: Math.max(1, Math.round(t * i))
 	};
 }
-function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "", target: a = document.body, onSubmit: s, onAsk: c, onOpen: l, inline: u = !1, previewViewportWidth: p = null } = {}) {
-	if (p !== null && (!Number.isInteger(p) || p < 1 || p > 1e4)) throw Error("Widget preview viewport width must be a whole number between 1 and 10000.");
-	if (p !== null && !u) throw Error("Widget preview viewport width is only available for inline previews.");
-	let m = d(e), h = Te(t), v = !1, y = !1, b = !1, x = null, S = "", C = null, w = null, ne = null, re = !1, T = null, E = "feature", D = 0, ae = !1, O = null, oe = s, k = c, se = !1, A = [], ce = [], j = [], M = V("div");
-	M.dataset.feedbackWidget = "", M.dataset.feedbackPrivate = "", u && (M.dataset.inline = "");
-	let N = M.attachShadow({ mode: "open" }), le = V("style");
-	le.textContent = Ae, N.append(le);
-	let P = H("", () => I.hidden ? wt() : Tt(), "launcher"), F = V("img");
+function Pe(e) {
+	try {
+		return /^\/b\/[a-z0-9-]+\/?$/.test(new URL(e).pathname);
+	} catch {
+		return !1;
+	}
+}
+function Fe(e, t) {
+	let n = new URL(e);
+	return n.searchParams.set("sso", t), n.href;
+}
+function Ie({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "", target: a = document.body, onSubmit: s, onAsk: c, onOpen: l, signIn: u = null, inline: p = !1, previewViewportWidth: m = null } = {}) {
+	if (m !== null && (!Number.isInteger(m) || m < 1 || m > 1e4)) throw Error("Widget preview viewport width must be a whole number between 1 and 10000.");
+	if (m !== null && !p) throw Error("Widget preview viewport width is only available for inline previews.");
+	let h = d(e), v = we(t), y = !1, b = !1, x = !1, S = null, C = "", w = null, T = null, ne = null, re = !1, E = null, D = "feature", O = 0, ae = !1, k = null, A = s, oe = c, se = !1, j = [], ce = [], le = [], M = H("div");
+	M.dataset.feedbackWidget = "", M.dataset.feedbackPrivate = "", p && (M.dataset.inline = "");
+	let N = M.attachShadow({ mode: "open" }), ue = H("style");
+	ue.textContent = ke, N.append(ue);
+	let P = U("", () => I.hidden ? Ot() : kt(), "launcher"), F = H("img");
 	F.alt = "", F.referrerPolicy = "no-referrer";
-	let ue = "";
+	let de = "";
 	F.addEventListener("error", () => {
-		ue = F.getAttribute("src") || "", Et();
+		de = F.getAttribute("src") || "", At();
 	}), F.addEventListener("load", () => {
-		ue === m.logoUrl && (ue = "", Et());
-	}), P.append(Me("launcher")), P.setAttribute("aria-haspopup", "dialog"), P.setAttribute("aria-expanded", "false");
-	let I = V("section", "", "panel");
+		de === h.logoUrl && (de = "", At());
+	}), P.append(je("launcher")), P.setAttribute("aria-haspopup", "dialog"), P.setAttribute("aria-expanded", "false");
+	let I = H("section", "", "panel");
 	I.hidden = !0, I.setAttribute("role", "dialog"), I.setAttribute("aria-label", "Feedback and help"), I.setAttribute("aria-modal", "false"), I.tabIndex = -1;
-	let de = V("header", "", "head"), pe = V("img");
-	pe.alt = "", pe.referrerPolicy = "no-referrer";
-	let me = V("h2"), he = V("p"), ge = H("×", Tt, "close");
+	let pe = H("header", "", "head"), L = H("img");
+	L.alt = "", L.referrerPolicy = "no-referrer";
+	let me = H("h2"), he = H("p"), ge = U("×", kt, "close");
 	ge.setAttribute("aria-label", "Close feedback");
-	let _e = H("←", () => Y("home"), "back");
-	_e.setAttribute("aria-label", "Back"), de.append(_e, pe, me, he, ge);
-	let ve = V("div", "", "body"), L = V("form"), ye = V("div", "", "types");
+	let _e = U("←", () => Y("home"), "back");
+	_e.setAttribute("aria-label", "Back"), pe.append(_e, L, me, he, ge);
+	let ve = H("div", "", "body"), R = H("form"), ye = H("div", "", "types");
 	ye.setAttribute("aria-label", "Feedback type");
 	for (let [e, t] of [
 		["feature", "Idea"],
@@ -972,91 +983,91 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		["question", "Question"],
 		["praise", "Praise"]
 	]) {
-		let n = H(t, () => {
-			E = e;
-			for (let [t, n] of j) n.setAttribute("aria-pressed", String(t === e));
+		let n = U(t, () => {
+			D = e;
+			for (let [t, n] of le) n.setAttribute("aria-pressed", String(t === e));
 		});
-		n.setAttribute("aria-pressed", String(E === e)), j.push([e, n]), ye.append(n);
+		n.setAttribute("aria-pressed", String(D === e)), le.push([e, n]), ye.append(n);
 	}
 	function be(e, t, n, r) {
-		let i = V("label", e), a = V(t);
+		let i = H("label", e), a = H(t);
 		return a.maxLength = n, a.placeholder = r, i.append(a), [i, a];
 	}
-	let [xe, R] = be("A short title", "input", 180, "What would you like us to know?");
-	R.required = !0;
-	let [Se, z] = be("Your feedback", "textarea", 8e3, "Tell us what happened, or what could be better.");
+	let [xe, z] = be("A short title", "input", 180, "What would you like us to know?");
 	z.required = !0;
-	let [Ce, B] = be("Email", "input", 254, "you@example.com");
-	B.type = "email", B.autocomplete = "email", B.addEventListener("input", () => {
+	let [Se, B] = be("Your feedback", "textarea", 8e3, "Tell us what happened, or what could be better.");
+	B.required = !0;
+	let [Ce, V] = be("Email", "input", 254, "you@example.com");
+	V.type = "email", V.autocomplete = "email", V.addEventListener("input", () => {
 		ae = !0;
 	});
-	let we = V("details", "", "user-summary"), Oe = V("summary"), ke = V("dl");
-	we.append(Oe, ke);
-	let je = V("div", "", "tools"), Fe = V("div", "", "recording");
-	Fe.hidden = !0;
-	let Le = V("div", "", "attachments"), U = V("div", "", "tag");
-	U.hidden = !0;
-	let Re = V("p", "Review your attachments before sending. Recordings are limited to 2 minutes.", "hint"), W = V("p", "", "status");
+	let De = H("details", "", "user-summary"), Oe = H("summary"), Ae = H("dl");
+	De.append(Oe, Ae);
+	let Ie = H("div", "", "tools"), Re = H("div", "", "recording");
+	Re.hidden = !0;
+	let ze = H("div", "", "attachments"), Be = H("div", "", "tag");
+	Be.hidden = !0;
+	let Ve = H("p", "Review your attachments before sending. Recordings are limited to 2 minutes.", "hint"), W = H("p", "", "status");
 	W.setAttribute("role", "status"), W.setAttribute("aria-live", "polite");
-	let ze = V("label", "", "consent"), Be = V("input");
-	Be.type = "checkbox", Be.required = !0;
-	let Ve = V("span");
-	ze.append(Be, Ve);
-	let He = V("button", "", "send");
-	He.type = "submit";
-	let Ue = V("p", "Feedback Studio by Goalmatic", "brand"), G = V("input");
-	G.type = "file", G.multiple = !0, G.accept = "image/png,image/jpeg,image/webp", G.hidden = !0, L.append(ye, xe, we, Se, Ce, je, Fe, Le, U, Re, ze, W, He, Ue, G);
-	let We = V("div", "", "home");
-	function Ge(e, t, n, r) {
-		let i = H("", r, "home-card"), a = V("span", "", "icon");
-		a.append(Me(e));
-		let o = V("span");
-		return o.append(V("strong", t), V("small", n)), i.append(a, o, V("span", "›", "chevron")), i;
+	let He = H("label", "", "consent"), Ue = H("input");
+	Ue.type = "checkbox", Ue.required = !0;
+	let We = H("span");
+	He.append(Ue, We);
+	let Ge = H("button", "", "send");
+	Ge.type = "submit";
+	let Ke = H("p", "Feedback Studio by Goalmatic", "brand"), G = H("input");
+	G.type = "file", G.multiple = !0, G.accept = "image/png,image/jpeg,image/webp", G.hidden = !0, R.append(ye, xe, De, Se, Ce, Ie, Re, ze, Be, Ve, He, W, Ge, Ke, G);
+	let qe = H("div", "", "home");
+	function Je(e, t, n, r) {
+		let i = U("", r, "home-card"), a = H("span", "", "icon");
+		a.append(je(e));
+		let o = H("span");
+		return o.append(H("strong", t), H("small", n)), i.append(a, o, H("span", "›", "chevron")), i;
 	}
-	let Ke = Ge("ask", "Ask a question", "", () => Y("ask")), qe = Ge("launcher", "Share feedback", "An idea, a problem, or something you love", () => Y("feedback")), Je = V("nav", "", "home-links");
-	Je.setAttribute("aria-label", "Help links");
-	let Ye = V("p", "Feedback Studio by Goalmatic", "brand");
-	We.append(Ke, qe, Je, Ye);
-	let Xe = V("div", "", "ask"), K = V("div", "", "log");
+	let Ye = Je("ask", "Ask a question", "", () => Y("ask")), Xe = Je("launcher", "Share feedback", "An idea, a problem, or something you love", () => Y("feedback")), Ze = H("nav", "", "home-links");
+	Ze.setAttribute("aria-label", "Help links");
+	let Qe = H("p", "Feedback Studio by Goalmatic", "brand");
+	qe.append(Ye, Xe, Ze, Qe);
+	let $e = H("div", "", "ask"), K = H("div", "", "log");
 	K.setAttribute("role", "log"), K.setAttribute("aria-live", "polite");
-	let Ze = V("form", "", "composer"), q = V("textarea");
+	let et = H("form", "", "composer"), q = H("textarea");
 	q.rows = 1, q.maxLength = 1e3, q.placeholder = "Ask a question…", q.setAttribute("aria-label", "Your question");
-	let Qe = V("button", "↑");
-	Qe.type = "submit", Qe.setAttribute("aria-label", "Send question"), Ze.append(q, Qe), Xe.append(K, Ze), ve.append(We, Xe, L), I.append(de, ve), N.append(I, P), a.append(M);
-	let J = "feedback", $e = !1, et = [], tt = () => m.aiEnabled || m.links.length > 0;
-	function nt() {
-		let e = J !== "home" && tt();
-		de.classList.toggle("is-compact", e), _e.hidden = !e;
-		let t = h?.name ? h.name.split(/\s+/)[0] : "";
-		me.textContent = J === "ask" ? m.aiName : J === "feedback" && tt() ? "Share feedback" : J === "home" && t ? `Hi ${t} 👋` : m.title;
+	let tt = H("button", "↑");
+	tt.type = "submit", tt.setAttribute("aria-label", "Send question"), et.append(q, tt), $e.append(K, et), ve.append(qe, $e, R), I.append(pe, ve), N.append(I, P), a.append(M);
+	let J = "feedback", nt = !1, rt = [], it = () => h.aiEnabled || h.links.length > 0;
+	function at() {
+		let e = J !== "home" && it();
+		pe.classList.toggle("is-compact", e), _e.hidden = !e;
+		let t = v?.name ? v.name.split(/\s+/)[0] : "";
+		me.textContent = J === "ask" ? h.aiName : J === "feedback" && it() ? "Share feedback" : J === "home" && t ? `Hi ${t} 👋` : h.title;
 	}
 	function Y(e, { focus: t = !0 } = {}) {
-		J = tt() ? e : "feedback", We.hidden = J !== "home", Xe.hidden = J !== "ask", L.hidden = J !== "feedback" || !!O, O && (O.hidden = J !== "feedback"), nt(), J === "ask" && !et.length && rt("bot", m.aiIntro), t && !I.hidden && (J === "ask" ? q.focus() : J === "feedback" && !O ? R.focus() : We.querySelector("button")?.focus());
+		J = it() ? e : "feedback", qe.hidden = J !== "home", $e.hidden = J !== "ask", R.hidden = J !== "feedback" || !!k, k && (k.hidden = J !== "feedback"), at(), J === "ask" && !rt.length && ot("bot", h.aiIntro), t && !I.hidden && (J === "ask" ? q.focus() : J === "feedback" && !k ? z.focus() : qe.querySelector("button")?.focus());
 	}
-	function rt(e, t, n = []) {
-		let r = V("div", t, `bubble ${e}`);
+	function ot(e, t, n = []) {
+		let r = H("div", t, `bubble ${e}`);
 		if (n.length) {
-			let e = V("div", "", "sources");
+			let e = H("div", "", "sources");
 			for (let t of n) {
-				let n = V("a", t.title);
+				let n = H("a", t.title);
 				n.href = t.url, n.target = "_blank", n.rel = "noopener noreferrer", e.append(n);
 			}
 			r.append(e);
 		}
-		return K.append(r), e === "bot" && et.push({
+		return K.append(r), e === "bot" && rt.push({
 			role: "assistant",
 			content: t
 		}), r.scrollIntoView?.({ block: "end" }), r;
 	}
-	function it() {
-		let e = et.find((e) => e.role === "user")?.content || "";
-		if (R.value = e.slice(0, 180), z.value = et.map((e) => `${e.role === "user" ? "Me" : m.aiName}: ${e.content}`).join("\n\n").slice(0, 8e3), m.categories.includes("question")) {
-			E = "question";
-			for (let [e, t] of j) t.setAttribute("aria-pressed", String(e === E));
+	function st() {
+		let e = rt.find((e) => e.role === "user")?.content || "";
+		if (z.value = e.slice(0, 180), B.value = rt.map((e) => `${e.role === "user" ? "Me" : h.aiName}: ${e.content}`).join("\n\n").slice(0, 8e3), h.categories.includes("question")) {
+			D = "question";
+			for (let [e, t] of le) t.setAttribute("aria-pressed", String(e === D));
 		}
 		Y("feedback");
 	}
-	function at(e) {
+	function ct(e) {
 		let t = typeof e?.answer == "string" ? e.answer.trim().slice(0, 4e3) : "";
 		if (!t) throw Error("The assistant didn’t return an answer.");
 		return {
@@ -1074,17 +1085,17 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 			handoff: e.handoff === !0
 		};
 	}
-	async function ot(e) {
+	async function lt(e) {
 		let t = {
 			question: e,
-			history: et.slice(-10),
-			user: h,
-			context: bt(),
+			history: rt.slice(-10),
+			user: v,
+			context: wt(),
 			...r ? { boardId: r } : {}
 		};
-		if (typeof k == "function") return at(await k(t));
-		if (m.delivery !== "builtin" || !i || !m.endpoint) throw Error("Answers aren’t connected for this site yet.");
-		let n = new URL(`/api/app-runtime/widgets/ask/${encodeURIComponent(i)}`, m.endpoint), a = new AbortController(), o = setTimeout(() => a.abort(), 3e4);
+		if (typeof oe == "function") return ct(await oe(t));
+		if (h.delivery !== "builtin" || !i || !h.endpoint) throw Error("Answers aren’t connected for this site yet.");
+		let n = new URL(`/api/app-runtime/widgets/ask/${encodeURIComponent(i)}`, h.endpoint), a = new AbortController(), o = setTimeout(() => a.abort(), 3e4);
 		try {
 			let e = await fetch(n, {
 				method: "POST",
@@ -1095,129 +1106,140 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 				signal: a.signal
 			});
 			if (!e.ok) throw Error(e.status === 404 ? "Answers aren’t available for this site yet." : "The assistant couldn’t answer right now.");
-			return at(await e.json());
+			return ct(await e.json());
 		} catch (e) {
 			throw e.name === "AbortError" ? /* @__PURE__ */ Error("The assistant took too long to answer.") : e instanceof TypeError ? /* @__PURE__ */ Error("The assistant couldn’t be reached.") : e;
 		} finally {
 			clearTimeout(o);
 		}
 	}
-	async function st(e) {
+	async function ut(e) {
 		e?.preventDefault();
 		let t = q.value.trim();
-		if (!t || $e) return;
-		let n = D;
-		$e = !0, Qe.disabled = !0, q.value = "", K.querySelectorAll(".handoff").forEach((e) => e.remove()), rt("me", t), et.push({
+		if (!t || nt) return;
+		let n = O;
+		nt = !0, tt.disabled = !0, q.value = "", K.querySelectorAll(".handoff").forEach((e) => e.remove()), ot("me", t), rt.push({
 			role: "user",
 			content: t
 		});
-		let r = V("div", `${m.aiName} is typing…`, "typing");
+		let r = H("div", `${h.aiName} is typing…`, "typing");
 		K.append(r);
 		try {
-			let e = await ot(t);
-			if (v || n !== D) return;
-			r.remove(), rt("bot", e.answer, e.sources);
+			let e = await lt(t);
+			if (y || n !== O) return;
+			r.remove(), ot("bot", e.answer, e.sources);
 		} catch (e) {
-			if (v || n !== D) return;
-			r.remove(), rt("bot error", `${e.message} You can send your question to the team instead.`);
+			if (y || n !== O) return;
+			r.remove(), ot("bot error", `${e.message} You can send your question to the team instead.`);
 		} finally {
-			n === D && ($e = !1, Qe.disabled = !1, v || K.append(H("Send this to the team", it, "handoff")));
+			n === O && (nt = !1, tt.disabled = !1, y || K.append(U("Send this to the team", st, "handoff")));
 		}
 	}
-	Ze.addEventListener("submit", st), q.addEventListener("keydown", (e) => {
-		e.key === "Enter" && !e.shiftKey && !e.isComposing && st(e);
+	et.addEventListener("submit", ut), q.addEventListener("keydown", (e) => {
+		e.key === "Enter" && !e.shiftKey && !e.isComposing && ut(e);
 	});
-	function ct() {
-		et.splice(0), K.replaceChildren(), $e = !1, Qe.disabled = !1, q.value = "";
+	function dt() {
+		rt.splice(0), K.replaceChildren(), nt = !1, tt.disabled = !1, q.value = "";
 	}
-	function lt() {
-		Ke.hidden = !m.aiEnabled, Ke.querySelector("small").textContent = "Get help or send your question to the team", Je.replaceChildren(), Je.hidden = !m.links.length;
-		for (let e of m.links) {
-			let t = V("a");
-			t.href = e.url, t.target = "_blank", t.rel = "noopener noreferrer", t.append(V("span", e.label), V("span", "↗")), Je.append(t);
+	async function ft(e, t) {
+		e.preventDefault();
+		let n = window.open("about:blank", "_blank");
+		n && (n.opener = null);
+		let r = t;
+		try {
+			let e = await u();
+			typeof e == "string" && e && (r = Fe(t, e));
+		} catch {}
+		n && !n.closed ? n.location.replace(r) : window.location.assign(r);
+	}
+	function pt() {
+		Ye.hidden = !h.aiEnabled, Ye.querySelector("small").textContent = "Get help or send your question to the team", Ze.replaceChildren(), Ze.hidden = !h.links.length;
+		for (let e of h.links) {
+			let t = H("a");
+			t.href = e.url, t.target = "_blank", t.rel = "noopener noreferrer", t.append(H("span", e.label), H("span", "↗")), typeof u == "function" && Pe(e.url) && t.addEventListener("click", (t) => ft(t, e.url)), Ze.append(t);
 		}
-		Ye.hidden = !m.showBranding, !tt() && J !== "feedback" ? Y("feedback", { focus: !1 }) : nt();
+		Qe.hidden = !h.showBranding, !it() && J !== "feedback" ? Y("feedback", { focus: !1 }) : at();
 	}
 	function X(e) {
-		v || (W.className = "status error", W.textContent = e?.message || String(e));
+		y || (W.className = "status error", W.textContent = e?.message || String(e));
 	}
-	function ut() {
-		if (we.hidden = !h, we.open = !1, ke.replaceChildren(), !h) return;
-		let e = [h.name, h.email].filter(Boolean).join(" · ") || h.id || "Anonymous user details";
+	function mt() {
+		if (De.hidden = !v, De.open = !1, Ae.replaceChildren(), !v) return;
+		let e = [v.name, v.email].filter(Boolean).join(" · ") || v.id || "Anonymous user details";
 		Oe.textContent = `Sending as ${e}`;
 		let t = [];
-		h.id && t.push(["User ID", h.id]), h.name && t.push(["Name", h.name]), h.email && t.push(["Email", h.email]), h.company && t.push(["Company", [h.company.name, h.company.id].filter(Boolean).join(" · ")]);
-		for (let [e, n] of Object.entries(h.attributes || {})) t.push([e, n === null ? "Not set" : String(n)]);
-		for (let [e, n] of t) ke.append(V("dt", e), V("dd", n));
+		v.id && t.push(["User ID", v.id]), v.name && t.push(["Name", v.name]), v.email && t.push(["Email", v.email]), v.company && t.push(["Company", [v.company.name, v.company.id].filter(Boolean).join(" · ")]);
+		for (let [e, n] of Object.entries(v.attributes || {})) t.push([e, n === null ? "Not set" : String(n)]);
+		for (let [e, n] of t) Ae.append(H("dt", e), H("dd", n));
 	}
-	function dt({ force: e = !1 } = {}) {
-		if (m.collectEmail === "off") {
-			B.value = "", ae = !1;
+	function ht({ force: e = !1 } = {}) {
+		if (h.collectEmail === "off") {
+			V.value = "", ae = !1;
 			return;
 		}
-		(e || !ae) && (B.value = h?.email || "");
+		(e || !ae) && (V.value = v?.email || "");
 	}
 	function Z() {
-		let e = !!T;
-		He.disabled = y || b || e;
-		for (let [, t] of j) t.disabled = y || e;
+		let e = !!E;
+		Ge.disabled = b || x || e;
+		for (let [, t] of le) t.disabled = b || e;
 		for (let t of [
-			R,
 			z,
 			B,
-			Be
-		]) t.disabled = y || e;
-		for (let [t, n] of ce) n.hidden = !m.capture[t], n.disabled = y || b || e || A.length >= _.maxFiles && t !== "element";
-		for (let t of Le.querySelectorAll("button")) t.disabled = y || e;
-		ge.disabled = y || e, He.textContent = y ? "Sending…" : m.submitText;
+			V,
+			Ue
+		]) t.disabled = b || e;
+		for (let [t, n] of ce) n.hidden = !h.capture[t], n.disabled = b || x || e || j.length >= _.maxFiles && t !== "element";
+		for (let t of ze.querySelectorAll("button")) t.disabled = b || e;
+		ge.disabled = b || e, Ge.textContent = b ? "Sending…" : h.submitText;
 	}
-	function ft(e) {
-		if (b = !(!e || [
+	function gt(e) {
+		if (x = !(!e || [
 			"idle",
 			"error",
 			"stopped"
-		].includes(e.status || e.state)), Fe.hidden = !b, Fe.replaceChildren(), b) {
+		].includes(e.status || e.state)), Re.hidden = !x, Re.replaceChildren(), x) {
 			let t = e.status === "requesting" ? "Waiting for browser permission…" : `Recording ${Math.floor((e.elapsedMs || 0) / 1e3)}s / ${_.maxRecordingSeconds}s`;
-			Fe.append(V("span", t), H("Stop", () => Q.stop()), H("Discard", () => Q.cancel()));
+			Re.append(H("span", t), U("Stop", () => Q.stop()), U("Discard", () => Q.cancel()));
 		}
 		Z();
 	}
 	let Q = ie({
-		onState: ft,
-		onRecording: (e, t) => pt(e, t),
+		onState: gt,
+		onRecording: (e, t) => _t(e, t),
 		onError: X
 	});
-	function pt(e, t = {}) {
-		if (!v) try {
-			te(e, A.map((e) => e.file)), A.push({
-				id: Ne(),
+	function _t(e, t = {}) {
+		if (!y) try {
+			te(e, j.map((e) => e.file)), j.push({
+				id: Me(),
 				file: e,
 				url: URL.createObjectURL(e),
 				kind: t.kind || (e.type.startsWith("image/") ? "image" : e.type.startsWith("audio/") ? "voice" : "video"),
 				durationMs: t.durationMs || 0
-			}), _t(), W.textContent = "";
+			}), xt(), W.textContent = "";
 		} catch (e) {
 			X(e);
 		}
 	}
 	G.addEventListener("change", () => {
-		for (let e of G.files || []) pt(e);
+		for (let e of G.files || []) _t(e);
 		G.value = "";
 	});
-	let mt = {
+	let vt = {
 		image: () => G.click(),
 		voice: () => Q.startVoice(),
 		video: () => Q.startVideo(),
 		screen: () => Q.startScreenRecording(),
 		screenshot: () => Q.captureScreenshot(),
 		element: () => {
-			I.hidden = !0, P.hidden = !0, M.style.pointerEvents = "none", w = fe({
-				exclude: (e) => M.contains(e) || e === M || u && !a.parentElement?.contains(e),
+			I.hidden = !0, P.hidden = !0, M.style.pointerEvents = "none", T = fe({
+				exclude: (e) => M.contains(e) || e === M || p && !a.parentElement?.contains(e),
 				onPick: (e) => {
-					C = e, w = null, M.style.pointerEvents = "", I.hidden = !1, P.hidden = !1, ht(), I.focus();
+					w = e, T = null, M.style.pointerEvents = "", I.hidden = !1, P.hidden = !1, yt(), I.focus();
 				},
 				onCancel: () => {
-					w = null, M.style.pointerEvents = "", I.hidden = !1, P.hidden = !1, I.focus();
+					T = null, M.style.pointerEvents = "", I.hidden = !1, P.hidden = !1, I.focus();
 				}
 			});
 		}
@@ -1230,65 +1252,65 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		["screenshot", "Screenshot"],
 		["element", "Tag element"]
 	]) {
-		let n = H("", () => Promise.resolve(mt[e]()).catch(X));
-		n.append(Me(e), V("span", t)), n.setAttribute("aria-label", t), ce.push([e, n]), je.append(n);
+		let n = U("", () => Promise.resolve(vt[e]()).catch(X));
+		n.append(je(e), H("span", t)), n.setAttribute("aria-label", t), ce.push([e, n]), Ie.append(n);
 	}
-	function ht() {
-		U.hidden = !C, U.replaceChildren(), C && U.append(V("strong", `Tagged: ${C.label || C.tagName}`), V("p", C.selector), H("Remove tag", () => {
-			C = null, ht();
+	function yt() {
+		Be.hidden = !w, Be.replaceChildren(), w && Be.append(H("strong", `Tagged: ${w.label || w.tagName}`), H("p", w.selector), U("Remove tag", () => {
+			w = null, yt();
 		}));
 	}
-	function gt(e) {
-		URL.revokeObjectURL(e.url), A.splice(A.indexOf(e), 1), _t();
+	function bt(e) {
+		URL.revokeObjectURL(e.url), j.splice(j.indexOf(e), 1), xt();
 	}
-	function _t() {
-		Le.replaceChildren();
-		for (let e of A) {
-			let t = V("div", "", "attachment"), n;
-			e.file.type.startsWith("image/") ? (n = V("img"), n.alt = e.file.name) : (n = V(e.file.type.startsWith("audio/") ? "audio" : "video"), n.controls = !0, n.preload = "metadata"), n.src = e.url;
-			let r = V("div", "", "attachment-row");
-			r.append(V("span", `${e.file.name} · ${(e.file.size / 1024 / 1024).toFixed(1)} MB`)), e.file.type.startsWith("image/") && r.append(H("Redact", () => yt(e))), r.append(H("Remove", () => gt(e))), t.append(n, r), Le.append(t);
+	function xt() {
+		ze.replaceChildren();
+		for (let e of j) {
+			let t = H("div", "", "attachment"), n;
+			e.file.type.startsWith("image/") ? (n = H("img"), n.alt = e.file.name) : (n = H(e.file.type.startsWith("audio/") ? "audio" : "video"), n.controls = !0, n.preload = "metadata"), n.src = e.url;
+			let r = H("div", "", "attachment-row");
+			r.append(H("span", `${e.file.name} · ${(e.file.size / 1024 / 1024).toFixed(1)} MB`)), e.file.type.startsWith("image/") && r.append(U("Redact", () => Ct(e))), r.append(U("Remove", () => bt(e))), t.append(n, r), ze.append(t);
 		}
 		Z();
 	}
-	function vt() {
-		D += 1, ct(), y = !1, $({ restoreFocus: !1 }), Q.cancel(), w?.(), w = null, M.style.pointerEvents = "";
-		for (let e of A) URL.revokeObjectURL(e.url);
-		A.splice(0), C = null, E = m.categories[0], x = null, S = "", G.value = "", L.reset(), O?.remove(), O = null, Y(tt() ? "home" : "feedback", { focus: !1 }), W.className = "status", W.textContent = "";
-		for (let [e, t] of j) t.setAttribute("aria-pressed", String(e === E));
-		ae = !1, dt({ force: !0 }), _t(), ht(), Z();
+	function St() {
+		O += 1, dt(), b = !1, $({ restoreFocus: !1 }), Q.cancel(), T?.(), T = null, M.style.pointerEvents = "";
+		for (let e of j) URL.revokeObjectURL(e.url);
+		j.splice(0), w = null, D = h.categories[0], S = null, C = "", G.value = "", R.reset(), k?.remove(), k = null, Y(it() ? "home" : "feedback", { focus: !1 }), W.className = "status", W.textContent = "";
+		for (let [e, t] of le) t.setAttribute("aria-pressed", String(e === D));
+		ae = !1, ht({ force: !0 }), xt(), yt(), Z();
 	}
 	function $({ restoreFocus: e = !0 } = {}) {
-		let t = T;
-		t && (T = null, t.dialog.open && t.dialog.close(), t.dialog.remove(), v || Z(), e && !v && (t.previousFocus?.isConnected ? t.previousFocus : I)?.focus?.());
+		let t = E;
+		t && (E = null, t.dialog.open && t.dialog.close(), t.dialog.remove(), y || Z(), e && !y && (t.previousFocus?.isConnected ? t.previousFocus : I)?.focus?.());
 	}
-	async function yt(e) {
-		if (T || v) return;
-		let t = V("dialog", "", "redaction"), n = Ne(), r = V("h2", "Hide sensitive areas");
+	async function Ct(e) {
+		if (E || y) return;
+		let t = H("dialog", "", "redaction"), n = Me(), r = H("h2", "Hide sensitive areas");
 		r.id = n, t.setAttribute("aria-labelledby", n);
-		let i = V("p", "Drag across any area to cover it. Redactions are applied before upload.", "hint"), a = V("canvas");
+		let i = H("p", "Drag across any area to cover it. Redactions are applied before upload.", "hint"), a = H("canvas");
 		a.hidden = !0;
-		let o = V("div", "", "redaction-actions"), s = H("Cancel", () => $(), "secondary"), c = H("Apply redactions", () => d(), "secondary");
+		let o = H("div", "", "redaction-actions"), s = U("Cancel", () => $(), "secondary"), c = U("Apply redactions", () => d(), "secondary");
 		c.disabled = !0, o.append(s, c), t.append(r, i, a, o), N.append(t);
 		let l = {
 			dialog: t,
 			previousFocus: N.activeElement || document.activeElement
 		};
-		T = l, t.addEventListener("cancel", (e) => {
+		E = l, t.addEventListener("cancel", (e) => {
 			e.preventDefault(), $();
 		});
 		try {
 			t.showModal();
 		} catch (e) {
-			T = null, t.remove(), X(e), Z();
+			E = null, t.remove(), X(e), Z();
 			return;
 		}
 		s.focus(), Z();
 		let u = new Image();
 		u.src = e.url;
 		try {
-			if (await u.decode(), v || T !== l) return;
-			let e = Pe(u.naturalWidth, u.naturalHeight);
+			if (await u.decode(), y || E !== l) return;
+			let e = Ne(u.naturalWidth, u.naturalHeight);
 			a.width = e.width, a.height = e.height;
 			let t = a.getContext("2d");
 			if (!t) throw Error("Image redaction is not available in this browser.");
@@ -1308,28 +1330,28 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 				n = null;
 			});
 		} catch (e) {
-			T === l && (X(e), $());
+			E === l && (X(e), $());
 		}
 		async function d() {
-			if (!(v || T !== l || c.disabled)) {
+			if (!(y || E !== l || c.disabled)) {
 				c.disabled = !0;
 				try {
 					let t = await new Promise((e) => a.toBlob(e, "image/png"));
-					if (!t || v || T !== l) {
-						!t && T === l && (X(/* @__PURE__ */ Error("The redacted image could not be created.")), $());
+					if (!t || y || E !== l) {
+						!t && E === l && (X(/* @__PURE__ */ Error("The redacted image could not be created.")), $());
 						return;
 					}
 					let n = new File([t], "redacted-image.png", { type: "image/png" });
-					te(n, A.filter((t) => t !== e).map((e) => e.file));
+					te(n, j.filter((t) => t !== e).map((e) => e.file));
 					let r = URL.createObjectURL(n), i = e.url;
-					e.id = Ne(), e.file = n, e.url = r, URL.revokeObjectURL(i), $({ restoreFocus: !1 }), _t(), I.focus();
+					e.id = Me(), e.file = n, e.url = r, URL.revokeObjectURL(i), $({ restoreFocus: !1 }), xt(), I.focus();
 				} catch (e) {
-					X(e), T === l && $();
+					X(e), E === l && $();
 				}
 			}
 		}
 	}
-	function bt() {
+	function wt() {
 		return {
 			pageUrl: location.origin + location.pathname,
 			pageTitle: document.title.slice(0, 160),
@@ -1337,30 +1359,30 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 				width: innerWidth,
 				height: innerHeight
 			},
-			...C ? { element: C } : {}
+			...w ? { element: w } : {}
 		};
 	}
-	async function xt(e) {
-		if (e.preventDefault(), y || b || T || !L.reportValidity()) return;
-		if (se || Ct(), !m.endpoint && typeof oe != "function") {
+	async function Tt(e) {
+		if (e.preventDefault(), b || x || E || !R.reportValidity()) return;
+		if (se || Dt(), !h.endpoint && typeof A != "function") {
 			X(/* @__PURE__ */ Error("Feedback delivery is not connected. Please contact this site’s team. Your draft is still here."));
 			return;
 		}
-		if (!u && m.allowedOrigins.length && !m.allowedOrigins.includes(location.origin)) {
+		if (!p && h.allowedOrigins.length && !h.allowedOrigins.includes(location.origin)) {
 			X(/* @__PURE__ */ Error("This website is not enabled for this feedback widget."));
 			return;
 		}
-		let t = bt(), n = D, a = {
+		let t = wt(), n = O, a = {
 			version: 1,
 			...r ? { boardId: r } : {},
 			...i ? { widgetId: i } : {},
-			title: R.value.trim(),
-			description: z.value.trim(),
-			category: E,
-			email: B.value.trim(),
-			user: h,
+			title: z.value.trim(),
+			description: B.value.trim(),
+			category: D,
+			email: V.value.trim(),
+			user: v,
 			context: t,
-			attachments: A.map((e) => ({
+			attachments: j.map((e) => ({
 				file: e.file,
 				kind: e.kind,
 				durationMs: e.durationMs
@@ -1374,129 +1396,129 @@ function Fe({ config: e = {}, user: t = null, boardId: r = "", widgetId: i = "",
 		let o = JSON.stringify([
 			a.title,
 			a.description,
-			E,
+			D,
 			a.email,
 			a.user,
 			t,
-			A.map((e) => e.id)
+			j.map((e) => e.id)
 		]);
-		S !== o && (x = Ne(), S = o), a.requestId = x, y = !0, W.textContent = "", Z();
+		C !== o && (S = Me(), C = o), a.requestId = S, b = !0, W.textContent = "", Z();
 		try {
-			let e = typeof oe == "function" ? await oe(a) : await Ie(m.endpoint, a, m.delivery);
-			if (v || n !== D) return;
+			let e = typeof A == "function" ? await A(a) : await Le(h.endpoint, a, h.delivery);
+			if (y || n !== O) return;
 			if (!e || typeof e.id != "string" || !e.id) throw Error("No save confirmation was returned. Retry to recover the same request.");
-			for (let e of A) URL.revokeObjectURL(e.url);
-			A.splice(0), C = null, L.reset(), R.value = "", z.value = "", ae = !1, dt({ force: !0 }), x = null, S = "", se = !1, _t(), ht();
-			let t = V("div", "", "success");
-			t.append(V("strong", "Feedback received"), V("p", m.successMessage), H("Send another", () => {
-				t.remove(), O = null, L.hidden = !1, R.focus();
-			}, "secondary")), tt() && t.append(H("Back to home", () => {
-				t.remove(), O = null, Y("home");
-			}, "secondary")), O = t, L.hidden = !0, ve.append(t);
+			for (let e of j) URL.revokeObjectURL(e.url);
+			j.splice(0), w = null, R.reset(), z.value = "", B.value = "", ae = !1, ht({ force: !0 }), S = null, C = "", se = !1, xt(), yt();
+			let t = H("div", "", "success");
+			t.append(H("strong", "Feedback received"), H("p", h.successMessage), U("Send another", () => {
+				t.remove(), k = null, R.hidden = !1, z.focus();
+			}, "secondary")), it() && t.append(U("Back to home", () => {
+				t.remove(), k = null, Y("home");
+			}, "secondary")), k = t, R.hidden = !0, ve.append(t);
 		} catch (e) {
-			!v && n === D && X(e);
+			!y && n === O && X(e);
 		} finally {
-			n === D && (y = !1, v || Z());
+			n === O && (b = !1, y || Z());
 		}
 	}
-	L.addEventListener("submit", xt), I.addEventListener("keydown", (e) => {
-		if (e.key === "Escape" && (e.preventDefault(), Tt()), e.key !== "Tab") return;
+	R.addEventListener("submit", Tt), I.addEventListener("keydown", (e) => {
+		if (e.key === "Escape" && (e.preventDefault(), kt()), e.key !== "Tab") return;
 		let t = [...N.querySelectorAll("button,input,textarea,select,a")].filter((e) => !e.disabled && !e.hidden && e.getClientRects().length).filter((e) => I.contains(e)), n = t[0], r = t.at(-1);
 		e.shiftKey && N.activeElement === n ? (e.preventDefault(), r?.focus()) : !e.shiftKey && N.activeElement === r && (e.preventDefault(), n?.focus());
 	});
-	function St() {
-		return !!(R.value || z.value || q.value || et.length || A.length);
+	function Et() {
+		return !!(z.value || B.value || q.value || rt.length || j.length);
 	}
-	function Ct() {
+	function Dt() {
 		let e = typeof l == "function" ? l() : null;
 		if (e && typeof e.then == "function") throw Error("Widget onOpen must return synchronously.");
 		if (e != null && (typeof e != "object" || Array.isArray(e))) throw Error("Widget onOpen must return receiver options.");
-		if ((e?.config || Object.hasOwn(e || {}, "user")) && kt({
+		if ((e?.config || Object.hasOwn(e || {}, "user")) && Nt({
 			...e.config ? { config: e.config } : {},
 			...Object.hasOwn(e || {}, "user") ? { user: e.user } : {}
-		}), oe = Object.hasOwn(e || {}, "onSubmit") ? e.onSubmit : s, k = Object.hasOwn(e || {}, "onAsk") ? e.onAsk : c, oe != null && typeof oe != "function") throw Error("Widget onOpen onSubmit must be a function.");
-		if (k != null && typeof k != "function") throw Error("Widget onOpen onAsk must be a function.");
+		}), A = Object.hasOwn(e || {}, "onSubmit") ? e.onSubmit : s, oe = Object.hasOwn(e || {}, "onAsk") ? e.onAsk : c, A != null && typeof A != "function") throw Error("Widget onOpen onSubmit must be a function.");
+		if (oe != null && typeof oe != "function") throw Error("Widget onOpen onAsk must be a function.");
 		se = !0;
 	}
-	function wt({ focus: e = !0 } = {}) {
-		v || ((!se || !St()) && Ct(), re = e, ne = e ? document.activeElement : null, I.hidden = !1, Et(), tt() && J === "feedback" && !O && !R.value && !z.value && Y("home", { focus: !1 }), e && ge.focus());
+	function Ot({ focus: e = !0 } = {}) {
+		y || ((!se || !Et()) && Dt(), re = e, ne = e ? document.activeElement : null, I.hidden = !1, At(), it() && J === "feedback" && !k && !z.value && !B.value && Y("home", { focus: !1 }), e && ge.focus());
 	}
-	function Tt() {
-		$({ restoreFocus: !1 }), Q.cancel(), w?.(), w = null, I.hidden = !0, P.hidden = !1, Et(), re && (ne?.isConnected ? ne : P)?.focus?.(), ne = null, re = !1;
+	function kt() {
+		$({ restoreFocus: !1 }), Q.cancel(), T?.(), T = null, I.hidden = !0, P.hidden = !1, At(), re && (ne?.isConnected ? ne : P)?.focus?.(), ne = null, re = !1;
 	}
-	function Et() {
-		let e = !I.hidden, t = m.launcherStyle === "pill" && !e;
-		if (P.classList.toggle("is-pill", t), e) P.replaceChildren(Me("close"));
+	function At() {
+		let e = !I.hidden, t = h.launcherStyle === "pill" && !e;
+		if (P.classList.toggle("is-pill", t), e) P.replaceChildren(je("close"));
 		else {
 			let e;
-			m.launcherIcon === "auto" && m.logoUrl && m.logoUrl !== ue ? (F.getAttribute("src") !== m.logoUrl && (F.src = m.logoUrl), e = F) : e = Me(m.launcherIcon === "auto" || m.launcherIcon === "message" ? "launcher" : m.launcherIcon), P.replaceChildren(...t ? [e, V("span", m.launcherText)] : [e]);
+			h.launcherIcon === "auto" && h.logoUrl && h.logoUrl !== de ? (F.getAttribute("src") !== h.logoUrl && (F.src = h.logoUrl), e = F) : e = je(h.launcherIcon === "auto" || h.launcherIcon === "message" ? "launcher" : h.launcherIcon), P.replaceChildren(...t ? [e, H("span", h.launcherText)] : [e]);
 		}
-		P.setAttribute("aria-expanded", String(e)), P.setAttribute("aria-label", e ? "Close feedback" : m.launcherText), P.title = e ? "Close feedback" : m.launcherText;
+		P.setAttribute("aria-expanded", String(e)), P.setAttribute("aria-label", e ? "Close feedback" : h.launcherText), P.title = e ? "Close feedback" : h.launcherText;
 	}
-	function Dt() {
-		let e = p ?? globalThis.innerWidth, t = u ? a.clientWidth || e : globalThis.innerWidth, n = u && a.clientHeight || globalThis.innerHeight, r = g(m, e), i = ee({
+	function jt() {
+		let e = m ?? globalThis.innerWidth, t = p ? a.clientWidth || e : globalThis.innerWidth, n = p && a.clientHeight || globalThis.innerHeight, r = g(h, e), i = ee({
 			viewportWidth: t,
 			viewportHeight: n,
 			offsetX: r.offsetX,
 			offsetY: r.offsetY,
-			panelWidth: m.panelWidth
+			panelWidth: h.panelWidth
 		}), o = r.position === "left" ? "left" : "right";
 		M.toggleAttribute("data-left", o === "left"), M.toggleAttribute("data-mobile", r.mobile), M.style.setProperty("--launcher-edge-x", `max(${i.launcherInsetX}px, env(safe-area-inset-${o}))`), M.style.setProperty("--launcher-edge-y", `max(${i.launcherInsetY}px, env(safe-area-inset-bottom))`), M.style.setProperty("--panel-edge-x", `max(${i.panelInsetX}px, env(safe-area-inset-${o}))`), M.style.setProperty("--panel-opposite-edge-x", `max(8px, env(safe-area-inset-${o === "left" ? "right" : "left"}))`), M.style.setProperty("--panel-edge-y", `max(${i.panelInsetY}px, env(safe-area-inset-bottom))`), M.style.setProperty("--panel-top-gutter", "max(8px, env(safe-area-inset-top))"), M.style.setProperty("--panel-width", `${i.panelMaxWidth}px`), M.style.setProperty("--panel-max-height", `${i.panelMaxHeight}px`);
 	}
-	function Ot() {
-		let e = m.theme === "dark";
+	function Mt() {
+		let e = h.theme === "dark";
 		M.style.cssText = [
-			`--font:${n(m)}`,
-			`--panel-width:${m.panelWidth}px`,
-			`--accent:${m.accent}`,
-			`--on-accent:${f(m.accent)}`,
-			`--surface:${e ? "#182723" : m.background}`,
-			`--text:${e ? "#F1F7F4" : m.textColor}`,
+			`--font:${n(h)}`,
+			`--panel-width:${h.panelWidth}px`,
+			`--accent:${h.accent}`,
+			`--on-accent:${f(h.accent)}`,
+			`--surface:${e ? "#182723" : h.background}`,
+			`--text:${e ? "#F1F7F4" : h.textColor}`,
 			`--muted:${e ? "#B7C7BF" : "#62756F"}`,
 			`--line:${e ? "#3B4E46" : "#DDE7E2"}`,
 			`--soft:${e ? "#24382F" : "#F3F7F5"}`,
-			`--radius:${m.radius}px`
-		].join(";"), Dt(), w && (M.style.pointerEvents = "none"), de.classList.toggle("is-plain", m.headerStyle === "plain"), m.categories.includes(E) || (E = m.categories[0]);
-		for (let [e, t] of j) t.hidden = !m.categories.includes(e), t.setAttribute("aria-pressed", String(e === E));
-		ye.hidden = m.categories.length < 2, me.textContent = m.title, he.textContent = m.greeting, Re.hidden = m.delivery === "builtin", Ve.textContent = m.delivery === "builtin" ? "Send this feedback, my contact details if provided, and this page’s address." : "Send the text and attachments shown here, my contact details if provided, plus this page’s address and any element I tag.", pe.hidden = !m.logoUrl, m.logoUrl ? pe.src = m.logoUrl : pe.removeAttribute("src"), Et(), Ce.hidden = m.collectEmail === "off", B.required = m.collectEmail === "required", dt(), Ue.hidden = !m.showBranding, lt(), O && (O.querySelector("p").textContent = m.successMessage), Z();
+			`--radius:${h.radius}px`
+		].join(";"), jt(), T && (M.style.pointerEvents = "none"), pe.classList.toggle("is-plain", h.headerStyle === "plain"), h.categories.includes(D) || (D = h.categories[0]);
+		for (let [e, t] of le) t.hidden = !h.categories.includes(e), t.setAttribute("aria-pressed", String(e === D));
+		ye.hidden = h.categories.length < 2, me.textContent = h.title, he.textContent = h.greeting, Ve.hidden = h.delivery === "builtin", We.textContent = h.delivery === "builtin" ? "Send this feedback, my contact details if provided, and this page’s address." : "Send the text and attachments shown here, my contact details if provided, plus this page’s address and any element I tag.", L.hidden = !h.logoUrl, h.logoUrl ? L.src = h.logoUrl : L.removeAttribute("src"), At(), Ce.hidden = h.collectEmail === "off", V.required = h.collectEmail === "required", ht(), Ke.hidden = !h.showBranding, pt(), k && (k.querySelector("p").textContent = h.successMessage), Z();
 	}
-	function kt(e) {
-		if (v) throw Error("This feedback widget has been destroyed. Call FeedbackStudio.boot(options) to start a new one.");
+	function Nt(e) {
+		if (y) throw Error("This feedback widget has been destroyed. Call FeedbackStudio.boot(options) to start a new one.");
 		if (!e || typeof e != "object" || Array.isArray(e)) throw Error("Widget updates must be an object with config and/or user.");
 		for (let t of Object.keys(e)) if (!["config", "user"].includes(t)) throw Error(`Widget update contains an unsupported option: ${t}.`);
-		let t = m;
+		let t = h;
 		if (Object.hasOwn(e, "config")) {
 			let n = e.config;
 			if (!n || typeof n != "object" || Array.isArray(n)) throw Error("Widget config updates must be an object.");
 			if (Object.hasOwn(n, "capture") && (!n.capture || typeof n.capture != "object" || Array.isArray(n.capture))) throw Error("Widget capture updates must be an object.");
 			t = d({
-				...m,
+				...h,
 				...n,
 				capture: {
-					...m.capture,
+					...h.capture,
 					...n.capture || {}
 				}
 			});
 		}
-		let n = Object.hasOwn(e, "user"), r = n ? De(h, e.user) : h, i = n && (e.user === null || !!h != !!r || Ee(h) !== Ee(r));
-		m = t, h = r, Ot(), ut(), i ? vt() : n && dt();
+		let n = Object.hasOwn(e, "user"), r = n ? Ee(v, e.user) : v, i = n && (e.user === null || !!v != !!r || Te(v) !== Te(r));
+		h = t, v = r, Mt(), mt(), i ? St() : n && ht();
 	}
-	function At(e) {
-		(b || R.value || z.value || A.length) && (e.preventDefault(), e.returnValue = "");
+	function Pt(e) {
+		(x || z.value || B.value || j.length) && (e.preventDefault(), e.returnValue = "");
 	}
-	return window.addEventListener("beforeunload", At), window.addEventListener("resize", Dt), Ot(), ut(), dt({ force: !0 }), Y(tt() ? "home" : "feedback", { focus: !1 }), {
-		open: wt,
-		close: Tt,
-		update: kt,
+	return window.addEventListener("beforeunload", Pt), window.addEventListener("resize", jt), Mt(), mt(), ht({ force: !0 }), Y(it() ? "home" : "feedback", { focus: !1 }), {
+		open: Ot,
+		close: kt,
+		update: Nt,
 		destroy() {
-			v = !0, D += 1, y = !1, $({ restoreFocus: !1 }), Q.dispose(), w?.(), w = null;
-			for (let e of A) URL.revokeObjectURL(e.url);
-			A.splice(0), O?.remove(), O = null, h = null, window.removeEventListener("beforeunload", At), window.removeEventListener("resize", Dt), M.remove();
+			y = !0, O += 1, b = !1, $({ restoreFocus: !1 }), Q.dispose(), T?.(), T = null;
+			for (let e of j) URL.revokeObjectURL(e.url);
+			j.splice(0), k?.remove(), k = null, v = null, window.removeEventListener("beforeunload", Pt), window.removeEventListener("resize", jt), M.remove();
 		},
 		host: M
 	};
 }
-async function Ie(e, t, n = "custom") {
+async function Le(e, t, n = "custom") {
 	let r, i = { "Idempotency-Key": t.requestId }, { attachments: a, ...o } = t;
 	if (n === "builtin") {
 		if (a.length) throw Error("This feedback form accepts text only. Remove the attachments to send it.");
@@ -1544,7 +1566,7 @@ async function Ie(e, t, n = "custom") {
 }
 //#endregion
 //#region src/widget/sdk.js
-var Le = /* @__PURE__ */ new Set([
+var Re = /* @__PURE__ */ new Set([
 	"boardId",
 	"widgetId",
 	"config",
@@ -1554,18 +1576,20 @@ var Le = /* @__PURE__ */ new Set([
 	"onOpen",
 	"target",
 	"user",
-	"previewViewportWidth"
-]), U = null, Re = 0;
-function W(e, t) {
+	"previewViewportWidth",
+	"ssoToken",
+	"signIn"
+]), ze = null, Be = 0;
+function Ve(e, t) {
 	if (!e || typeof e != "object" || Array.isArray(e)) throw Error(`${t} must be an object.`);
 	return e;
 }
-function ze(e, t, n) {
+function W(e, t, n) {
 	for (let r of Object.keys(e)) if (!t.has(r)) throw Error(`${n} contains an unsupported option: ${r}.`);
 }
-function Be(e = {}) {
-	let t = W(e, "FeedbackStudio.boot options");
-	if (ze(t, Le, "FeedbackStudio.boot options"), Object.hasOwn(t, "boardId") && typeof t.boardId != "string") throw Error("FeedbackStudio boardId must be a string.");
+function He(e = {}) {
+	let t = Ve(e, "FeedbackStudio.boot options");
+	if (W(t, Re, "FeedbackStudio.boot options"), Object.hasOwn(t, "boardId") && typeof t.boardId != "string") throw Error("FeedbackStudio boardId must be a string.");
 	if (Object.hasOwn(t, "widgetId") && typeof t.widgetId != "string") throw Error("FeedbackStudio widgetId must be a string.");
 	if (Object.hasOwn(t, "inline") && typeof t.inline != "boolean") throw Error("FeedbackStudio inline must be true or false.");
 	if (Object.hasOwn(t, "previewViewportWidth") && (!Number.isInteger(t.previewViewportWidth) || t.previewViewportWidth < 1 || t.previewViewportWidth > 1e4)) throw Error("FeedbackStudio preview viewport width must be a whole number between 1 and 10000.");
@@ -1573,32 +1597,36 @@ function Be(e = {}) {
 	if (Object.hasOwn(t, "onSubmit") && typeof t.onSubmit != "function") throw Error("FeedbackStudio onSubmit must be a function.");
 	if (Object.hasOwn(t, "onAsk") && typeof t.onAsk != "function") throw Error("FeedbackStudio onAsk must be a function.");
 	if (Object.hasOwn(t, "onOpen") && typeof t.onOpen != "function") throw Error("FeedbackStudio onOpen must be a function.");
+	if (Object.hasOwn(t, "ssoToken") && (typeof t.ssoToken != "string" || t.ssoToken.length > 4096)) throw Error("FeedbackStudio ssoToken must be the signed token string from your server.");
+	if (Object.hasOwn(t, "signIn") && typeof t.signIn != "function") throw Error("FeedbackStudio signIn must be a function that returns a signed token.");
 	let n = t.target ?? globalThis.document?.body;
 	if (!n || typeof n.append != "function") throw Error("FeedbackStudio needs a valid target element after the page body is available.");
+	let { ssoToken: r, ...i } = t;
 	return {
-		...t,
+		...i,
+		...r ? { signIn: () => r } : {},
 		target: n,
 		config: d(t.config || {}),
-		user: Te(t.user)
+		user: we(t.user)
 	};
 }
-function Ve(e = {}) {
-	Re += 1;
-	let t = Be(e);
-	return U?.destroy(), U = Fe(t), U;
+function Ue(e = {}) {
+	Be += 1;
+	let t = He(e);
+	return ze?.destroy(), ze = Ie(t), ze;
 }
 //#endregion
 //#region src/widget/app-entry.js
-var He = Object.freeze(/* @__PURE__ */ "title.greeting.launcherText.submitText.successMessage.accent.background.textColor.logoUrl.font.position.launcherStyle.launcherIcon.headerStyle.panelWidth.customFont.categories.aiEnabled.aiName.aiIntro.links.radius.offset.desktopOffsetX.desktopOffsetY.mobileOffsetX.mobileOffsetY.mobilePosition.theme.collectEmail.showBranding.capture.delivery".split("."));
-function Ue(e, t = {}) {
-	let n = e && typeof e == "object" && !Array.isArray(e) ? e : {}, r = Object.fromEntries(He.filter((e) => Object.hasOwn(n, e)).map((e) => [e, n[e]])), i = d({
+var We = Object.freeze(/* @__PURE__ */ "title.greeting.launcherText.submitText.successMessage.accent.background.textColor.logoUrl.font.position.launcherStyle.launcherIcon.headerStyle.panelWidth.customFont.categories.aiEnabled.aiName.aiIntro.links.radius.offset.desktopOffsetX.desktopOffsetY.mobileOffsetX.mobileOffsetY.mobilePosition.theme.collectEmail.showBranding.capture.delivery".split("."));
+function Ge(e, t = {}) {
+	let n = e && typeof e == "object" && !Array.isArray(e) ? e : {}, r = Object.fromEntries(We.filter((e) => Object.hasOwn(n, e)).map((e) => [e, n[e]])), i = d({
 		...t,
 		...r,
 		endpoint: "",
 		allowedOrigins: [],
 		appSiteId: ""
 	});
-	return Object.fromEntries(He.map((e) => [e, i[e]]));
+	return Object.fromEntries(We.map((e) => [e, i[e]]));
 }
 //#endregion
-export { Ve as boot, Fe as mountFeedbackWidget, d as normalizeWidget, ee as placementGeometry, Ie as postFeedback, g as resolveWidgetPlacement, Ue as sanitizePublicWidgetConfig };
+export { Ue as boot, Ie as mountFeedbackWidget, d as normalizeWidget, ee as placementGeometry, Le as postFeedback, g as resolveWidgetPlacement, Ge as sanitizePublicWidgetConfig };

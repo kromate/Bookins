@@ -115,6 +115,16 @@ async function submit(payload) {
   return postFeedback(endpoint.href, { ...payload, widgetId: current.widgetId }, 'builtin')
 }
 
+// Goalmatic vouches for the signed-in user, so feedback board links open already signed in.
+async function goalmaticHandoff() {
+  const response = await fetch('/api/app-runtime/visitor-identity', {
+    method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ siteId: brand.siteId }),
+  })
+  if (!response.ok) return null
+  const body = await response.json().catch(() => null)
+  return typeof body?.token === 'string' ? body.token : null
+}
+
 function mountReceiver() {
   if (widget || !visible.value) return
   error.value = ''
@@ -124,6 +134,7 @@ function mountReceiver() {
       user: userContext(),
       widgetId: discovery?.widgetId || '',
       onSubmit: submit,
+      signIn: goalmaticHandoff,
       onOpen: () => {
         const user = userContext()
         const local = prepareLocal?.({ user })
