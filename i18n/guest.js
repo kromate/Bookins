@@ -56,7 +56,7 @@ const en = {
   'confirm.copyRef': 'Copy',
   'confirm.copied': 'Copied',
   'confirm.copyAria': 'Copy booking reference',
-  'steps.of': 'Step {n} of 3',
+  'steps.of': 'Step {n} of 4',
   'back': 'Back',
 
   'svc.title': 'Choose a service',
@@ -186,7 +186,7 @@ const fr = {
   'confirm.copyRef': 'Copier',
   'confirm.copied': 'Copié',
   'confirm.copyAria': 'Copier la référence de réservation',
-  'steps.of': 'Étape {n} sur 3',
+  'steps.of': 'Étape {n} sur 4',
   'back': 'Retour',
 
   'svc.title': 'Choisissez un service',

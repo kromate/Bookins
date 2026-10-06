@@ -480,7 +480,7 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.5.0 candidate</span>
+      <span class="chip accent version-chip">Bookins v0.5.1 candidate</span>
     </div>
 
     <div v-if="notice" class="notice" role="status"><AppIcon name="check" :size="18" />{{ notice }}</div>
