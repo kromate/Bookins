@@ -1,101 +1,358 @@
 <script setup>
-import { computed, inject, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
-import { copyText } from '../booking.js'
+import { copyText, isActiveBooking, isActiveTimeOff, setBookingStatus } from '../booking.js'
+import { composeMessage } from '../messaging.js'
+import { isDemo } from '../runtime.js'
+import { displayTimeZone, zonedDateKey } from '../time-display.js'
 
 const state = inject('bookingState')
+const refresh = inject('refreshBookings', async () => true)
 const copied = ref(false)
-const now = Date.now()
+const toast = inject('toast', null)
+const now = ref(Date.now())
+const clockTimer = window.setInterval(() => { now.value = Date.now() }, 30_000)
+let copiedTimer = 0
+onBeforeUnmount(() => {
+  window.clearInterval(clockTimer)
+  window.clearTimeout(copiedTimer)
+})
+const copyError = ref('')
+const scheduleZone = computed(() => displayTimeZone(state.schedules[0]?.timezone))
 
-const activeServices = computed(() => state.services.filter(item => item.active !== false && item.visibility === 'public').length)
-const upcomingBookings = computed(() => state.bookings
-  .filter(item => item.status !== 'cancelled' && Date.parse(item.starts_at) > now)
-  .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)))
+const activeServices = computed(
+  () =>
+    state.services.filter((item) => item.active !== false && item.visibility === 'public').length,
+)
+const upcomingBookings = computed(() =>
+  state.bookings
+    .filter((item) => isActiveBooking(item) && Date.parse(item.starts_at) > now.value)
+    .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)),
+)
 const thisMonthBookings = computed(() => {
-  const today = new Date()
-  return state.bookings.filter(item => {
-    const date = new Date(item.starts_at)
-    return item.status !== 'cancelled' && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear()
-  }).length
+  const monthOf = (value) =>
+    new Intl.DateTimeFormat('en-CA', { timeZone: scheduleZone.value, year: 'numeric', month: '2-digit' }).format(value)
+  const current = monthOf(new Date(now.value))
+  return state.bookings.filter(
+    (item) => isActiveBooking(item) && monthOf(new Date(item.starts_at)) === current,
+  ).length
 })
 const openDays = computed(() => {
-  try { return new Set(JSON.parse(state.schedules[0]?.weekly_windows_json || '[]').map(item => item.weekday)).size } catch { return 0 }
+  try {
+    return new Set(
+      JSON.parse(state.schedules[0]?.weekly_windows_json || '[]').map((item) => item.weekday),
+    ).size
+  } catch {
+    return 0
+  }
 })
 const publicUrl = computed(() => state.profile?.public_link_url || '')
-const setupSteps = computed(() => [
-  { label: 'Complete your public profile', done: Boolean(state.profile), to: '/settings' },
-  { label: 'Set your weekly availability', done: Boolean(state.schedules.length), to: '/availability' },
-  { label: 'Create an active service', done: Boolean(activeServices.value), to: '/services' },
-  { label: 'Publish your booking link', done: Boolean(publicUrl.value), to: '/settings' },
-])
-const completedSteps = computed(() => setupSteps.value.filter(step => step.done).length)
-const setupProgress = computed(() => completedSteps.value / setupSteps.value.length * 100)
-const nextStep = computed(() => setupSteps.value.find(step => !step.done) || { label: 'Review your booking page', to: '/settings' })
+const linkExpired = computed(() => {
+  const expiry = Date.parse(state.profile?.public_link_expires_at || '')
+  return Boolean(publicUrl.value) && Number.isFinite(expiry) && expiry <= now.value
+})
+const linkActive = computed(() => Boolean(publicUrl.value) && !linkExpired.value)
+const setupSteps = computed(() => isDemo.value
+  ? [
+      { label: 'Review the sample profile', done: true, to: '/settings' },
+      { label: 'Review sample availability', done: true, to: '/availability' },
+      { label: 'Review sample services', done: true, to: '/services' },
+      { label: 'Guest preview available', done: true, to: '/demo/guest' },
+    ]
+  : [
+      { label: 'Complete your public profile', done: Boolean(state.profile?.display_name), to: '/settings' },
+      {
+        label: 'Set your weekly availability',
+        done: openDays.value > 0,
+        to: '/availability',
+      },
+      { label: 'Create an active public service', done: activeServices.value > 0, to: '/services' },
+      { label: linkExpired.value ? 'Renew your expired booking link' : 'Publish your booking link', done: linkActive.value, to: '/settings' },
+    ])
+const completedSteps = computed(() => setupSteps.value.filter((step) => step.done).length)
+const setupProgress = computed(() => (completedSteps.value / setupSteps.value.length) * 100)
+const nextStep = computed(
+  () => setupSteps.value.find((step) => !step.done) || (isDemo.value
+    ? { label: 'Open guest preview', to: '/demo/guest' }
+    : { label: 'Review your booking page', to: '/settings' }),
+)
 
-function formatDate(value) {
-  return new Date(value).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+const todayKey = computed(() => zonedDateKey(now.value, scheduleZone.value))
+const tomorrowKey = computed(() => {
+  const [year, month, day] = todayKey.value.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10)
+})
+const byStart = (left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)
+const dayKey = (value) => zonedDateKey(value, scheduleZone.value)
+const todayBookings = computed(() =>
+  state.bookings.filter((item) => isActiveBooking(item) && dayKey(item.starts_at) === todayKey.value).sort(byStart),
+)
+const tomorrowBookings = computed(() =>
+  state.bookings
+    .filter((item) => item.status === 'confirmed' && dayKey(item.starts_at) === tomorrowKey.value)
+    .sort(byStart),
+)
+const timeOffOn = (key) =>
+  state.bookings.some(
+    (item) => isActiveTimeOff(item) && dayKey(item.starts_at) <= key && key <= dayKey(item.ends_at || item.starts_at),
+  )
+const timeOffToday = computed(() => timeOffOn(todayKey.value))
+const timeOffTomorrow = computed(() => timeOffOn(tomorrowKey.value))
+
+// Reminders are opened in the owner's own WhatsApp, SMS, or mail app. "Reminded" is a per-session memory aid only.
+const reminded = ref(new Set())
+function toggleReminded(booking, checked) {
+  const next = new Set(reminded.value)
+  if (checked) next.add(booking.id)
+  else next.delete(booking.id)
+  reminded.value = next
+}
+function reminderFor(booking) {
+  const service = state.services.find((item) => item.id === booking.service_id)
+  return composeMessage('reminder', booking, {
+    profile: state.profile,
+    service,
+    bookingLink: state.profile?.public_link_url || '',
+  })
+}
+const reminders = computed(() => tomorrowBookings.value.map((booking) => ({ booking, message: reminderFor(booking) })))
+
+const statusBusy = ref('')
+const statusError = ref('')
+const hasStarted = (booking) => Date.parse(booking.starts_at) <= now.value
+async function markStatus(booking, status) {
+  if (isDemo.value || statusBusy.value) return
+  statusBusy.value = booking.id
+  statusError.value = ''
+  try {
+    await setBookingStatus(booking, status)
+    await refresh()
+  } catch (reason) {
+    statusError.value = reason?.message || 'The booking status could not be saved.'
+  } finally {
+    statusBusy.value = ''
+  }
+}
+const statusLabel = { confirmed: 'Confirmed', completed: 'Completed', no_show: 'No-show' }
+const statusClass = (status) => String(status || '').replace('_', '-')
+const setupComplete = computed(() => completedSteps.value === setupSteps.value.length)
+
+const zone = () => scheduleZone.value
+const displayTimeOptions = (options, booking) => ({ ...options, timeZone: zone(booking) })
+
+function formatDate(booking) {
+  return new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  }, booking))
 }
 
-function formatTime(value) {
-  return new Date(value).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+function formatTime(booking) {
+  return new Date(booking.starts_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))
 }
 
 async function copyLink() {
-  await copyText(publicUrl.value)
-  copied.value = true
-  window.setTimeout(() => { copied.value = false }, 1600)
+  copyError.value = ''
+  try {
+    await copyText(publicUrl.value)
+    copied.value = true
+    toast?.('Booking link copied')
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copied.value = false
+    }, 1600)
+  } catch {
+    copyError.value = 'Your browser blocked copying. Select the link and copy it manually.'
+  }
 }
 </script>
 
 <template>
-  <section>
-    <div class="page-header dashboard-header">
+  <section class="overview">
+    <div class="page-header">
       <div>
         <p class="eyebrow">Workspace overview</p>
         <h1>Run your booking day with less back-and-forth.</h1>
-        <p class="lede">Set your hours, share one link, and keep every confirmed appointment in view.</p>
+        <p class="lede">{{ isDemo ? 'Review the prepared owner workspace, then open a labelled guest preview.' : 'Set your hours, share one link, and keep every confirmed appointment in view.' }}</p>
       </div>
-      <RouterLink class="primary" to="/services"><AppIcon name="plus" :size="17" />New service</RouterLink>
+      <div class="page-header-actions">
+        <RouterLink :class="isDemo ? 'secondary' : 'primary'" to="/services">
+          <AppIcon name="plus" :size="17" />{{ isDemo ? 'View services' : 'New service' }}
+        </RouterLink>
+      </div>
     </div>
 
-    <div class="grid grid-4 metrics">
-      <article class="card metric-card"><span class="metric-icon blue"><AppIcon name="services" :size="18" /></span><div><span class="label">Active services</span><div class="metric">{{ activeServices }}</div><p class="metric-sub">Ready to book</p></div></article>
-      <article class="card metric-card"><span class="metric-icon green"><AppIcon name="bookings" :size="18" /></span><div><span class="label">Upcoming</span><div class="metric">{{ upcomingBookings.length }}</div><p class="metric-sub">Confirmed appointments</p></div></article>
-      <article class="card metric-card"><span class="metric-icon gold"><AppIcon name="calendar" :size="18" /></span><div><span class="label">This month</span><div class="metric">{{ thisMonthBookings }}</div><p class="metric-sub">Bookings received</p></div></article>
-      <article class="card metric-card"><span class="metric-icon violet"><AppIcon name="availability" :size="18" /></span><div><span class="label">Open weekdays</span><div class="metric">{{ openDays }}</div><p class="metric-sub">{{ state.schedules[0]?.timezone || 'No timezone set' }}</p></div></article>
+    <div v-if="timeOffToday || timeOffTomorrow" class="notice warning" role="status">
+      <AppIcon name="clock" :size="18" />
+      <span>Time off {{ timeOffToday && timeOffTomorrow ? 'today and tomorrow' : timeOffToday ? 'today' : 'tomorrow' }}. Guests cannot book those times.
+        <RouterLink to="/bookings">Review</RouterLink></span>
+    </div>
+
+    <div class="stat-grid stagger">
+      <RouterLink class="card stat-tile" to="/services">
+        <span class="label">Active services</span>
+        <span class="icon-tile"><AppIcon name="services" :size="18" /></span>
+        <p class="metric tnum">{{ activeServices }}</p>
+        <p class="metric-sub">Ready to book</p>
+      </RouterLink>
+      <RouterLink class="card stat-tile" to="/bookings">
+        <span class="label">Upcoming</span>
+        <span class="icon-tile success"><AppIcon name="bookings" :size="18" /></span>
+        <p class="metric tnum">{{ upcomingBookings.length }}</p>
+        <p class="metric-sub">Confirmed appointments</p>
+      </RouterLink>
+      <RouterLink class="card stat-tile" to="/bookings">
+        <span class="label">This month</span>
+        <span class="icon-tile warning"><AppIcon name="calendar" :size="18" /></span>
+        <p class="metric tnum">{{ thisMonthBookings }}</p>
+        <p class="metric-sub">Bookings in {{ scheduleZone }}</p>
+      </RouterLink>
+      <RouterLink class="card stat-tile" to="/availability">
+        <span class="label">Open weekdays</span>
+        <span class="icon-tile info"><AppIcon name="availability" :size="18" /></span>
+        <p class="metric tnum">{{ openDays }}</p>
+        <p class="metric-sub">{{ state.schedules[0] ? scheduleZone : 'No timezone set' }}</p>
+      </RouterLink>
+    </div>
+
+    <div class="grid grid-2 day-panels">
+      <article class="card day-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Today</p>
+            <h2>Today's bookings</h2>
+            <p class="tz-label muted">{{ todayKey }} · {{ scheduleZone }}</p>
+          </div>
+        </div>
+        <p v-if="statusError" class="notice error" role="alert">{{ statusError }}</p>
+        <ul v-if="todayBookings.length" class="day-list">
+          <li v-for="booking in todayBookings" :key="booking.id">
+            <span class="day-time tnum">{{ formatTime(booking) }}</span>
+            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ booking.service_name }} · {{ statusLabel[booking.status] }}</small></span>
+            <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="day-actions">
+              <button class="secondary small-button" type="button" :disabled="isDemo || Boolean(statusBusy)" @click="markStatus(booking, 'completed')">Completed</button>
+              <button class="ghost small-button delete-link" type="button" :disabled="isDemo || Boolean(statusBusy)" @click="markStatus(booking, 'no_show')">No-show</button>
+            </span>
+          </li>
+        </ul>
+        <div v-else class="empty compact">
+          <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
+          <p>No bookings today.</p>
+        </div>
+      </article>
+
+      <article class="card day-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Tomorrow</p>
+            <h2>Reminder queue</h2>
+            <p class="tz-label muted">{{ tomorrowKey }} · Opens your own WhatsApp, SMS, or mail app. Bookins does not send.</p>
+          </div>
+        </div>
+        <ul v-if="reminders.length" class="day-list">
+          <li v-for="{ booking, message } in reminders" :key="booking.id" class="reminder-row">
+            <span class="day-time tnum">{{ formatTime(booking) }}</span>
+            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ booking.service_name }}</small></span>
+            <span class="day-actions">
+              <a v-if="message.whatsapp" class="primary small-button" :href="message.whatsapp" target="_blank" rel="noreferrer">Open WhatsApp</a>
+              <a v-if="message.sms" class="secondary small-button" :href="message.sms">SMS</a>
+              <a v-if="message.email" class="secondary small-button" :href="message.email">Email</a>
+              <small v-if="!message.whatsapp && !message.sms && !message.email" class="muted">No usable phone or email</small>
+            </span>
+            <label class="reminded"><input type="checkbox" :checked="reminded.has(booking.id)" @change="toggleReminded(booking, $event.target.checked)" />Marked as reminded (this session only)</label>
+          </li>
+        </ul>
+        <div v-else class="empty compact">
+          <span class="empty-icon"><AppIcon name="clock" :size="20" /></span>
+          <p>No confirmed bookings tomorrow.</p>
+        </div>
+      </article>
     </div>
 
     <div class="dashboard-grid">
       <article class="card next-card">
-        <div class="section-heading"><div><p class="eyebrow">Up next</p><h2>Upcoming bookings</h2></div><RouterLink to="/bookings">View all <AppIcon name="chevron" :size="14" /></RouterLink></div>
-        <div v-if="upcomingBookings.length" class="upcoming-list">
-          <RouterLink v-for="booking in upcomingBookings.slice(0, 3)" :key="booking.id" class="upcoming-row" to="/bookings">
-            <span class="date-tile"><strong>{{ new Date(booking.starts_at).getDate() }}</strong><small>{{ new Date(booking.starts_at).toLocaleDateString(undefined, { month: 'short' }) }}</small></span>
-            <span class="upcoming-copy"><strong>{{ booking.service_name }}</strong><small>{{ booking.guest_name }} · {{ formatDate(booking.starts_at) }}</small></span>
-            <span class="upcoming-time">{{ formatTime(booking.starts_at) }}<AppIcon name="chevron" :size="14" /></span>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Up next</p>
+            <h2>Upcoming bookings</h2>
+            <p class="tz-label muted">Times shown in {{ scheduleZone }}</p>
+          </div>
+          <RouterLink to="/bookings">View all <AppIcon name="chevron" :size="14" /></RouterLink>
+        </div>
+        <div v-if="upcomingBookings.length" class="list">
+          <RouterLink v-for="booking in upcomingBookings.slice(0, 3)" :key="booking.id" class="list-row upcoming-row" to="/bookings">
+            <span class="date-tile">
+              <strong>{{ new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({ day: 'numeric' }, booking)) }}</strong>
+              <small>{{ new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({ month: 'short' }, booking)) }}</small>
+            </span>
+            <span class="list-row-main">
+              <strong>{{ booking.service_name }}</strong>
+              <span>{{ booking.guest_name }} · {{ formatDate(booking) }}</span>
+            </span>
+            <span class="list-row-end">
+              <span class="upcoming-time tnum" :title="zone(booking)">{{ formatTime(booking) }}</span>
+              <span class="chip" :class="statusClass(booking.status)">{{ statusLabel[booking.status] || booking.status }}</span>
+              <AppIcon name="chevron" :size="16" />
+            </span>
           </RouterLink>
         </div>
-        <div v-else class="empty compact-empty"><span class="empty-icon"><AppIcon name="calendar" /></span><h2>No upcoming bookings</h2><p>Your next confirmed appointment will appear here.</p></div>
+        <div v-else class="empty compact">
+          <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
+          <h2>No upcoming bookings</h2>
+          <p>Your next confirmed appointment will appear here.</p>
+        </div>
       </article>
 
       <aside class="dashboard-side">
-        <article class="card setup-card">
-          <div class="section-heading"><div><p class="eyebrow">Launch checklist</p><h2>{{ completedSteps === setupSteps.length ? 'You are ready to book' : `${completedSteps} of ${setupSteps.length} complete` }}</h2></div><span class="progress-number">{{ Math.round(setupProgress) }}%</span></div>
+        <article v-if="setupComplete" class="card ready-card">
+          <span class="icon-tile success"><AppIcon name="check" :size="18" /></span>
+          <div class="ready-copy">
+            <h2>{{ isDemo ? 'Demo is ready to explore' : 'You are ready to book' }}</h2>
+            <RouterLink :to="nextStep.to">{{ isDemo ? nextStep.label : 'View booking link' }} <AppIcon name="chevron" :size="14" /></RouterLink>
+          </div>
+        </article>
+        <article v-else class="card setup-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Launch checklist</p>
+              <h2>{{ completedSteps }} of {{ setupSteps.length }} complete</h2>
+            </div>
+            <span class="progress-number tnum">{{ Math.round(setupProgress) }}%</span>
+          </div>
           <div class="progress-track" aria-hidden="true"><span :style="{ width: `${setupProgress}%` }" /></div>
           <div class="setup-list">
-            <RouterLink v-for="step in setupSteps" :key="step.label" :to="step.to" :class="{ done: step.done }"><span><AppIcon :name="step.done ? 'check' : 'chevron'" :size="14" /></span>{{ step.label }}</RouterLink>
+            <RouterLink v-for="step in setupSteps" :key="step.label" :to="step.to" :class="{ done: step.done }">
+              <span><AppIcon :name="step.done ? 'check' : 'chevron'" :size="14" /></span>{{ step.label }}
+            </RouterLink>
           </div>
           <RouterLink class="secondary setup-action" :to="nextStep.to">{{ nextStep.label }}<AppIcon name="chevron" :size="14" /></RouterLink>
         </article>
 
         <article class="card link-card">
-          <span class="link-art"><AppIcon name="link" :size="21" /></span>
-          <div><p class="eyebrow">Booking link</p><h2>{{ publicUrl ? 'Ready to share' : 'Create your public page' }}</h2><p class="muted">Guests only see the services and times you make available.</p></div>
-          <template v-if="publicUrl">
-            <code>{{ publicUrl }}</code>
-            <div class="form-actions"><button class="primary" type="button" @click="copyLink"><AppIcon name="copy" :size="16" />{{ copied ? 'Copied' : 'Copy link' }}</button><a class="secondary" :href="publicUrl" target="_blank" rel="noreferrer">Preview<AppIcon name="external" :size="15" /></a></div>
+          <span class="icon-tile"><AppIcon name="link" :size="20" /></span>
+          <div>
+            <p class="eyebrow">Booking link</p>
+            <h2>{{ isDemo ? 'Guest preview is ready' : linkExpired ? 'Your link has expired' : publicUrl ? 'Ready to share' : 'Create your public page' }}</h2>
+            <p class="muted">{{ isDemo ? 'Explore fictional services and times without creating a public link.' : 'Guests only see the services and times you make available.' }}</p>
+          </div>
+          <template v-if="linkExpired">
+            <p class="muted">Guests opening this link now see an expired-link page.</p>
+            <RouterLink class="primary" to="/settings">Create new link<AppIcon name="chevron" :size="15" /></RouterLink>
           </template>
-          <RouterLink v-else class="primary" to="/settings">Create booking link<AppIcon name="chevron" :size="15" /></RouterLink>
+          <template v-else-if="publicUrl">
+            <div class="link-row">
+              <input class="input" type="text" readonly :value="publicUrl" aria-label="Booking link" @focus="$event.target.select()" />
+              <button class="secondary icon-button" type="button" :aria-label="copied ? 'Copied' : 'Copy link'" @click="copyLink">
+                <AppIcon :name="copied ? 'check' : 'copy'" :size="18" />
+              </button>
+            </div>
+            <p v-if="copyError" class="notice error" role="alert">{{ copyError }}</p>
+            <a class="secondary" :href="publicUrl" target="_blank" rel="noreferrer">Preview<AppIcon name="external" :size="15" /></a>
+          </template>
+          <RouterLink v-else :class="isDemo ? 'secondary' : 'primary'" :to="isDemo ? '/demo/guest' : '/settings'">
+            {{ isDemo ? 'Open guest preview' : 'Create booking link' }}<AppIcon name="chevron" :size="15" />
+          </RouterLink>
         </article>
       </aside>
     </div>
@@ -103,5 +360,66 @@ async function copyLink() {
 </template>
 
 <style scoped>
-.metrics{margin-bottom:18px}.metric-card{min-height:132px;display:flex;align-items:flex-start;gap:14px}.metric-icon{width:38px;height:38px;display:grid;place-items:center;flex:none;border-radius:11px}.metric-icon.blue{color:#2336dc;background:#eef1ff}.metric-icon.green{color:#147a4d;background:#eaf8f1}.metric-icon.gold{color:#9a6700;background:#fff6df}.metric-icon.violet{color:#7851c9;background:#f3edff}.metric-card .metric{font-size:31px}.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.75fr);gap:18px}.dashboard-side{display:grid;align-content:start;gap:18px}.section-heading{margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:15px}.section-heading .eyebrow{margin-bottom:5px}.section-heading h2{margin:0}.section-heading>a{min-height:34px;display:flex;align-items:center;gap:3px;color:var(--accent);font-size:12px;font-weight:750;text-decoration:none}.upcoming-list{display:grid}.upcoming-row{min-height:78px;padding:12px 0;display:grid;grid-template-columns:50px minmax(0,1fr) auto;align-items:center;gap:13px;border-bottom:1px solid var(--line);text-decoration:none}.upcoming-row:last-child{border:0}.upcoming-row:hover .upcoming-copy strong{color:var(--accent)}.date-tile{width:48px;height:50px;display:grid;place-items:center;align-content:center;color:var(--accent);border-radius:11px;background:var(--accent-soft)}.date-tile strong{font-size:18px;line-height:1}.date-tile small{margin-top:3px;font-size:9px;font-weight:800;text-transform:uppercase}.upcoming-copy{min-width:0;display:grid;gap:4px}.upcoming-copy strong,.upcoming-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.upcoming-copy strong{font-size:13px}.upcoming-copy small{color:var(--muted);font-size:11px}.upcoming-time{display:flex;align-items:center;gap:7px;color:var(--ink-soft);font-size:12px;font-weight:700}.compact-empty{padding:36px 18px}.progress-number{color:var(--accent);font-size:14px;font-weight:850}.progress-track{height:7px;margin:-5px 0 16px;overflow:hidden;border-radius:99px;background:#eceef4}.progress-track span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#2336dc,#5264f0);transition:width .25s ease}.setup-list{display:grid;margin-bottom:15px}.setup-list a{min-height:42px;display:flex;align-items:center;gap:10px;color:var(--ink-soft);border-bottom:1px solid var(--line);font-size:12px;text-decoration:none}.setup-list a>span{width:24px;height:24px;display:grid;place-items:center;color:var(--muted);border:1px solid var(--line);border-radius:50%}.setup-list a.done{color:var(--muted);text-decoration:line-through}.setup-list a.done>span{color:var(--success);border-color:#bfe2d1;background:var(--success-soft)}.setup-action{width:100%;justify-content:space-between}.link-card{position:relative;overflow:hidden}.link-art{position:absolute;right:-8px;top:-9px;width:74px;height:74px;display:grid;place-items:center;color:#8490ee;border-radius:50%;background:#eef1ff}.link-card>div{position:relative}.link-card .muted{margin-bottom:15px;font-size:12px}.link-card code{display:block;margin-bottom:12px;padding:11px;overflow:hidden;color:#4d5871;border-radius:9px;background:#f4f5f8;font-size:10px;text-overflow:ellipsis;white-space:nowrap}.link-card .form-actions>*{flex:1}.link-card>.primary{width:100%}@media(max-width:1120px){.dashboard-grid{grid-template-columns:1fr}.dashboard-side{grid-template-columns:1fr 1fr}}@media(max-width:700px){.dashboard-side{grid-template-columns:1fr}.upcoming-row{grid-template-columns:48px minmax(0,1fr)}.upcoming-time{grid-column:2}.dashboard-header h1{font-size:32px}}
+.overview { display: grid; gap: var(--space-4); }
+.overview .page-header { margin-bottom: 0; }
+.notice a { margin-left: 6px; color: var(--accent); font-weight: 700; }
+.stat-tile { min-width: 0; }
+.stat-tile .label { align-self: center; }
+.day-card .section-heading { margin-bottom: var(--space-3); }
+.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); }
+.section-heading .eyebrow { margin-bottom: 4px; }
+.section-heading h2 { margin: 0; font-size: var(--text-lg); }
+.section-heading > a { min-height: 40px; display: flex; align-items: center; gap: 3px; color: var(--accent); font-size: var(--text-sm); font-weight: 700; text-decoration: none; }
+.tz-label { margin: 4px 0 0; font-size: var(--text-xs); }
+.day-list { margin: 0; padding: 0; display: grid; list-style: none; }
+.day-list li { padding: var(--space-3) 0; display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--line); }
+.day-list li:last-child { border: 0; }
+.day-time { color: var(--ink-soft); font-size: var(--text-sm); font-weight: 700; }
+.day-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+.day-actions a { display: inline-flex; align-items: center; text-decoration: none; }
+.delete-link { color: var(--danger); }
+.reminded { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-xs); }
+.upcoming-copy { min-width: 0; display: grid; gap: 2px; }
+.upcoming-copy strong, .upcoming-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upcoming-copy strong { font-size: var(--text-md); }
+.upcoming-copy small { color: var(--muted); font-size: var(--text-sm); }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr); gap: var(--space-4); }
+.dashboard-side { display: grid; align-content: start; gap: var(--space-4); }
+.upcoming-row { min-height: 78px; }
+.date-tile { width: 48px; height: 52px; flex: none; display: grid; place-items: center; align-content: center; color: var(--accent); border-radius: 11px; background: var(--accent-soft); }
+.date-tile strong { font-size: 18px; line-height: 1; }
+.date-tile small { margin-top: 3px; font-size: var(--text-xs); font-weight: 800; text-transform: uppercase; }
+.upcoming-time { color: var(--ink-soft); font-size: var(--text-sm); font-weight: 700; }
+.list-row-end > svg { color: var(--muted); }
+.progress-number { color: var(--accent); font-size: var(--text-md); font-weight: 800; }
+.progress-track { height: 8px; margin: -4px 0 var(--space-4); overflow: hidden; border-radius: 99px; background: var(--muted-soft); }
+.progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-panel) var(--ease); }
+.setup-list { display: grid; margin-bottom: var(--space-4); }
+.setup-list a { min-height: 44px; display: flex; align-items: center; gap: var(--space-3); color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: var(--text-sm); text-decoration: none; }
+.setup-list a > span { width: 24px; height: 24px; display: grid; place-items: center; color: var(--muted); border: 1px solid var(--line); border-radius: 50%; }
+.setup-list a.done { color: var(--muted); }
+.setup-list a.done > span { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+.setup-action { width: 100%; justify-content: space-between; }
+.ready-card { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-color: var(--success); background: var(--success-soft); }
+.ready-copy { min-width: 0; display: grid; gap: 2px; }
+.ready-copy h2 { margin: 0; font-size: var(--text-md); }
+.ready-copy a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: var(--text-sm); font-weight: 700; text-decoration: none; }
+.link-card { display: grid; gap: var(--space-3); }
+.link-card h2 { margin: 0 0 4px; font-size: var(--text-lg); }
+.link-card .muted { margin: 0; font-size: var(--text-sm); }
+.link-row { display: flex; gap: var(--space-2); }
+.link-row .input { min-width: 0; flex: 1; font-family: var(--font-mono); font-size: var(--text-sm); text-overflow: ellipsis; }
+.icon-button { width: var(--control-h); padding: 0; flex: none; }
+.link-card > .primary, .link-card > .secondary { width: 100%; }
+@media (max-width: 1120px) {
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .dashboard-side { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 700px) {
+  .dashboard-side { grid-template-columns: 1fr; }
+  .day-list li { grid-template-columns: 64px minmax(0, 1fr); }
+  .day-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .reminded { grid-column: 1 / -1; }
+  .upcoming-row .chip { display: none; }
+}
 </style>

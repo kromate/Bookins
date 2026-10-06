@@ -8,9 +8,9 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, and keep contact history together. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "releaseType": "minor",
-  "releaseNotes": "Refresh the Bookins owner workspace and public booking flow with clearer setup guidance, faster navigation, an in-memory local sample workspace, African currency options, responsive booking screens, and a complete Store media set. No new permissions or data stores.",
+  "releaseNotes": "Adds time off, owner-created and recurring bookings, rescheduling, completed and no-show tracking, private booking notes, client records with notes and tags (new optional Contacts Table), per-service booking links, a share kit with QR code, prefilled WhatsApp, SMS, and email messages that open in the owner's own apps, an Insights page, and an English/French booking page. Google Calendar remains optional (connect, add events, clash flags, guest busy filter). The optional owner alert workflow now labels time off and dashboard bookings. New fields on Bookings, Services, and Profiles; new optional Contacts capability. Bookins still does not take payments or email guests.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -35,7 +35,10 @@
   },
   "privacyPolicyUrl": "https://goalmatic.io/privacy",
   "supportUrl": "https://goalmatic.io/support",
-  "externalDomains": [],
+  "externalDomains": [
+    "feedback-studio.apps.goalmatic.io",
+    "firebasestorage.googleapis.com"
+  ],
   "publicRuntime": {
     "grants": [
       {
@@ -139,6 +142,34 @@
                 "logicalResourceId": "bookings"
               }
             }
+          },
+          {
+            "id": "calendar-busy",
+            "kind": "query",
+            "operationId": "integrations.google-calendar.availability",
+            "capabilityId": "calendar-sync",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "timeMin",
+                "timeMax"
+              ],
+              "properties": {
+                "timeMin": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "timeMax": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {}
           }
         ]
       }
@@ -200,7 +231,7 @@
       "id": "bookings-data",
       "kind": "tables",
       "displayName": "Store bookings",
-      "description": "Creates an account-scoped Table for confirmed and cancelled appointments with unique slot reservations.",
+      "description": "Creates an account-scoped Table for bookings, owner time off, and unique slot reservations.",
       "operations": [
         "tables.records-list",
         "tables.record-get",
@@ -209,6 +240,21 @@
       ],
       "required": true,
       "logicalResourceId": "bookings",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "contacts-data",
+      "kind": "tables",
+      "displayName": "Store contact notes",
+      "description": "Creates an optional account-scoped Table for contact notes and tags.",
+      "operations": [
+        "tables.records-list",
+        "tables.record-create",
+        "tables.record-update",
+        "tables.record-delete"
+      ],
+      "required": false,
+      "logicalResourceId": "contacts",
       "existingResourceAllowed": true
     },
     {
@@ -232,6 +278,32 @@
         "booking.cancel"
       ],
       "required": false
+    },
+    {
+      "id": "calendar-sync",
+      "kind": "integrations",
+      "displayName": "Sync with Google Calendar",
+      "description": "Connects your Google Calendar, reads events to flag clashes, adds or updates a booking's event only when you ask, and lets the public booking link read busy times (no event details).",
+      "operations": [
+        "integrations.connection-start",
+        "integrations.connection-complete",
+        "integrations.google-calendar.availability",
+        "integrations.google-calendar.events-list",
+        "integrations.google-calendar.event-create",
+        "integrations.google-calendar.event-update"
+      ],
+      "required": false
+    },
+    {
+      "id": "owner-booking-alert-workflow",
+      "kind": "workflows",
+      "displayName": "Email me new bookings",
+      "description": "Installs one workflow that emails the account owner when a new booking record is created. Guests are not emailed.",
+      "operations": [
+        "workflows.run"
+      ],
+      "required": false,
+      "logicalResourceId": "owner-booking-alert"
     }
   ],
   "resources": {
@@ -277,6 +349,11 @@
             "id": "updated_at",
             "name": "Updated at",
             "type": "date"
+          },
+          {
+            "id": "message_templates_json",
+            "name": "Message templates",
+            "type": "textarea"
           }
         ]
       },
@@ -412,13 +489,28 @@
             "id": "updated_at",
             "name": "Updated at",
             "type": "date"
+          },
+          {
+            "id": "location",
+            "name": "Location",
+            "type": "text"
+          },
+          {
+            "id": "public_link_url",
+            "name": "Public link URL",
+            "type": "url"
+          },
+          {
+            "id": "public_link_expires_at",
+            "name": "Public link expires at",
+            "type": "date"
           }
         ]
       },
       {
         "id": "bookings",
         "name": "Bookings",
-        "description": "Confirmed and cancelled bookings with a unique schedule-slot reservation.",
+        "description": "Confirmed, completed, no-show, and cancelled bookings plus owner time off, each with a unique schedule-slot reservation.",
         "fields": [
           {
             "id": "reference",
@@ -492,7 +584,10 @@
             "required": true,
             "options": [
               "confirmed",
-              "cancelled"
+              "cancelled",
+              "completed",
+              "no_show",
+              "blocked"
             ]
           },
           {
@@ -517,12 +612,116 @@
             "id": "cancellation_reason",
             "name": "Cancellation reason",
             "type": "textarea"
+          },
+          {
+            "id": "calendar_event_id",
+            "name": "Calendar event ID",
+            "type": "text"
+          },
+          {
+            "id": "owner_notes",
+            "name": "Owner notes",
+            "type": "textarea"
+          },
+          {
+            "id": "source",
+            "name": "Source",
+            "type": "select",
+            "options": [
+              "guest",
+              "owner"
+            ]
+          },
+          {
+            "id": "series_id",
+            "name": "Series ID",
+            "type": "text"
+          }
+        ]
+      },
+      {
+        "id": "contacts",
+        "name": "Booking Contacts",
+        "description": "Owner-maintained contact notes and tags, keyed by email. Optional; contacts are otherwise derived from bookings.",
+        "fields": [
+          {
+            "id": "email",
+            "name": "Email",
+            "type": "email",
+            "required": true,
+            "preventDuplicates": true
+          },
+          {
+            "id": "name",
+            "name": "Name",
+            "type": "text"
+          },
+          {
+            "id": "phone",
+            "name": "Phone",
+            "type": "text"
+          },
+          {
+            "id": "notes",
+            "name": "Notes",
+            "type": "textarea"
+          },
+          {
+            "id": "tags_json",
+            "name": "Tags",
+            "type": "textarea"
+          },
+          {
+            "id": "updated_at",
+            "name": "Updated at",
+            "type": "date"
           }
         ]
       }
     ],
     "agents": [],
-    "workflows": [],
+    "workflows": [
+      {
+        "id": "owner-booking-alert",
+        "name": "Bookins - email owner on new booking",
+        "description": "When a new record is created in the Bookings Table, emails the account owner the booking details from noreply@goalmatic.io. Guests are not emailed.",
+        "enabledOnInstall": true,
+        "trigger": {
+          "id": "booking-created",
+          "nodeId": "TABLE_RECORD_CREATED",
+          "name": "New booking record",
+          "props": {
+            "table_id": {
+              "$appResource": {
+                "kind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
+          }
+        },
+        "steps": [
+          {
+            "id": "build-owner-alert",
+            "nodeId": "TRANSFORM_DATA",
+            "name": "Format owner alert",
+            "props": {
+              "transformFunction": "(data) => { const rec = (data && data.record) || (data && data.payload && data.payload.record) || {}; const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\\r\\n]+/g, ' ').trim(); const iso = clean(rec.starts_at); const tz = clean(rec.timezone) || 'UTC'; const fmt = (value) => { try { const d = new Date(value); if (!isNaN(d.getTime())) return new Intl.DateTimeFormat('en-GB', { dateStyle: 'full', timeStyle: 'short', timeZone: tz }).format(d) + ' (' + tz + ')'; } catch (e) {} return clean(value) + ' UTC'; }; const when = fmt(iso); if (clean(rec.status) === 'blocked') { const until = fmt(clean(rec.ends_at)); return { subject: 'Time off saved: ' + when, body: ['Time off was added to your Bookins schedule.', '', 'From: ' + when, 'Until: ' + until, 'Reason: ' + (clean(rec.notes) || 'Not given'), '', 'Guests cannot book during this time. Remove it in Bookins > Availability.'].join('\\n') }; } const service = clean(rec.service_name) || 'a service'; const guest = clean(rec.guest_name) || 'A guest'; const email = clean(rec.guest_email); const fromDashboard = clean(rec.source) === 'owner'; const lines = [fromDashboard ? 'Booking added from your dashboard.' : 'You have a new booking in Bookins.', '', 'Service: ' + service, 'When: ' + when, 'Starts at (UTC ISO): ' + iso, 'Booking timezone: ' + tz, '', 'Guest: ' + guest, 'Email: ' + (/@bookins\\.invalid$/i.test(email) ? 'Not provided' : email), 'Phone: ' + (clean(rec.guest_phone) || 'Not provided'), 'Notes: ' + (String(rec.notes || '').trim() || 'None'), '', 'Reference: ' + clean(rec.reference), '', 'Open Bookins to review, message, or cancel this booking.', 'This alert is sent from noreply@goalmatic.io to the account owner only. The guest has not been emailed.']; return { subject: (fromDashboard ? 'Booking added: ' : 'New booking: ') + service + ' - ' + guest, body: lines.join('\\n') }; }"
+            }
+          },
+          {
+            "id": "email-owner",
+            "nodeId": "SEND_EMAIL",
+            "name": "Email the owner",
+            "props": {
+              "emailType": "plain",
+              "recipientEmail": "USER_EMAIL",
+              "subject": "@step-0-TRANSFORM_DATA-subject",
+              "message": "@step-0-TRANSFORM_DATA-body"
+            }
+          }
+        ]
+      }
+    ],
     "tools": [],
     "nodes": []
   },

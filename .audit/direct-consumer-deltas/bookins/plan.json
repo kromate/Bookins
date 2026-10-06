@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "repo": "bookins",
+  "displayName": "Bookins",
+  "baseRemoteRef": "origin/preview",
+  "baseRemoteSHA": "4e34eb820f3133a95cd472533d9e18e3f54588e7",
+  "version": "0.3.1",
+  "releaseType": "patch",
+  "paths": [
+    ".goalmatic/app.json"
+  ],
+  "hashes": {
+    ".goalmatic/app.json": "70674ff9c25cd23cace13250d8926e2bb5798da0638cdf2ff9c74f61a0ee3762"
+  },
+  "appDiff": {
+    "existingPublishedFeedback": "origin/preview already contains the feedback component/config and App mount",
+    "manifestOnly": "releaseType patch + concrete feedback release notes"
+  },
+  "packageVersionChanged": false,
+  "sourceFiles": {
+    ".goalmatic/app.json": "origin/preview with release metadata correction"
+  },
+  "verification": {
+    "build": "passed in isolated git archive candidate",
+    "buildRoot": "/tmp/direct-consumer-build-bookins-b1qEdp",
+    "dependencyCheck": "passed: GoalmaticFeedback.vue imports vue, vue-router, and feedback.config.json only"
+  }
+}
