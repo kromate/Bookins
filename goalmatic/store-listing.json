@@ -4,116 +4,183 @@
   "variantKey": "default",
   "visibility": "public",
   "headline": "Bookings that work for African businesses",
-  "summary": "Bookins helps African service businesses set availability, share a secure booking link, and manage confirmed appointments from one Goalmatic workspace. Payments, calendar writes, and email delivery remain clearly unavailable until connected.",
+  "summary": "Share one booking link, set your hours and time off, and manage every appointment in one Goalmatic workspace. Message clients on WhatsApp in a tap, track no-shows, and see what is working. Free, with no commission.",
   "bestFor": [
-    "Consultants",
-    "coaches",
-    "creators",
-    "service businesses"
+    "Consultants and coaches",
+    "Salons, clinics, and studios",
+    "Tutors and trainers",
+    "Service businesses across Africa"
   ],
   "benefits": [
     {
-      "id": "benefit-1",
+      "id": "benefit-link",
       "title": "One secure booking link",
-      "description": "Share a release-pinned page that exposes only your public profile, active services, and available times.",
-      "mediaId": null
+      "description": "Guests pick a service and a time in their own timezone, in English or French, and get an instant confirmation with an add-to-calendar file.",
+      "mediaId": "shot-book-desktop"
     },
     {
-      "id": "benefit-2",
-      "title": "Hours that fit your business",
-      "description": "Set weekly availability, timezone, minimum notice, and how far ahead guests can book.",
-      "mediaId": null
+      "id": "benefit-whatsapp",
+      "title": "WhatsApp-first client messages",
+      "description": "Open ready-made confirmations, reminders, and follow-ups in your own WhatsApp, SMS, or email with one tap. Edit the templates to sound like you.",
+      "mediaId": "shot-bookings"
     },
     {
-      "id": "benefit-3",
-      "title": "Services with African pricing",
-      "description": "Create focused offers with clear durations and currencies including NGN, GHS, KES, ZAR, and XOF.",
-      "mediaId": null
+      "id": "benefit-hours",
+      "title": "Hours, breaks, and time off",
+      "description": "Set several working windows per day, minimum notice, and booking horizon. Block holidays and breaks so guests can never book them.",
+      "mediaId": "shot-availability"
     },
     {
-      "id": "benefit-4",
-      "title": "A clear appointment view",
-      "description": "Find upcoming, past, and cancelled bookings with guest details and contact history in one workspace.",
-      "mediaId": null
+      "id": "benefit-insights",
+      "title": "Know what is working",
+      "description": "See booking trends, estimated revenue from your prices, no-show and cancellation rates, busiest times, and returning clients.",
+      "mediaId": "shot-insights"
     },
     {
-      "id": "benefit-5",
-      "title": "Conflict-safe guest booking",
-      "description": "Bookins rechecks availability before confirmation so two guests cannot reserve the same start time.",
-      "mediaId": null
+      "id": "benefit-safe",
+      "title": "No double bookings",
+      "description": "Every booking is rechecked before it is confirmed, walk-ins and repeat bookings are clash-checked, and optional Google Calendar flags conflicts.",
+      "mediaId": "shot-overview"
     }
   ],
   "howItWorks": [
     {
-      "id": "choose-workspace",
-      "title": "Set up your booking profile",
-      "description": "Add the public name, bio, photo, and timezone guests should see.",
+      "id": "step-setup",
+      "title": "Add your services and hours",
+      "description": "Set durations, prices in your currency, weekly hours, and any time off.",
       "mediaId": null
     },
     {
-      "id": "review-access",
-      "title": "Choose hours and services",
-      "description": "Set your weekly schedule, notice rules, service durations, visibility, and display prices.",
+      "id": "step-share",
+      "title": "Share your link or QR code",
+      "description": "Post your booking link on WhatsApp, Instagram, or your website, or print the QR code.",
       "mediaId": null
     },
     {
-      "id": "open-app",
-      "title": "Share your booking link",
-      "description": "Guests choose a service and available time, enter their details, and receive an on-screen confirmation.",
+      "id": "step-run",
+      "title": "Run your day",
+      "description": "See today and tomorrow at a glance, send reminders, mark appointments completed or no-show, and keep client notes.",
       "mediaId": null
     }
   ],
   "media": [
     {
-      "id": "media-1",
+      "id": "shot-overview",
       "kind": "image",
       "role": "hero",
-      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F53a893506ea21c9508e655c5ea2039c897b0c248cb81d2b3c12097b76437ec1e%2Fscreenshot-1440x900.png?alt=media&token=f302be33-ca82-4c2a-b45f-130fb7f7f7b2",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fc147a04ed275cc024c4ab4f351f04368a4dad01b7a93a3686aaf9bd611b97140%2Fscreenshot-1600x1000.png?alt=media&token=d42b983e-e58e-4cd4-a69e-d9ca2820f728",
       "posterUrl": null,
-      "width": 1440,
-      "height": 900,
+      "width": 1600,
+      "height": 1000,
       "mimeType": "image/png",
-      "alt": "Bookins dashboard with services, upcoming bookings, and setup progress",
-      "caption": "Manage availability, services, booking links, and upcoming appointments from one workspace.",
+      "alt": "Bookins overview with services, upcoming bookings, and the reminder queue",
+      "caption": "Your booking day at a glance: today, tomorrow's reminders, and what is coming up.",
       "order": 0,
       "theme": "light",
       "device": "desktop"
     },
     {
-      "id": "screenshot-e7711052f2064e16",
+      "id": "shot-book-desktop",
       "kind": "image",
       "role": "gallery",
-      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fe7711052f2064e1699c35e862a22a9ab917cee56483637dbecf6159fb7462453%2Fscreenshot-1440x900.png?alt=media&token=47877579-714e-47f2-b2c0-9b87a479f359",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fc0a2656f89618a4a5ee28351a9c6e3ad319ff1dda39bbb8152506514d7e32499%2Fscreenshot-1600x1000.png?alt=media&token=163fa0a0-e58b-4d95-9566-3a27622c12fb",
       "posterUrl": null,
-      "width": 1440,
-      "height": 900,
+      "width": 1600,
+      "height": 1000,
       "mimeType": "image/png",
-      "alt": "Bookins services screen with duration, visibility, and pricing",
-      "caption": "Create clear services with African currencies and honest payment status.",
+      "alt": "Guest booking page with a month calendar and booking summary",
+      "caption": "Guests choose a service and a time on a secure, mobile-friendly page.",
       "order": 1,
       "theme": "light",
       "device": "desktop"
     },
     {
-      "id": "screenshot-49263e8d777bf8dd",
+      "id": "shot-bookings",
       "kind": "image",
       "role": "gallery",
-      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F49263e8d777bf8dd72167bfe3ce8e6c28c2a4f09e602094563417c60d4825992%2Fscreenshot-675x1200.png?alt=media&token=d817330e-f809-45fe-81c7-e6a727133789",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Ff08ef529af631ac9e31d3d73bc20df3797cf36086464dc7dd6e0827f172d1566%2Fscreenshot-1600x1000.png?alt=media&token=f2f4c806-29cd-47e3-ae52-e8999e897a94",
       "posterUrl": null,
-      "width": 675,
-      "height": 1200,
+      "width": 1600,
+      "height": 1000,
       "mimeType": "image/png",
-      "alt": "Mobile Bookins booking page showing available time slots",
-      "caption": "Guests choose a service and an available time in a focused mobile flow.",
+      "alt": "Bookings list with filters, statuses, and Google Calendar status",
+      "caption": "Search, filter, reschedule, and message clients from one list.",
       "order": 2,
       "theme": "light",
+      "device": "desktop"
+    },
+    {
+      "id": "shot-book-mobile",
+      "kind": "image",
+      "role": "gallery",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fed57281e4b8ada3defcd73f719cabbb17a2d0333d478ab1083512494d55cc403%2Fscreenshot-739x1600.png?alt=media&token=36e444db-c477-4424-938d-4ec1d47bfe81",
+      "posterUrl": null,
+      "width": 739,
+      "height": 1600,
+      "mimeType": "image/png",
+      "alt": "Mobile booking page in step two with available days highlighted",
+      "caption": "Built for phones, with English and French booking pages.",
+      "order": 3,
+      "theme": "light",
       "device": "mobile"
+    },
+    {
+      "id": "shot-insights",
+      "kind": "image",
+      "role": "gallery",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F8d980916b1c924486fa8db405df914b552086abdaaa959257e4deff2b07c5681%2Fscreenshot-1600x1000.png?alt=media&token=78327f5d-118a-4612-bee3-a378d4d56f23",
+      "posterUrl": null,
+      "width": 1600,
+      "height": 1000,
+      "mimeType": "image/png",
+      "alt": "Insights with bookings, utilization, cancellation and no-show rates, and estimated revenue",
+      "caption": "See trends, no-shows, and estimated revenue from your display prices.",
+      "order": 4,
+      "theme": "light",
+      "device": "desktop"
+    },
+    {
+      "id": "shot-availability",
+      "kind": "image",
+      "role": "gallery",
+      "url": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2F549794f7c5c7eb1fa6d51caca17c8e198af9c8d51b0cecc389721ee879b3d2dd%2Fscreenshot-1600x1000.png?alt=media&token=3b5c8274-da25-4899-9b70-d2bbcf0a8033",
+      "posterUrl": null,
+      "width": 1600,
+      "height": 1000,
+      "mimeType": "image/png",
+      "alt": "Availability editor with weekly windows and time off",
+      "caption": "Set weekly hours, breaks, and time off guests cannot book.",
+      "order": 5,
+      "theme": "light",
+      "device": "desktop"
     }
   ],
   "prerequisites": [
-    "A Goalmatic account and workspace"
+    "A Goalmatic account and workspace",
+    "Optional: a Google account to connect Google Calendar"
   ],
-  "faq": [],
+  "faq": [
+    {
+      "id": "faq-payments",
+      "question": "Does Bookins take payments?",
+      "answer": "Not yet. Prices are shown to guests and payment is arranged with you directly. Revenue in Insights is an estimate from your display prices."
+    },
+    {
+      "id": "faq-messages",
+      "question": "Does Bookins send messages to my clients?",
+      "answer": "Bookins prepares the message and opens it in your own WhatsApp, SMS, or email app so you send it yourself. There are no per-message fees. Guests see an on-screen confirmation with an add-to-calendar file."
+    },
+    {
+      "id": "faq-calendar",
+      "question": "Does it work with Google Calendar?",
+      "answer": "Optionally. Connect Google Calendar to add bookings as events and flag clashes, and to hide your busy times from the booking page."
+    },
+    {
+      "id": "faq-cost",
+      "question": "What does it cost?",
+      "answer": "Bookins is free to install with no commission on bookings. Goalmatic shared credits are used only for metered actions."
+    }
+  ],
   "seo": {
     "title": "Bookins",
     "description": "Set availability, share a secure booking link, and manage appointments from one workspace.",
