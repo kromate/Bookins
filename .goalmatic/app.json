@@ -10,7 +10,7 @@
   "category": "productivity",
   "version": "0.5.0",
   "releaseType": "minor",
-  "releaseNotes": "Adds time off, owner-created and recurring bookings, rescheduling, completed and no-show tracking, private booking notes, client records with notes and tags (new optional Contacts Table), per-service booking links, a share kit with QR code, prefilled WhatsApp, SMS, and email messages that open in the owner's own apps, an Insights page, and an English/French booking page. Google Calendar remains optional (connect, add events, clash flags, guest busy filter). The optional owner alert workflow now labels time off and dashboard bookings. New fields on Bookings, Services, and Profiles; new optional Contacts capability. Bookins still does not take payments or email guests.",
+  "releaseNotes": "Adds time off, owner-created and recurring bookings, rescheduling, completed and no-show tracking, private booking notes, client records with notes and tags (new optional Contacts Table), per-service booking links, a share kit with QR code, prefilled WhatsApp, SMS, and email messages that open in the owner's own apps, an Insights page, and an English/French booking page. Google Calendar remains optional (connect, add events, clash flags, guest busy filter). Adds an optional daily agenda email for the owner (off until turned on). New fields on Bookings, Services, and Profiles; new optional Contacts capability. Bookins still does not take payments or email guests.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -295,15 +295,16 @@
       "required": false
     },
     {
-      "id": "owner-booking-alert-workflow",
+      "id": "owner-daily-agenda-workflow",
       "kind": "workflows",
-      "displayName": "Email me new bookings",
-      "description": "Installs one workflow that emails the account owner when a new booking record is created. Guests are not emailed.",
+      "displayName": "Email me a daily agenda",
+      "description": "Installs one scheduled workflow (off until you turn it on) that emails the account owner today's appointments and new bookings each morning. Guests are not emailed.",
       "operations": [
-        "workflows.run"
+        "workflows.run",
+        "workflows.schedule-configure"
       ],
       "required": false,
-      "logicalResourceId": "owner-booking-alert"
+      "logicalResourceId": "owner-daily-agenda"
     }
   ],
   "resources": {
@@ -682,30 +683,43 @@
     "agents": [],
     "workflows": [
       {
-        "id": "owner-booking-alert",
-        "name": "Bookins - email owner on new booking",
-        "description": "When a new record is created in the Bookings Table, emails the account owner the booking details from noreply@goalmatic.io. Guests are not emailed.",
-        "enabledOnInstall": true,
+        "id": "owner-daily-agenda",
+        "name": "Bookins - daily agenda email",
+        "description": "Every morning, reads Bookings and emails the account owner today's appointments, today's time off, and bookings received in the last 24 hours. Guests are not emailed.",
+        "enabledOnInstall": false,
         "trigger": {
-          "id": "booking-created",
-          "nodeId": "TABLE_RECORD_CREATED",
-          "name": "New booking record",
+          "id": "agenda-schedule",
+          "nodeId": "SCHEDULE_INTERVAL",
+          "name": "Daily agenda schedule",
           "props": {
-            "table_id": {
-              "$appResource": {
-                "kind": "table",
-                "logicalResourceId": "bookings"
-              }
-            }
+            "PlainText": "Every day at 7:00 AM",
+            "cron": "0 7 * * *",
+            "timezone": "Africa/Lagos"
           }
         },
         "steps": [
           {
-            "id": "build-owner-alert",
-            "nodeId": "TRANSFORM_DATA",
-            "name": "Format owner alert",
+            "id": "read-bookings",
+            "nodeId": "TABLE_READ",
+            "name": "Read recent bookings",
             "props": {
-              "transformFunction": "(data) => { const rec = (data && data.record) || (data && data.payload && data.payload.record) || {}; const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\\r\\n]+/g, ' ').trim(); const iso = clean(rec.starts_at); const tz = clean(rec.timezone) || 'UTC'; const fmt = (value) => { try { const d = new Date(value); if (!isNaN(d.getTime())) return new Intl.DateTimeFormat('en-GB', { dateStyle: 'full', timeStyle: 'short', timeZone: tz }).format(d) + ' (' + tz + ')'; } catch (e) {} return clean(value) + ' UTC'; }; const when = fmt(iso); if (clean(rec.status) === 'blocked') { const until = fmt(clean(rec.ends_at)); return { subject: 'Time off saved: ' + when, body: ['Time off was added to your Bookins schedule.', '', 'From: ' + when, 'Until: ' + until, 'Reason: ' + (clean(rec.notes) || 'Not given'), '', 'Guests cannot book during this time. Remove it in Bookins > Availability.'].join('\\n') }; } const service = clean(rec.service_name) || 'a service'; const guest = clean(rec.guest_name) || 'A guest'; const email = clean(rec.guest_email); const fromDashboard = clean(rec.source) === 'owner'; const lines = [fromDashboard ? 'Booking added from your dashboard.' : 'You have a new booking in Bookins.', '', 'Service: ' + service, 'When: ' + when, 'Starts at (UTC ISO): ' + iso, 'Booking timezone: ' + tz, '', 'Guest: ' + guest, 'Email: ' + (/@bookins\\.invalid$/i.test(email) ? 'Not provided' : email), 'Phone: ' + (clean(rec.guest_phone) || 'Not provided'), 'Notes: ' + (String(rec.notes || '').trim() || 'None'), '', 'Reference: ' + clean(rec.reference), '', 'Open Bookins to review, message, or cancel this booking.', 'This alert is sent from noreply@goalmatic.io to the account owner only. The guest has not been emailed.']; return { subject: (fromDashboard ? 'Booking added: ' : 'New booking: ') + service + ' - ' + guest, body: lines.join('\\n') }; }"
+              "tableId": {
+                "$appResource": {
+                  "kind": "table",
+                  "logicalResourceId": "bookings"
+                }
+              },
+              "sortField": "created_at",
+              "sortOrder": "desc",
+              "limit": 200
+            }
+          },
+          {
+            "id": "build-agenda",
+            "nodeId": "TRANSFORM_DATA",
+            "name": "Format daily agenda",
+            "props": {
+              "transformFunction": "(data) => { const records = data && data.payload && Array.isArray(data.payload.records) ? data.payload.records : []; const now = Date.now(); const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\\r\\n]+/g, ' ').trim(); const dayIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(0, 10); } }; const timeIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(11, 16) + ' UTC'; } }; const isOff = (r) => clean(r.status) === 'blocked' || clean(r.service_id) === 'time-off'; const email = (r) => /@bookins\\.invalid$/i.test(clean(r.guest_email)) ? '' : clean(r.guest_email); const today = []; const timeOff = []; const fresh = []; records.forEach((r) => { if (!r) return; const tz = clean(r.timezone) || 'UTC'; const start = Date.parse(r.starts_at); const end = Date.parse(r.ends_at); if (isNaN(start)) return; const status = clean(r.status); if (isOff(r)) { if (status === 'blocked' && !isNaN(end) && end > now && dayIn(start, tz) <= dayIn(now, tz) && dayIn(end, tz) >= dayIn(now, tz)) timeOff.push(timeIn(start, tz) + '-' + timeIn(end, tz) + ' ' + (clean(r.notes) || 'Time off') + ' (' + tz + ')'); return; } if (status !== 'cancelled' && dayIn(start, tz) === dayIn(now, tz)) today.push({ start, line: timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.guest_phone) ? ', ' + clean(r.guest_phone) : '') + (email(r) ? ', ' + email(r) : '') + ' (' + tz + ', ' + clean(r.reference) + ')' }); const created = Date.parse(r.created_at); if (!isNaN(created) && now - created <= 86400000 && status !== 'cancelled' && start > now) fresh.push({ start, line: dayIn(start, tz) + ' ' + timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.source) === 'owner' ? ' (added by you)' : '') + ' (' + tz + ')' }); }); today.sort((a, b) => a.start - b.start); fresh.sort((a, b) => a.start - b.start); const lines = ['Good morning. Here is your Bookins agenda.', '', 'TODAY (' + today.length + ')']; if (today.length) today.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No appointments today.'); if (timeOff.length) { lines.push('', 'TIME OFF TODAY'); timeOff.forEach((l) => lines.push('- ' + l)); } lines.push('', 'NEW IN THE LAST 24 HOURS (' + fresh.length + ')'); if (fresh.length) fresh.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No new bookings.'); lines.push('', 'Open Bookins to message clients, reschedule, or mark appointments completed.', 'Sent from noreply@goalmatic.io to the account owner only. Guests are not emailed. Based on your most recently created 200 bookings.'); const subject = 'Bookins: ' + (today.length ? today.length + ' appointment' + (today.length === 1 ? '' : 's') + ' today' : 'no appointments today') + (fresh.length ? ', ' + fresh.length + ' new' : ''); return { subject, body: lines.join('\\n') }; }"
             }
           },
           {
@@ -715,8 +729,8 @@
             "props": {
               "emailType": "plain",
               "recipientEmail": "USER_EMAIL",
-              "subject": "@step-0-TRANSFORM_DATA-subject",
-              "message": "@step-0-TRANSFORM_DATA-body"
+              "subject": "@step-1-TRANSFORM_DATA-subject",
+              "message": "@step-1-TRANSFORM_DATA-body"
             }
           }
         ]

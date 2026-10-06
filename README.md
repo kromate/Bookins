@@ -60,9 +60,9 @@ Owners can connect Google Calendar from **Bookings**. Bookins uses only the decl
 
 Not provided: guest invites or email, payments, rescheduling, deleting events, and any Calendar enforcement at booking time. Calendar behavior is unproven until it is tested on a real connected Google account.
 
-## Owner booking alert (optional, v0.4.0)
+## Owner daily agenda (optional, v0.5.0)
 
-When a new booking is created, the `owner-booking-alert` workflow emails the account owner the service, start time (in the booking timezone, with the UTC ISO time), guest name, email, phone, notes, and reference. It comes from noreply@goalmatic.io, goes only to the owner's registered Goalmatic email, does not fire for cancellations or edits, and uses Goalmatic workflow runs. Guest confirmation and reminder emails are not available.
+The `owner-daily-agenda` workflow emails the account owner at 07:00 Africa/Lagos time with today's appointments, today's time off, and bookings received in the last 24 hours, with times in each booking's timezone. It is installed switched off; turn it on from the workflow in Goalmatic. It comes from noreply@goalmatic.io, goes only to the owner's registered Goalmatic email, reads the 200 most recently created bookings, and uses Goalmatic workflow runs. Instant per-booking emails and guest emails are not available.
 
 ## Build
 

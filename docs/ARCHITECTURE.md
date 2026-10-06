@@ -11,7 +11,7 @@ Bookins owns the owner dashboard, guest booking page, schedule rules, service vi
 - `services` stores the offering, duration, display price, location, schedule binding, visibility, status, revision, and an optional direct link (`public_link_url`, `public_link_expires_at`).
 - `bookings` stores a service snapshot, UTC range, timezone, guest contact, notes, private `owner_notes`, status, `source` (`guest` or `owner`), optional `series_id` for recurring owner bookings, reference, and unique reservation key. Status is `confirmed`, `completed`, `no_show`, `cancelled`, or `blocked` (owner time off).
 - `contacts` (optional) stores private client notes and tags keyed by lowercased email. The Contacts page merges it with booking history; without the Table, Contacts is derived from bookings only.
-- `owner-booking-alert` is an App workflow resource. Its TABLE_RECORD_CREATED trigger is bound to the logical `bookings` Table by `$appResource`, so no physical Table ID appears in source. It runs one TRANSFORM_DATA step to format the message and one SEND_EMAIL step to `USER_EMAIL`. It does not fire on updates, so cancellations send nothing.
+- `owner-daily-agenda` is an App workflow resource (installed off). A SCHEDULE_INTERVAL trigger (07:00 Africa/Lagos) runs TABLE_READ on the logical `bookings` Table via `$appResource` (no physical Table ID in source), one TRANSFORM_DATA step, and one SEND_EMAIL step to `USER_EMAIL`. Table-record triggers are not used: the Goalmatic importer rejects `$appResource` in trigger props.
 
 The App has no separate wallet, provider-token store, or App-only identity.
 
@@ -37,9 +37,9 @@ Google Calendar is optional and goes only through the `calendar-sync` capability
 
 On `/book`, the guest action `calendar-busy` (`integrations.google-calendar.availability`, busy ranges only, input limited to `timeMin`/`timeMax`) is used to hide overlapping openings in the browser. It is **not authoritative**: `booking.create` and `booking.openings-list` do not consult Calendar, so a direct call can still book a slot that is busy on the calendar. On any failure or when Calendar is not connected the guest sees unfiltered openings. Local preview and Demo show Calendar as unavailable.
 
-The owner receives one plain-text email per newly created booking through the `owner-booking-alert` workflow (platform mailer, noreply@goalmatic.io, the owner's registered email). Delivery depends on workflow-run limits and is not shown in the dashboard.
+When turned on, the owner receives one plain-text agenda email each morning through the `owner-daily-agenda` workflow (platform mailer, noreply@goalmatic.io, the owner's registered email). It reads the 200 most recently created bookings, so very old bookings scheduled for today could be missed. Delivery depends on workflow-run limits and is not shown in the dashboard.
 
-Calendar and owner-alert behavior is unproven until exercised on a real connected account. Guest email delivery, online payment, payout, guest cancellation, rescheduling, and Calendar invites are not claimed until their provider paths are connected and proved.
+Calendar and daily-agenda behavior is unproven until exercised on a real connected account. Guest email delivery, online payment, payout, guest cancellation, rescheduling, and Calendar invites are not claimed until their provider paths are connected and proved.
 
 ## Uninstall and release
 
