@@ -36,6 +36,34 @@ its origin is not allowed, startup
 fails visibly instead of falling back to sample data. Hosted builds never use
 preview data.
 
+## Features (v0.5.0)
+
+- Services with duration, display price in African currencies, location, public or private visibility, and optional direct links (private services are bookable only through their own link).
+- Weekly hours with multiple windows per day, slot interval, minimum notice, horizon, and time off (holidays, breaks) that guests cannot book.
+- Guest booking page in English and French with a month calendar, guest-timezone display, add-to-calendar, and collision-safe confirmation.
+- Owner bookings: walk-in and phone bookings, weekly repeats, reschedule, completed and no-show tracking, private notes, search, filters, week view, and CSV export.
+- Prefilled WhatsApp, SMS, and email messages for confirmations, reminders, changes, and follow-ups, opened in your own apps with editable templates. Bookins does not send messages itself.
+- Contacts with private notes and tags, booking history, and no-show counts.
+- Insights: booking trends, estimated revenue from display prices, top services, busiest times, cancellation and no-show rates, and new vs returning clients.
+- Share kit: link, QR code, WhatsApp share, and a website button snippet.
+
+Bookins does not take payments, send guest emails or SMS, or let guests reschedule themselves yet.
+
+## Google Calendar (optional, v0.4.0)
+
+Owners can connect Google Calendar from **Bookings**. Bookins uses only the declared Goalmatic operations in the `calendar-sync` capability:
+
+- **Owner, installed runtime:** `integrations.connection-start` / `connection-complete` (connect popup), `google-calendar.events-list` (connection check and clash flags for upcoming bookings, next 93 days, timed events only), `event-create` ("Add to Google Calendar" per booking or "Add all upcoming"; no attendees; the booking id is the idempotency key; the event id is saved in the booking's `calendar_event_id`), and `event-update` (renames the event "Cancelled: ..." when the booking is cancelled). Every write needs the platform's per-write approval (`app.calendar-write`).
+- **Cancel** always succeeds first. If the Calendar update then fails, the owner is told and must fix the event in Google Calendar. The update operation has no free/transparent field, so only the title changes. There is no delete operation.
+- **Guest `/book`:** the guest action `calendar-busy` (`google-calendar.availability`, busy ranges only, no titles) lets the booking page hide openings that overlap the owner's busy times. This is a **non-authoritative convenience filter**: `booking.create` does not check Calendar, and if the call fails or Calendar is not connected the page silently shows unfiltered openings.
+- **Local preview and Demo** show "not available" for Calendar; nothing is simulated. Hosted without a connection shows a connect prompt.
+
+Not provided: guest invites or email, payments, rescheduling, deleting events, and any Calendar enforcement at booking time. Calendar behavior is unproven until it is tested on a real connected Google account.
+
+## Owner daily agenda (optional, v0.5.0)
+
+The `owner-daily-agenda` workflow emails the account owner at 07:00 Africa/Lagos time with today's appointments, today's time off, and bookings received in the last 24 hours, with times in each booking's timezone. It is installed switched off; turn it on from the workflow in Goalmatic. It comes from noreply@goalmatic.io, goes only to the owner's registered Goalmatic email, reads the 200 most recently created bookings, and uses Goalmatic workflow runs. Instant per-booking emails and guest emails are not available.
+
 ## Build
 
 ```bash

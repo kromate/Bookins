@@ -3,7 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import './.goalmatic/tailwind.css'
 
-const GOALMATIC_APP_SDK_URL = 'https://goalmatic.site/sdk/goalmatic-app-sdk-v1.js?v=1.3.3'
+const GOALMATIC_APP_SDK_URL = 'https://goalmatic.site/sdk/goalmatic-app-sdk-v1.js?v=1.5.1'
 const goalmaticApiKey = String(import.meta.env.VITE_GOALMATIC_API_KEY || '').trim()
 const goalmaticApiBase = String(import.meta.env.VITE_GOALMATIC_API_BASE_URL || '').trim()
 
@@ -65,6 +65,14 @@ function waitForGoalmaticSignIn(runtime) {
     return Promise.resolve()
   }
   return new Promise((resolve) => {
+    let unsubscribe = () => {}
+    unsubscribe = runtime.subscribe((state) => {
+      if (state.status === 'ready') {
+        overlay.remove()
+        unsubscribe()
+        resolve()
+      }
+    })
     delete overlay.dataset.goalmaticRuntimeLoading
     overlay.dataset.goalmaticSignIn = 'required'
     overlay.removeAttribute('role')

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.goalmatic/
+.audit/
+.data/
+coverage/
+**/vendor/
+public/
+assets/
+**/tests/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+**/*.min.*
+*.lock
+.env*
+goalmatic.dev.js
