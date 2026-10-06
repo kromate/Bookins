@@ -9,3 +9,6 @@ build/
 .output/
 .env
 .env.*
+
+# Audit, research, and QA evidence: kept in git, not in hosted App source.
+.audit/
