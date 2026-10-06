@@ -12,3 +12,6 @@ build/
 .output/
 public/brand/*.png
 public/bookins/listing/*.png
+
+# Audit and research evidence stays local: the Goalmatic importer scans every tracked file.
+.audit/
