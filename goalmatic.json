@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "name": "Bookins",
+  "type": "app",
+  "framework": "vue",
+  "apiOrigin": "https://goalmatic.site",
+  "accountId": "tcGHgY62tebsnRr4AMqNRu0XVCo1",
+  "projectId": "bdb60277-0253-4c0a-b8c4-9a380231c548"
+}
