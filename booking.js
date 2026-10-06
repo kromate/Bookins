@@ -162,8 +162,25 @@ function createLocalPreviewState() {
   }
 }
 
+// `?fresh=1` on localhost starts an empty workspace (first-run testing) for this tab; `?fresh=0` restores samples.
+function wantsFreshPreview() {
+  try {
+    const flag = new URLSearchParams(window.location.search).get('fresh')
+    if (flag === '1') sessionStorage.setItem('bookins:preview-fresh', '1')
+    if (flag === '0') sessionStorage.removeItem('bookins:preview-fresh')
+    return sessionStorage.getItem('bookins:preview-fresh') === '1'
+  } catch {
+    return false
+  }
+}
+
 function hydrateLocalPreview() {
   if (localPreviewState.hydrated || !isLocalPreview()) return
+  if (wantsFreshPreview()) {
+    for (const table of Object.values(TABLES)) localPreviewState[table] = []
+    localPreviewState.hydrated = true
+    return
+  }
   const source = createLocalPreviewState()
   const history = createSampleHistory({
     scheduleId: 'preview-schedule',

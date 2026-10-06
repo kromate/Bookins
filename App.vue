@@ -4,7 +4,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, p
 import { useRoute, useRouter } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import BookinsLogo from './components/BookinsLogo.vue'
-import DemoGuide from './components/DemoGuide.vue'
+import ProductTour from './components/ProductTour.vue'
 
 // Owner-only feedback widget: loaded lazily and never on the public /book page.
 const GoalmaticFeedback = defineAsyncComponent(() => import('./components/GoalmaticFeedback.vue'))
@@ -23,7 +23,9 @@ const route = useRoute()
 const router = useRouter()
 const menuOpen = ref(false)
 const workspaceDetails = ref(null)
-const demoGuide = ref(null)
+const tour = ref(null)
+const helpOpen = ref(false)
+const helpRoot = ref(null)
 function workspaceKeydown(event) {
   if (event.key !== 'Escape' || !workspaceDetails.value?.open) return
   event.preventDefault()
@@ -34,12 +36,41 @@ function workspaceKeydown(event) {
 function focusMain() {
   document.getElementById('main-content')?.focus()
 }
-async function startWalkthrough() {
+// Starts the Live or Demo tour (whichever matches the current mode). Closes every menu first.
+async function startTour() {
   if (workspaceDetails.value) workspaceDetails.value.open = false
   menuOpen.value = false
+  moreOpen.value = false
+  helpOpen.value = false
   await nextTick()
-  await demoGuide.value?.start()
+  await tour.value?.start()
 }
+async function toggleHelp(open = !helpOpen.value, { restoreFocus = false } = {}) {
+  helpOpen.value = open
+  await nextTick()
+  if (open) helpRoot.value?.querySelector('.help-popover > *')?.focus()
+  else if (restoreFocus) helpRoot.value?.querySelector('.help-button')?.focus()
+}
+function helpKeydown(event) {
+  if (!helpOpen.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    toggleHelp(false, { restoreFocus: true })
+    return
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const items = [...helpRoot.value.querySelectorAll('.help-popover > *')]
+    const index = items.indexOf(document.activeElement)
+    event.preventDefault()
+    items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+  }
+}
+function helpOutside(event) {
+  if (helpOpen.value && !helpRoot.value?.contains(event.target)) helpOpen.value = false
+}
+onMounted(() => document.addEventListener('pointerdown', helpOutside, true))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', helpOutside, true))
 const narrowScreen = ref(false)
 let navigationMedia
 const updateNavigationMedia = event => { narrowScreen.value = event.matches }
@@ -143,7 +174,7 @@ const moreCurrent = computed(() => moreNav.some((item) => route.path.startsWith(
 async function toggleMore(open = !moreOpen.value) {
   moreOpen.value = open
   await nextTick()
-  if (open) document.querySelector('.more-sheet a')?.focus()
+  if (open) document.querySelector('.more-sheet .more-item, .more-sheet a')?.focus()
   else document.querySelector('.more-button')?.focus()
 }
 function moreKeydown(event) {
@@ -153,7 +184,7 @@ function moreKeydown(event) {
     return
   }
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll('a[href]')]
+  const controls = [...event.currentTarget.querySelectorAll('a[href], button')]
   const first = controls[0], last = controls.at(-1)
   if ((!event.shiftKey && document.activeElement === last) || (event.shiftKey && document.activeElement === first)) {
     event.preventDefault()
@@ -161,18 +192,64 @@ function moreKeydown(event) {
   }
 }
 
-// Lightweight success toast (supplements, never replaces, inline role="status"/"alert" messages).
+// Toasts. `toast(message)` keeps working; options: { kind: 'success'|'error'|'info', duration (ms, 0 = until dismissed),
+// action: { label, onClick } }. Errors persist until dismissed and are announced assertively; identical consecutive
+// toasts are merged (their timer restarts). Helpers: toast.success / toast.error / toast.info.
 const toasts = ref([])
+const MAX_TOASTS = 2
 let toastId = 0
-function toast(message, { duration = 3500 } = {}) {
+const toastBorn = new Map()
+const toastTimers = new Map()
+function dismissToast(id) {
+  window.clearTimeout(toastTimers.get(id))
+  toastTimers.delete(id)
+  toastBorn.delete(id)
+  toasts.value = toasts.value.filter((item) => item.id !== id)
+}
+function armToast(id, duration) {
+  window.clearTimeout(toastTimers.get(id))
+  if (duration > 0) toastTimers.set(id, window.setTimeout(() => dismissToast(id), duration))
+}
+function toast(message, options = {}) {
   const text = String(message || '').trim()
   if (!text) return
+  const kind = ['success', 'error', 'info'].includes(options.kind) ? options.kind : 'success'
+  const duration = Number.isFinite(options.duration) ? options.duration : kind === 'error' ? 0 : options.action ? 6000 : 3500
+  const action = options.action?.label && typeof options.action.onClick === 'function' ? options.action : null
+  const last = toasts.value.at(-1)
+  if (last && last.text === text && last.kind === kind && !action && !last.action) {
+    armToast(last.id, duration)
+    return last.id
+  }
   const id = ++toastId
-  toasts.value = [...toasts.value.slice(-2), { id, text }]
-  window.setTimeout(() => {
-    toasts.value = toasts.value.filter((item) => item.id !== id)
-  }, duration)
+  toastBorn.set(id, Date.now())
+  let next = [...toasts.value, { id, text, kind, action }]
+  while (next.length > MAX_TOASTS) {
+    const drop = next.find((item) => item.kind !== 'error') || next[0]
+    window.clearTimeout(toastTimers.get(drop.id))
+    toastTimers.delete(drop.id)
+    toastBorn.delete(drop.id)
+    next = next.filter((item) => item !== drop)
+  }
+  toasts.value = next
+  armToast(id, duration)
+  return id
 }
+for (const kind of ['success', 'error', 'info']) toast[kind] = (message, options = {}) => toast(message, { ...options, kind })
+toast.dismiss = dismissToast
+// A toast is about the page it was raised on: drop the ones that outlived a navigation. Anything under 1.5s old stays
+// (a save that navigates on purpose, such as "Availability saved" -> Services, keeps its message).
+function dropStaleToasts() {
+  const now = Date.now()
+  for (const item of [...toasts.value]) if (now - (toastBorn.get(item.id) || 0) > 1500) dismissToast(item.id)
+}
+function runToastAction(item) {
+  dismissToast(item.id)
+  item.action.onClick()
+}
+onBeforeUnmount(() => toastTimers.forEach((timer) => window.clearTimeout(timer)))
+const politeToasts = computed(() => toasts.value.filter((item) => item.kind !== 'error'))
+const errorToasts = computed(() => toasts.value.filter((item) => item.kind === 'error'))
 const isPublicRoute = computed(() => route.path === '/book')
 const profileName = computed(() => state.profile?.display_name || 'Booking workspace')
 const initials = computed(
@@ -185,6 +262,7 @@ const initials = computed(
       .join('')
       .toUpperCase() || 'B',
 )
+const timezoneLabel = computed(() => state.profile?.timezone || state.schedules.find(item => item?.timezone)?.timezone || '')
 const publicUrl = computed(() => state.profile?.public_link_url || '')
 const currentPage = computed(
   () =>
@@ -197,20 +275,29 @@ const currentPage = computed(
 
 let inFlight = null
 let rerun = false
+let rerunLoud = false
+let lastLoadedAt = 0
 
 // Resolves true when workspace state was reloaded, false when it could not be.
 // A call made during a load waits for one more load so callers never read stale state.
-function refresh() {
+// `refresh({ silent: true })` is the background flavour (route change, focus, poll): no spinner, no error banner,
+// the current state stays if it fails. Any other call (including a click handler passing an event) is a loud refresh.
+function refresh(options) {
   if (isPublicRoute.value) return Promise.resolve(false)
+  const silent = options?.silent === true
   if (inFlight) {
     rerun = true
+    if (!silent) rerunLoud = true
     return inFlight
   }
+  rerunLoud = !silent
   inFlight = (async () => {
     let ok = false
     do {
       rerun = false
-      ok = await loadWorkspace()
+      const loud = rerunLoud
+      rerunLoud = false
+      ok = await loadWorkspace({ silent: !loud })
     } while (rerun)
     return ok
   })().finally(() => {
@@ -218,6 +305,31 @@ function refresh() {
   })
   return inFlight
 }
+
+// Background refresh so owners see new guest bookings without clicking Refresh. Never runs in Demo (fixed sample
+// data), on /book, while a dialog or the tour is open, or more than once every 10s. Refresh only replaces the shared
+// store state; pages keep their own drafts, so typing is never overwritten.
+const POLL_MS = 45000
+let pollTimer = 0
+function backgroundBusy() {
+  return Boolean(document.querySelector('.gm-dialog-overlay, [data-state="open"][role="dialog"]')) || document.body.classList.contains('bookins-tour-open')
+}
+function backgroundRefresh({ force = false } = {}) {
+  if (isDemo.value || isPublicRoute.value || document.visibilityState === 'hidden' || !loaded.value) return
+  if (!force && (backgroundBusy() || Date.now() - lastLoadedAt < 10000)) return
+  void refresh({ silent: true })
+}
+function onVisibility() { if (document.visibilityState === 'visible') backgroundRefresh() }
+onMounted(() => {
+  window.addEventListener('focus', backgroundRefresh)
+  document.addEventListener('visibilitychange', onVisibility)
+  pollTimer = window.setInterval(backgroundRefresh, POLL_MS)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', backgroundRefresh)
+  document.removeEventListener('visibilitychange', onVisibility)
+  window.clearInterval(pollTimer)
+})
 
 // Real page headings while workspace data loads, so the first screen has the page's shape.
 const pageIntros = {
@@ -233,9 +345,11 @@ const pageIntro = computed(
   () => pageIntros[Object.keys(pageIntros).find((path) => path !== '/' && route.path.startsWith(path)) || '/'],
 )
 
-async function loadWorkspace() {
-  loading.value = true
-  error.value = ''
+async function loadWorkspace({ silent = false } = {}) {
+  if (!silent) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     // The account label and workspace Tables are independent, so load them together.
     const askUser = !isDemo.value && window.GoalmaticAuth?.getUser
@@ -248,12 +362,14 @@ async function loadWorkspace() {
     else if (localPreview) accountLabel.value = 'Sample workspace'
     Object.assign(state, workspace)
     loaded.value = true
+    lastLoadedAt = Date.now()
     return true
   } catch (reason) {
+    if (silent && loaded.value) return false
     error.value = reason?.message || 'Bookins could not load this workspace.'
     return false
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -307,14 +423,81 @@ provide('refreshBookings', refresh)
 provide('localPreview', localPreview)
 provide('bookingLoaded', loaded)
 provide('toast', toast)
+provide('startTour', startTour)
 
 watch(
   () => route.path,
-  () => {
+  (path, previous) => {
     menuOpen.value = false
     moreOpen.value = false
+    dropStaleToasts()
+    // Returning from /book (or any page change) pulls in bookings made in the meantime.
+    if (previous !== undefined) backgroundRefresh({ force: true })
   },
 )
+
+// Demo: every disabled control explains itself (pages add richer GmHint text where it matters).
+const DEMO_REASON = 'Read-only in Demo. Switch to Live to make changes.'
+let demoObserver = null
+let demoFrame = 0
+function labelDemoControls() {
+  demoFrame = 0
+  for (const el of document.querySelectorAll('#main-content :is(button, input, select, textarea)[disabled], #main-content [aria-disabled="true"]')) {
+    if (el.closest('.gm-walkthrough, .gm-hint') || el.hasAttribute('title') || el.hasAttribute('aria-describedby')) continue
+    el.setAttribute('title', DEMO_REASON)
+    el.dataset.demoTitle = ''
+  }
+}
+function scheduleDemoLabels() { if (!demoFrame) demoFrame = window.requestAnimationFrame(labelDemoControls) }
+function syncDemoObserver() {
+  demoObserver?.disconnect()
+  demoObserver = null
+  if (!isDemo.value) {
+    for (const el of document.querySelectorAll('[data-demo-title]')) { el.removeAttribute('title'); delete el.dataset.demoTitle }
+    return
+  }
+  demoObserver = new MutationObserver(scheduleDemoLabels)
+  demoObserver.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
+  scheduleDemoLabels()
+}
+watch(isDemo, syncDemoObserver)
+onMounted(syncDemoObserver)
+onBeforeUnmount(() => { demoObserver?.disconnect(); window.cancelAnimationFrame(demoFrame) })
+
+// Scroll cue: rows that scroll sideways (tabs, filters) get `has-more-right` / `has-more-left` so CSS can fade the clipped edge.
+const SCROLL_ROWS = '.tab-bar, .segmented, .kind-row, .settings-nav, .period'
+let cueFrame = 0
+function updateScrollCues() {
+  cueFrame = 0
+  for (const el of document.querySelectorAll(SCROLL_ROWS)) {
+    const max = el.scrollWidth - el.clientWidth
+    el.classList.toggle('has-more-right', max > 2 && el.scrollLeft < max - 2)
+    el.classList.toggle('has-more-left', max > 2 && el.scrollLeft > 2)
+  }
+}
+function scheduleScrollCues() { if (!cueFrame) cueFrame = window.requestAnimationFrame(updateScrollCues) }
+let cueObserver = null
+onMounted(() => {
+  document.addEventListener('scroll', event => { if (event.target instanceof Element && event.target.matches(SCROLL_ROWS)) scheduleScrollCues() }, true)
+  window.addEventListener('resize', scheduleScrollCues)
+  cueObserver = new MutationObserver(scheduleScrollCues)
+  cueObserver.observe(document.body, { subtree: true, childList: true })
+  scheduleScrollCues()
+})
+onBeforeUnmount(() => { cueObserver?.disconnect(); window.removeEventListener('resize', scheduleScrollCues); window.cancelAnimationFrame(cueFrame) })
+
+// Radix hides everything outside an open dialog from assistive tech; toasts render above dialogs, so keep them exposed.
+let toastGuard = null
+const toastRegion = ref(null)
+onMounted(() => {
+  toastGuard = new MutationObserver(() => {
+    const region = toastRegion.value
+    if (region?.hasAttribute('aria-hidden')) region.removeAttribute('aria-hidden')
+    if (region?.hasAttribute('inert')) region.removeAttribute('inert')
+  })
+  if (toastRegion.value) toastGuard.observe(toastRegion.value, { attributes: true, attributeFilter: ['aria-hidden', 'inert'] })
+})
+onBeforeUnmount(() => toastGuard?.disconnect())
 onMounted(async () => {
   try {
     await refresh()
@@ -360,18 +543,20 @@ onMounted(async () => {
         <summary tabindex="0">
         <span class="workspace-avatar">{{ initials }}</span>
         <div
-          ><small>{{ localPreview ? 'Sample workspace' : 'Active workspace' }}</small
+          ><small>{{ isDemo ? 'Demo mode' : localPreview ? 'Sample workspace' : 'Active workspace' }}</small
           ><strong>{{ accountLabel }}</strong></div
         >
         </summary>
         <div class="workspace-menu-actions">
           <button type="button" :disabled="modeRequesting" @click="changeMode(!isDemo)">{{ isDemo ? 'Switch to Live' : 'Switch to Demo' }}</button>
-          <template v-if="isDemo">
-            <button type="button" @click="startWalkthrough">Start or restart walkthrough</button>
-            <RouterLink to="/demo/guest" @click="menuOpen = false; workspaceDetails.open = false">Guest preview</RouterLink>
-          </template>
+          <RouterLink v-if="isDemo" to="/demo/guest" @click="menuOpen = false; workspaceDetails.open = false">Guest preview</RouterLink>
         </div>
       </details>
+
+      <div class="mode-switch" role="group" aria-label="Workspace data">
+        <button type="button" :aria-pressed="!isDemo" :disabled="modeRequesting" @click="changeMode(false)">{{ localPreview ? 'Sample' : 'Live' }}</button>
+        <button type="button" :aria-pressed="isDemo" :disabled="modeRequesting" @click="changeMode(true)">Demo</button>
+      </div>
 
       <p class="nav-section-label">WORKSPACE</p>
       <nav
@@ -442,6 +627,23 @@ onMounted(async () => {
           >
         </div>
       </div>
+      <div ref="helpRoot" class="help-menu" @keydown="helpKeydown">
+        <div v-if="helpOpen" id="help-popover" class="help-popover" role="menu" aria-label="Help">
+          <button type="button" role="menuitem" @click="startTour"><AppIcon name="sparkle" :size="18" />Take the tour</button>
+          <RouterLink to="/" role="menuitem" @click="helpOpen = false; menuOpen = false"><AppIcon name="check" :size="18" />Setup checklist</RouterLink>
+          <a href="https://goalmatic.io/support" target="_blank" rel="noreferrer" role="menuitem" @click="helpOpen = false"><AppIcon name="external" :size="18" />Contact support</a>
+        </div>
+        <button
+          class="help-button"
+          type="button"
+          data-tour="tour-help-button"
+          data-bookins-walkthrough-trigger
+          aria-haspopup="menu"
+          :aria-expanded="helpOpen"
+          aria-controls="help-popover"
+          @click="toggleHelp()"
+        ><AppIcon name="info" :size="18" />Help</button>
+      </div>
       <div class="runtime-label"
         ><span
           class="runtime-dot"
@@ -477,7 +679,9 @@ onMounted(async () => {
         <div class="topbar-title"
           ><strong>{{ currentPage.label }}</strong
           ><small
-            >{{ profileName }} · {{ state.profile?.timezone || 'Set your timezone' }}</small
+            >{{ profileName }} ·
+            <RouterLink v-if="!timezoneLabel" class="topbar-link" to="/settings">Set your timezone</RouterLink
+            ><template v-else>{{ timezoneLabel }}</template></small
           ></div
         >
         <div class="topbar-actions">
@@ -486,14 +690,14 @@ onMounted(async () => {
             class="preview-pill demo"
             role="status"
             title="Demo workspace. Read-only sample data; no real bookings are created."
-            ><AppIcon name="lock" :size="14" />Demo · Read-only</span
+            ><AppIcon name="lock" :size="14" />Demo<span class="pill-long">· Read-only</span></span
           >
           <span
             v-else-if="localPreview"
             class="preview-pill"
             role="status"
             title="Local sample workspace. Changes stay in this browser and never reach your hosted App."
-            ><AppIcon name="info" :size="14" />Local preview · not saved<span class="visually-hidden">. Local sample workspace. Changes stay in this browser and never reach your hosted App.</span></span
+            ><AppIcon name="info" :size="14" />Local preview<span class="pill-long">· not saved</span><span class="visually-hidden">. Local sample workspace. Changes stay in this browser and never reach your hosted App.</span></span
           >
           <button
             class="icon-button"
@@ -561,7 +765,7 @@ onMounted(async () => {
         </RouterView>
         <p v-if="transitioning" class="mode-transition" role="status">Loading your workspace…</p>
       </main>
-      <DemoGuide v-if="isDemo && !transitioning" ref="demoGuide" />
+      <ProductTour v-if="!transitioning && loaded" ref="tour" />
     </div>
 
     <nav
@@ -582,6 +786,8 @@ onMounted(async () => {
       </RouterLink>
       <button
         class="more-button"
+        data-tour="tour-help-button"
+        data-bookins-walkthrough-trigger
         :class="{ 'is-current': moreCurrent || moreOpen }"
         type="button"
         aria-haspopup="dialog"
@@ -597,6 +803,11 @@ onMounted(async () => {
     <template v-if="moreOpen">
       <button class="more-sheet-scrim" type="button" aria-label="Close more menu" tabindex="-1" @click="toggleMore(false)" />
       <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-label="More pages" @keydown="moreKeydown">
+        <h2>Help</h2>
+        <button type="button" class="more-item" @click="startTour"><AppIcon name="sparkle" :size="20" />Take the tour</button>
+        <RouterLink to="/" class="more-item" @click="moreOpen = false"><AppIcon name="check" :size="20" />Setup checklist</RouterLink>
+        <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="20" />Contact support</a>
+        <hr />
         <h2>More</h2>
         <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to">
           <AppIcon :name="item.icon" :size="20" />{{ item.label }}
@@ -604,12 +815,27 @@ onMounted(async () => {
       </div>
     </template>
 
-    <div class="toast-region" aria-live="polite" aria-atomic="false">
-      <TransitionGroup name="toast">
-        <div v-for="item in toasts" :key="item.id" class="toast" role="status">
-          <AppIcon name="check" :size="16" />{{ item.text }}
-        </div>
-      </TransitionGroup>
+    <div ref="toastRegion" class="toast-region">
+      <div aria-live="polite" aria-atomic="false">
+        <TransitionGroup name="toast">
+          <div v-for="item in politeToasts" :key="item.id" class="toast" :class="item.kind">
+            <AppIcon :name="item.kind === 'info' ? 'info' : 'check'" :size="16" />
+            <span class="toast-text">{{ item.text }}</span>
+            <button v-if="item.action" type="button" class="toast-action" @click="runToastAction(item)">{{ item.action.label }}</button>
+            <button type="button" class="toast-dismiss" aria-label="Dismiss notification" @click="dismissToast(item.id)">&times;</button>
+          </div>
+        </TransitionGroup>
+      </div>
+      <div aria-live="assertive" aria-atomic="false">
+        <TransitionGroup name="toast">
+          <div v-for="item in errorToasts" :key="item.id" class="toast error" role="alert">
+            <AppIcon name="alert" :size="16" />
+            <span class="toast-text">{{ item.text }}</span>
+            <button v-if="item.action" type="button" class="toast-action" @click="runToastAction(item)">{{ item.action.label }}</button>
+            <button type="button" class="toast-dismiss" aria-label="Dismiss error" @click="dismissToast(item.id)">&times;</button>
+          </div>
+        </TransitionGroup>
+      </div>
     </div>
   </div>
 

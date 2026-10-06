@@ -56,6 +56,7 @@ const en = {
   'confirm.copyRef': 'Copy',
   'confirm.copied': 'Copied',
   'confirm.copyAria': 'Copy booking reference',
+  'confirm.another': 'Book another time',
   'steps.of': 'Step {n} of 4',
   'back': 'Back',
 
@@ -75,6 +76,7 @@ const en = {
   'cal.dayTimes_other': '{day}, {count} times available',
   'cal.dayNone': '{day}, no times available',
   'cal.zone': 'Times in {zone}',
+  'cal.legend': 'Greyed-out days have no open times. The host may need advance notice, may be fully booked, or may be closed that day.',
   'slots.loading': 'Checking available times…',
   'slots.on': 'Times on {day}',
   'slots.heading_one': '{day} · {count} time',
@@ -99,6 +101,7 @@ const en = {
   'form.phone': 'Phone number',
   'form.optional': 'Optional',
   'form.phonePh': '+234 800 000 0000',
+  'form.phoneHint': 'Add a phone number so {host} can reach you on WhatsApp or SMS about this appointment.',
   'form.notes': 'Anything the host should know?',
   'form.notesPh': 'Share a little context for the session.',
   'form.submit': 'Confirm booking',
@@ -119,6 +122,7 @@ const en = {
   'sum.price': 'Price',
   'sum.time': 'Time',
   'sum.payment': 'Payment is arranged directly with the host.',
+  'sum.with': 'With {host}',
   'footer': 'Simple scheduling for African businesses.',
 
   'banner.slotTaken': 'That time was just booked by someone else. The times below are refreshed, so pick another. Your details are saved.',
@@ -186,6 +190,7 @@ const fr = {
   'confirm.copyRef': 'Copier',
   'confirm.copied': 'Copié',
   'confirm.copyAria': 'Copier la référence de réservation',
+  'confirm.another': 'Réserver un autre horaire',
   'steps.of': 'Étape {n} sur 4',
   'back': 'Retour',
 
@@ -205,6 +210,7 @@ const fr = {
   'cal.dayTimes_other': '{day}, {count} horaires disponibles',
   'cal.dayNone': '{day}, aucun horaire disponible',
   'cal.zone': 'Horaires en {zone}',
+  'cal.legend': 'Les jours grisés n’ont aucun horaire libre. L’hôte peut demander un préavis, être complet ou fermé ce jour-là.',
   'slots.loading': 'Recherche des horaires disponibles…',
   'slots.on': 'Horaires du {day}',
   'slots.heading_one': '{day} · {count} horaire',
@@ -229,6 +235,7 @@ const fr = {
   'form.phone': 'Numéro de téléphone',
   'form.optional': 'Facultatif',
   'form.phonePh': '+225 07 00 00 00 00',
+  'form.phoneHint': 'Ajoutez un numéro pour que {host} puisse vous joindre par WhatsApp ou SMS au sujet de ce rendez-vous.',
   'form.notes': 'Quelque chose à signaler à l’hôte ?',
   'form.notesPh': 'Donnez un peu de contexte pour la séance.',
   'form.submit': 'Confirmer la réservation',
@@ -249,6 +256,7 @@ const fr = {
   'sum.price': 'Prix',
   'sum.time': 'Horaire',
   'sum.payment': 'Le paiement se règle directement avec l’hôte.',
+  'sum.with': 'Avec {host}',
   'footer': 'Une planification simple pour les entreprises africaines.',
 
   'banner.slotTaken': 'Cet horaire vient d’être réservé par quelqu’un d’autre. Les horaires ci-dessous sont actualisés : choisissez-en un autre. Vos informations sont conservées.',

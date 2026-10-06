@@ -1,7 +1,11 @@
 <script setup>
+import { formatDay } from '../format-date.js'
 import { csvCell } from '../csv.js'
-import { computed, inject, onBeforeUnmount, ref } from 'vue'
+import { computed, inject, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import { contactTags, hasRealEmail, isTimeOff, saveContact } from '../booking.js'
 import { composeMessage } from '../messaging.js'
 import { isDemo } from '../runtime.js'
@@ -10,6 +14,7 @@ import { displayTimeZone } from '../time-display.js'
 const state = inject('bookingState')
 const refresh = inject('refreshBookings', async () => true)
 const toast = inject('toast', null)
+const setup = useSetupState()
 const query = ref('')
 const tagFilter = ref('')
 const now = Date.now()
@@ -113,7 +118,7 @@ function dateLabel(value) {
   const date = new Date(value)
   return Number.isNaN(date.getTime())
     ? 'None'
-    : date.toLocaleDateString(undefined, { timeZone: zone.value, month: 'short', day: 'numeric', year: 'numeric' })
+    : formatDay(date, zone.value)
 }
 
 // Follow-up message links for the contact's latest booking. Bookins never sends; it opens the owner's own app.
@@ -134,9 +139,6 @@ const editingEmail = ref('')
 const draft = ref({ notes: '', tags: [], tagInput: '' })
 const saving = ref(false)
 const saveError = ref('')
-const saved = ref('')
-let savedTimer = 0
-onBeforeUnmount(() => window.clearTimeout(savedTimer))
 
 function startEdit(contact) {
   if (saving.value) return
@@ -144,10 +146,29 @@ function startEdit(contact) {
   draft.value = { notes: contact.notes, tags: [...contact.tags], tagInput: '' }
   saveError.value = ''
 }
+const discardOpen = ref(false)
+const editing = computed(() => contacts.value.find((item) => item.email === editingEmail.value) || null)
+const dirty = computed(() => {
+  const contact = editing.value
+  if (!contact) return false
+  const pending = draft.value.tagInput.trim()
+  const tags = pending ? [...draft.value.tags, pending] : draft.value.tags
+  return (
+    draft.value.notes !== contact.notes ||
+    tags.length !== contact.tags.length ||
+    tags.some((tag, index) => tag !== contact.tags[index])
+  )
+})
 function cancelEdit() {
   if (saving.value) return
+  discardOpen.value = false
   editingEmail.value = ''
   saveError.value = ''
+}
+function requestCancel() {
+  if (saving.value) return
+  if (dirty.value) discardOpen.value = true
+  else cancelEdit()
 }
 function addTag() {
   const raw = draft.value.tagInput.split(',').map((tag) => tag.trim()).filter(Boolean)
@@ -177,15 +198,24 @@ async function saveEdit(contact) {
       tags: draft.value.tags,
     })
     await refresh()
+    discardOpen.value = false
     editingEmail.value = ''
-    saved.value = contact.email
-    toast?.('Contact saved')
-    window.clearTimeout(savedTimer)
-    savedTimer = window.setTimeout(() => { saved.value = '' }, 2500)
+    toast?.success(`Notes and tags saved for ${contact.name}.`)
   } catch (reason) {
     saveError.value = reason?.message || 'The client record could not be saved.'
+    toast?.error('Notes and tags could not be saved.')
   } finally {
     saving.value = false
+  }
+}
+
+async function copyBookingLink() {
+  const url = state.profile?.public_link_url || ''
+  try {
+    await navigator.clipboard.writeText(url)
+    toast?.success('Booking link copied. Share it with your first client.')
+  } catch {
+    toast?.error('Could not copy the link. Open Settings to copy it.')
   }
 }
 
@@ -208,6 +238,7 @@ function exportCsv() {
   link.click()
   link.remove()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  toast?.success(`Exported ${contacts.value.length} ${contacts.value.length === 1 ? 'contact' : 'contacts'}`)
 }
 </script>
 
@@ -230,20 +261,24 @@ function exportCsv() {
             type="search"
             placeholder="Search contacts"
         /></label>
-        <button
-          class="secondary"
-          type="button"
-          :disabled="!contacts.length"
-          @click="exportCsv"
-          >Export CSV</button
-        >
+        <GmHint :text="contacts.length ? '' : 'Nothing to export yet. Contacts appear after a client books.'" wrap :disabled="!!contacts.length" v-slot="{ describedby }">
+          <button
+            class="secondary"
+            type="button"
+            :aria-disabled="!contacts.length || undefined"
+            :aria-describedby="contacts.length ? undefined : describedby"
+            @click="contacts.length && exportCsv()"
+            >Export CSV</button
+          >
+        </GmHint>
       </div>
     </div>
 
     <div class="toolbar contact-toolbar">
       <p class="contact-count"
         ><strong>{{ contacts.length }} {{ contacts.length === 1 ? 'contact' : 'contacts' }}</strong
-        ><span>Built from booking history plus your private notes and tags. Dates shown in {{ zone }}.</span></p
+        ><span>Built from booking history plus your private notes and tags. Dates shown in {{ zone }}.</span
+        ><GmHint text="Contacts are built automatically from your bookings: everyone who booked appears once, matched by email (phone for clients without one). Time off is not counted. Notes and tags are the only things you add yourself." label="How contacts are built" /></p
       >
     </div>
 
@@ -261,9 +296,10 @@ function exportCsv() {
       >
     </div>
 
+    <div data-tour="tour-contacts-list">
     <div
       v-if="contacts.length"
-      class="contact-list stagger"
+      class="contact-list"
     >
       <article
         v-for="contact in contacts"
@@ -280,7 +316,8 @@ function exportCsv() {
               <span class="contact-phone"><AppIcon name="phone" :size="14" />{{ contact.phone || 'No phone supplied' }}</span>
             </p>
             <div v-if="contact.tags.length || contact.noShowCount" class="tag-row">
-              <span v-if="contact.noShowCount" class="chip danger" :title="`${contact.noShowCount} no-show${contact.noShowCount === 1 ? '' : 's'}`">{{ contact.noShowCount }} no-show{{ contact.noShowCount === 1 ? '' : 's' }}</span>
+              <span v-if="contact.noShowCount" class="chip danger">{{ contact.noShowCount }} no-show{{ contact.noShowCount === 1 ? '' : 's' }}</span>
+              <GmHint v-if="contact.noShowCount" text="A no-show is a booking you marked 'No-show' in Bookings after the client did not turn up. Cancelled bookings are not counted." label="What a no-show count means" />
               <span v-for="tag in contact.tags" :key="tag" class="chip accent">{{ tag }}</span>
             </div>
           </div>
@@ -292,15 +329,14 @@ function exportCsv() {
         </div>
         <p class="outcomes tnum">{{ contact.confirmedCount }} confirmed · {{ contact.completedCount }} completed · {{ contact.noShowCount }} no-show · {{ contact.cancelledCount }} cancelled</p>
         <p v-if="contact.notes && editingEmail !== contact.email" class="notes-preview"><strong>Private notes</strong>{{ contact.notes }}</p>
-        <p v-if="saved === contact.email" class="saved" role="status"><AppIcon name="check" :size="16" />Saved.</p>
 
         <form v-if="editingEmail === contact.email" class="edit-panel" @submit.prevent="saveEdit(contact)">
           <div class="field">
-            <label :for="`notes-${contact.email}`">Private notes</label>
+            <label :for="`notes-${contact.email}`">Private notes <GmHint text="Only you can see these notes. Guests never do, and Bookins does not send them anywhere." label="About private notes" /></label>
             <textarea :id="`notes-${contact.email}`" v-model="draft.notes" maxlength="4000" :disabled="isDemo || saving" placeholder="Only you see these notes."></textarea>
           </div>
           <div class="field">
-            <label :for="`tags-${contact.email}`">Tags</label>
+            <label :for="`tags-${contact.email}`">Tags <GmHint text="Tags are your own labels, such as VIP or Referral. Only you see them. Use them to filter this list; separate several with commas." label="About tags" /></label>
             <div v-if="draft.tags.length" class="tag-row">
               <button v-for="tag in draft.tags" :key="tag" class="chip accent removable" type="button" :disabled="isDemo || saving" :aria-label="`Remove tag ${tag}`" @click="removeTag(tag)">{{ tag }} ×</button>
             </div>
@@ -320,17 +356,30 @@ function exportCsv() {
           <p v-if="saveError" class="notice error" role="alert">{{ saveError }}</p>
           <div class="form-actions">
             <button class="primary small-button" :disabled="isDemo || saving">{{ saving ? 'Saving…' : 'Save' }}</button>
-            <button class="secondary small-button" type="button" :disabled="saving" @click="cancelEdit">Cancel</button>
+            <GmConfirm
+              v-model:open="discardOpen"
+              title="Discard your changes?"
+              message="Your notes and tags for this contact have not been saved."
+              confirm-label="Discard changes"
+              align="start"
+              cancel-label="Keep editing"
+              tone="danger"
+              @confirm="cancelEdit"
+            >
+              <button class="secondary small-button" type="button" :disabled="saving" @click="requestCancel">Cancel</button>
+            </GmConfirm>
           </div>
         </form>
         <div v-else class="card-actions">
-          <button class="secondary small-button" type="button" :disabled="isDemo" @click="startEdit(contact)"><AppIcon name="edit" :size="16" />{{ contact.notes || contact.tags.length ? 'Edit notes and tags' : 'Add notes and tags' }}</button>
+          <GmHint wrap :text="isDemo ? 'Demo is read-only. Exit Demo to edit contacts.' : 'Save or discard the notes you are editing first.'" :disabled="!(isDemo || (editingEmail && dirty))" v-slot="{ describedby }">
+            <button class="secondary small-button" type="button" :aria-disabled="(isDemo || (!!editingEmail && dirty)) || undefined" :aria-describedby="(isDemo || (editingEmail && dirty)) ? describedby : undefined" @click="!(isDemo || (editingEmail && dirty)) && startEdit(contact)"><AppIcon name="edit" :size="16" />{{ contact.notes || contact.tags.length ? 'Edit notes and tags' : 'Add notes and tags' }}</button>
+          </GmHint>
           <details v-if="followUp(contact)" class="message-menu">
-            <summary class="secondary small-button">Message</summary>
+            <summary class="secondary small-button" :aria-label="`Message ${contact.name}`">Message</summary>
             <div class="message-links">
-              <a v-if="followUp(contact).whatsapp" :href="followUp(contact).whatsapp" target="_blank" rel="noreferrer">Open WhatsApp</a>
-              <a v-if="followUp(contact).sms" :href="followUp(contact).sms">Open SMS</a>
-              <a v-if="followUp(contact).email" :href="followUp(contact).email">Open email</a>
+              <a v-if="followUp(contact).whatsapp" :href="followUp(contact).whatsapp" target="_blank" rel="noreferrer" :aria-label="`Open WhatsApp to message ${contact.name}`">Open WhatsApp</a>
+              <a v-if="followUp(contact).sms" :href="followUp(contact).sms" :aria-label="`Open SMS to message ${contact.name}`">Open SMS</a>
+              <a v-if="followUp(contact).email" :href="followUp(contact).email" :aria-label="`Open email to message ${contact.name}`">Open email</a>
               <small>Opens a follow-up message in your own app. Bookins does not send it.</small>
             </div>
           </details>
@@ -354,7 +403,7 @@ function exportCsv() {
       <p>{{
         query || tagFilter
           ? 'Try a different name, email, phone number, or tag.'
-          : 'A client will appear here after their first booking. Bookins does not create a second customer database.'
+          : 'A client appears here automatically after their first booking, with their history, private notes and tags. Share your booking link to get your first one.'
       }}</p>
       <button
         v-if="query || tagFilter"
@@ -363,6 +412,11 @@ function exportCsv() {
         @click="query = ''; tagFilter = ''"
         >Clear filters</button
       >
+      <template v-else>
+        <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
+        <RouterLink v-else class="primary" to="/settings">{{ setup.hasProfile ? 'Create your booking link' : 'Set up your booking link' }}</RouterLink>
+      </template>
+    </div>
     </div>
   </section>
 </template>
@@ -371,6 +425,7 @@ function exportCsv() {
 .tag-filter { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip-button { min-height: var(--control-h-sm); padding: 0 14px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .chip-button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.header-tools [aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
 .contact-toolbar { margin-bottom: var(--space-3); }
 .contact-count { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
 .contact-count strong { font-size: var(--text-md); }
@@ -392,9 +447,8 @@ function exportCsv() {
 .contact-stats { display: grid; justify-items: end; gap: 2px; }
 .stat-line { color: var(--muted); font-size: var(--text-xs); }
 .outcomes { margin: 0; color: var(--muted); font-size: var(--text-xs); }
-.notes-preview { margin: 0; padding: var(--space-3); display: grid; gap: 4px; color: var(--ink-soft); border-radius: var(--radius-sm); background: var(--muted-soft, #f4f5f8); font-size: var(--text-sm); line-height: 1.5; white-space: pre-wrap; }
+.notes-preview { margin: 0; padding: var(--space-3); display: grid; gap: 4px; color: var(--ink-soft); border-radius: var(--radius-sm); background: #f1f3f8; font-size: var(--text-sm); line-height: 1.5; white-space: pre-wrap; }
 .notes-preview strong { color: var(--muted); font-size: var(--text-xs); letter-spacing: 0.04em; text-transform: uppercase; }
-.saved { margin: 0; display: flex; align-items: center; gap: 6px; color: var(--success); font-size: var(--text-sm); font-weight: 700; }
 .edit-panel { padding: var(--space-4); display: grid; gap: var(--space-3); border: 1px solid var(--accent-line, var(--line)); border-radius: var(--radius-sm); background: #fbfbff; }
 .edit-panel textarea { min-height: 96px; }
 .edit-panel label { font-size: var(--text-sm); }

@@ -58,3 +58,15 @@ test('compose builds WhatsApp/email links and skips placeholder emails', () => {
   assert.match(mailtoUrl('ada@example.com', 'S', 'B'), /^mailto:ada%40example\.com\?subject=S&body=B$/)
   assert.equal(whatsappUrl('', 'x'), '')
 })
+
+test('business falls back to a neutral phrase when the profile has no display name', () => {
+  const booking = { guest_name: 'Ada', guest_phone: '0803 555 0182', service_name: 'Haircut', starts_at: '2026-10-08T09:00:00.000Z', timezone: 'Africa/Lagos' }
+  for (const profile of [undefined, {}, { display_name: '   ' }]) {
+    const vars = messageVars(booking, { profile })
+    assert.equal(vars.business, 'your host')
+    const message = composeMessage('confirmation', booking, { profile })
+    assert.doesNotMatch(decodeURIComponent(message.whatsapp), /with ,|with \./)
+    assert.match(decodeURIComponent(message.whatsapp), /Haircut with your host/)
+  }
+  assert.equal(messageVars(booking, { profile: { display_name: ' Studio ' } }).business, 'Studio')
+})
