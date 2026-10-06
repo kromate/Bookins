@@ -219,19 +219,34 @@ function refresh() {
   return inFlight
 }
 
+// Real page headings while workspace data loads, so the first screen has the page's shape.
+const pageIntros = {
+  '/': { eyebrow: 'Workspace overview', title: 'Overview', layout: 'overview' },
+  '/services': { eyebrow: 'Your offerings', title: 'Services', layout: 'cards' },
+  '/availability': { eyebrow: 'Working hours', title: 'Availability', layout: 'split' },
+  '/bookings': { eyebrow: 'Appointments', title: 'Bookings', layout: 'list' },
+  '/insights': { eyebrow: 'Performance', title: 'Insights', layout: 'overview' },
+  '/contacts': { eyebrow: 'Clients', title: 'Contacts', layout: 'list' },
+  '/settings': { eyebrow: 'Configuration', title: 'Settings', layout: 'split' },
+}
+const pageIntro = computed(
+  () => pageIntros[Object.keys(pageIntros).find((path) => path !== '/' && route.path.startsWith(path)) || '/'],
+)
+
 async function loadWorkspace() {
   loading.value = true
   error.value = ''
   try {
-    if (isDemo.value) {
-      accountLabel.value = 'Demo workspace'
-    } else if (window.GoalmaticAuth?.getUser) {
-      const user = await window.GoalmaticAuth.getUser()
-      accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
-    } else if (localPreview) {
-      accountLabel.value = 'Sample workspace'
-    }
-    Object.assign(state, await loadOwnerWorkspace())
+    // The account label and workspace Tables are independent, so load them together.
+    const askUser = !isDemo.value && window.GoalmaticAuth?.getUser
+    const [user, workspace] = await Promise.all([
+      askUser ? window.GoalmaticAuth.getUser() : null,
+      loadOwnerWorkspace(),
+    ])
+    if (isDemo.value) accountLabel.value = 'Demo workspace'
+    else if (askUser) accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
+    else if (localPreview) accountLabel.value = 'Sample workspace'
+    Object.assign(state, workspace)
     loaded.value = true
     return true
   } catch (reason) {
@@ -508,20 +523,21 @@ onMounted(async () => {
       >
 
       <main id="main-content" tabindex="-1" :aria-busy="loading || transitioning">
-        <div
-          v-if="loading && !loaded"
-          class="page-skeleton"
-          aria-hidden="true"
-        >
-          <span class="skeleton-line skeleton-copy" />
-          <span class="skeleton-line skeleton-title" />
-          <span class="skeleton-line skeleton-copy" />
-          <div class="skeleton-cards"
-            ><span
-              v-for="index in 3"
-              :key="index"
-              class="skeleton-block"
-          /></div>
+        <div v-if="loading && !loaded" class="page-skeleton">
+          <span class="visually-hidden" role="status">Loading your workspace…</span>
+          <div class="page-header">
+            <div><p class="eyebrow">{{ pageIntro.eyebrow }}</p><h1>{{ pageIntro.title }}</h1></div>
+          </div>
+          <div v-if="pageIntro.layout === 'overview'" aria-hidden="true">
+            <div class="skeleton-cards skeleton-metrics"><span v-for="index in 4" :key="index" class="skeleton-block" /></div>
+            <div class="skeleton-split"><span class="skeleton-block skeleton-main" /><div class="skeleton-side"><span v-for="index in 2" :key="index" class="skeleton-block" /></div></div>
+          </div>
+          <div v-else-if="pageIntro.layout === 'split'" class="skeleton-split" aria-hidden="true">
+            <span class="skeleton-block skeleton-main" />
+            <div class="skeleton-side"><span v-for="index in 2" :key="index" class="skeleton-block" /></div>
+          </div>
+          <div v-else-if="pageIntro.layout === 'list'" class="skeleton-list" aria-hidden="true"><span v-for="index in 4" :key="index" class="skeleton-block" /></div>
+          <div v-else class="skeleton-cards" aria-hidden="true"><span v-for="index in 3" :key="index" class="skeleton-block" /></div>
         </div>
         <div
           v-else-if="error && !loaded"

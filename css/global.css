@@ -1856,3 +1856,21 @@ a.list-row:hover,
 .chip.cancelled {
   text-transform: capitalize;
 }
+
+/* Page-shaped first-load skeletons (ported from origin/preview e11da7d). */
+.page-skeleton .page-header { margin-bottom: 6px; }
+.skeleton-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 18px; }
+.skeleton-metrics .skeleton-block { height: 120px; }
+.skeleton-split { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(300px, .75fr); gap: 18px; }
+.skeleton-side { display: grid; align-content: start; gap: 18px; }
+.skeleton-side .skeleton-block { height: 200px; }
+.skeleton-main { height: 420px; }
+.skeleton-list { display: grid; gap: 12px; }
+.skeleton-list .skeleton-block { height: 104px; }
+@media (max-width: 1120px) {
+  .skeleton-split { grid-template-columns: 1fr; }
+  .skeleton-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .skeleton-main { height: 300px; }
+}
