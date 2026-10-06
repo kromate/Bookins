@@ -3,10 +3,13 @@ import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } fr
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
-import GmDialog from '../components/ui/GmDialog.vue'
+import GmButton from '../components/ui/GmButton.vue'
+import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmHint from '../components/ui/GmHint.vue'
 import { createTimeOff, isActiveTimeOff, isTimeOff, removeTimeOff, saveSchedule } from '../booking.js'
 import { localFields, wallClockInstant } from '../scheduling.js'
 import { isDemo, registerDemoGuard } from '../runtime.js'
+import { formatDay } from '../format-date.js'
 
 import { displayTimeZone, timezoneOptions } from '../time-display.js'
 
@@ -16,7 +19,6 @@ const refresh = inject('refreshBookings')
 const toast = inject('toast', null)
 const router = useRouter()
 const saving = ref(false)
-const notice = ref('')
 const error = ref('')
 const availabilityBaseline = ref('')
 const leavePrompt = ref(false)
@@ -60,11 +62,7 @@ const removeModeGuard = registerDemoGuard('bookins-availability', () => {
   if (timeOffBusy.value || pendingRemove.value) return 'Finish the time off change before switching modes.'
   return ''
 })
-let noticeTimer = 0
-onBeforeUnmount(() => {
-  removeModeGuard()
-  window.clearTimeout(noticeTimer)
-})
+onBeforeUnmount(() => removeModeGuard())
 
 onBeforeRouteLeave((to) => {
   if (saving.value) { error.value = 'Wait for availability to finish saving before leaving.'; return false }
@@ -137,7 +135,12 @@ function dayIssue(day) {
 }
 const issues = computed(() => Object.fromEntries(days.map((day) => [day.weekday, dayIssue(day)])))
 const hasIssues = computed(() => Object.values(issues.value).some(Boolean))
-const showSaveBar = computed(() => !isDemo.value && (dirty.value || !state.schedules.length))
+const isDraft = computed(() => !isDemo.value && !state.schedules.length)
+const showSaveBar = computed(() => !isDemo.value && (dirty.value || isDraft.value))
+const saveBlockReason = computed(() => {
+  const bad = days.find((day) => issues.value[day.weekday])
+  return bad ? `Fix ${bad.name}: ${issues.value[bad.weekday]}` : ''
+})
 
 function validWindows(day) {
   return day.windows
@@ -162,10 +165,11 @@ const weeklyHours = computed(() => {
 const intervalOptions = computed(() =>
   [15, 30, 45, 60, 90, 120].map((value) => ({
     value,
-    label: 'Every ' + value + ' minutes',
+    label: 'Every ' + value + ' minutes' + (maxServiceDuration.value > value ? ' (too short for a service)' : ''),
     disabled: maxServiceDuration.value > value,
   })),
 )
+const longestServiceName = computed(() => activeServices.value.find((item) => Number(item.duration_minutes || 0) === maxServiceDuration.value)?.name || '')
 const noticeOptions = [
   { value: 30, label: '30 minutes' },
   { value: 60, label: '1 hour' },
@@ -201,6 +205,7 @@ function copyDayToWeekdays(source) {
     day.active = source.active
     day.windows = cloneWindows(source.windows)
   }
+  toast?.info(`Copied ${source.name}'s hours to Monday to Friday. Save to keep them.`)
 }
 
 function useBrowserZone() {
@@ -327,10 +332,7 @@ const bookingsOutside = computed(() => {
     .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at))
 })
 const outsideLabel = (booking) =>
-  new Date(booking.starts_at).toLocaleString(undefined, {
-    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-    timeZone: displayTimeZone(form.timezone),
-  })
+  `${formatDay(booking.starts_at, displayTimeZone(form.timezone))}, ${new Date(booking.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: displayTimeZone(form.timezone) })}`
 
 
 // ----- time off -----
@@ -356,6 +358,14 @@ const addDays = (date, count) => {
 const todayInZone = () => localFields(Date.now(), scheduleZone.value).date
 const offForm = reactive({ allDay: true, startDate: '', endDate: '', startTime: '09:00', endTime: '17:00', reason: '' })
 const overlapResult = ref([])
+const offSummary = computed(() => {
+  const range = offRange()
+  if (range.error || !offForm.startDate) return ''
+  const day = (iso) => formatDay(iso)
+  if (!offForm.allDay) return `${day(offForm.startDate)}, ${offForm.startTime} to ${offForm.endTime}`
+  const last = offForm.endDate || offForm.startDate
+  return last === offForm.startDate ? `${day(offForm.startDate)}, all day` : `${day(offForm.startDate)} to ${day(last)}, all day`
+})
 const offError = ref('')
 function applyPreset(kind) {
   const today = todayInZone()
@@ -401,7 +411,7 @@ async function addTimeOff() {
     overlapResult.value = result?.overlapping || []
     offForm.reason = ''
     if (!(await reloadChecked())) offError.value = 'Time off was added, but Bookins could not reload to confirm. Use Refresh to check.'
-    else flash('Time off added.')
+    else flash(`Time off added: ${offSummary.value || 'blocked'}. Guests cannot book it.`)
   } catch (reason) {
     offError.value = reason?.message || 'Time off could not be added.'
   } finally {
@@ -417,7 +427,7 @@ async function confirmRemove() {
     await removeTimeOff(record)
     pendingRemove.value = null
     if (!(await reloadChecked())) offError.value = 'Time off was removed, but Bookins could not reload to confirm. Use Refresh to check.'
-    else flash('Time off removed.')
+    else flash('Time off removed. That time is bookable again.')
   } catch (reason) {
     offError.value = reason?.message || 'Time off could not be removed.'
   } finally {
@@ -428,7 +438,7 @@ function timeOffLabel(item) {
   const zone = displayTimeZone(scheduleZone.value)
   const startLocal = localFields(item.starts_at, scheduleZone.value)
   const endLocal = localFields(item.ends_at, scheduleZone.value)
-  const day = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' })
+  const day = (iso) => formatDay(iso)
   const clock = (instant) => new Date(instant).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: zone })
   if (startLocal.time === '00:00' && endLocal.time === '00:00') {
     const lastDay = addDays(endLocal.date, -1)
@@ -448,12 +458,11 @@ const bufferRows = computed(() =>
 )
 
 // ----- save -----
-function flash(message) {
-  notice.value = message
-  toast?.(message)
-  window.clearTimeout(noticeTimer)
-  noticeTimer = window.setTimeout(() => { notice.value = '' }, 2400)
+function flash(message, options) {
+  toast?.(message, options)
 }
+const hasActiveService = computed(() => activeServices.value.length > 0)
+const needsFirstService = computed(() => scheduleReady.value && !hasActiveService.value && !isDemo.value)
 
 async function reloadChecked() {
   return (await refresh()) === true
@@ -488,13 +497,15 @@ async function submit() {
     await saveSchedule(state.schedules[0], { name: 'Working hours', ...form, weeklyWindows })
   } catch (reason) {
     error.value = reason?.message || 'Availability could not be saved.'
+    toast?.error?.(error.value)
     saving.value = false
     return
   }
   try {
     if (await reloadChecked()) {
       hydrate()
-      flash('Availability saved.')
+      if (hasActiveService.value) flash('Availability saved. Guests can now book these hours.')
+      else flash('Availability saved', { duration: 9000, action: { label: 'Create your first service', onClick: () => router.push('/services') } })
     } else {
       syncBaseline()
       error.value = 'Availability was saved, but Bookins could not reload it to confirm. Use Refresh to check the stored version.'
@@ -520,12 +531,20 @@ async function submit() {
       >
     </div>
 
-    <div
-      v-if="notice"
-      class="notice"
-      role="status"
-      >{{ notice }}</div
-    >
+    <div v-if="isDemo" class="notice info" role="status">
+      <AppIcon name="info" :size="18" />
+      <span>Demo is read-only. Switch to your own workspace to change hours.</span>
+    </div>
+    <div v-if="isDraft" class="notice warning draft-notice" role="status">
+      <AppIcon name="info" :size="18" />
+      <span><strong>Draft, not saved yet.</strong> These hours are a suggestion. Guests cannot book you until you press Save availability.</span>
+      <button class="primary small notice-action" type="button" :disabled="saving || hasIssues" @click="submit">Save availability</button>
+    </div>
+    <div v-else-if="needsFirstService" class="notice success" role="status">
+      <AppIcon name="check" :size="18" />
+      <span><strong>Hours saved.</strong> Next, create a service so guests have something to book.</span>
+      <router-link class="primary small notice-action" to="/services">Create your first service</router-link>
+    </div>
     <div
       v-if="error"
       class="notice error"
@@ -540,10 +559,10 @@ async function submit() {
 
     <div class="availability-layout">
       <div class="availability-main">
-        <article class="card schedule-card">
+        <article class="card schedule-card" data-tour="tour-availability-hours">
           <div class="schedule-heading"
             ><div
-              ><p class="eyebrow">Weekly schedule</p><h2>Regular hours</h2
+              ><p class="eyebrow">Weekly schedule <span v-if="isDraft" class="chip warning">Not saved yet</span><span v-else-if="dirty && !isDemo" class="chip warning">Unsaved changes</span><span v-else-if="!isDemo" class="chip success">Saved</span></p><h2>Regular hours</h2
               ><p class="muted">Turn a day on, then set one or more booking windows, for example before and after a lunch break.</p></div
             ></div
           >
@@ -590,7 +609,7 @@ async function submit() {
                   </div>
                   <div class="day-actions">
                     <button class="ghost small-button" type="button" :disabled="locked" @click="addWindow(day)">+ Add window</button>
-                    <button class="ghost small-button" type="button" :disabled="locked" @click="copyDayToWeekdays(day)">Copy to all weekdays</button>
+                    <button class="ghost small-button" type="button" :disabled="locked" @click="copyDayToWeekdays(day)">Copy to Mon-Fri</button>
                   </div>
                   <p v-if="issues[day.weekday]" class="day-issue" role="alert">{{ issues[day.weekday] }}</p>
                 </template>
@@ -600,10 +619,10 @@ async function submit() {
           </div>
         </article>
 
-        <article class="card timeoff-card" aria-labelledby="timeoff-title">
-          <div><p class="eyebrow">Time off</p><h2 id="timeoff-title">Block out days or hours</h2>
-            <p class="muted">Guests cannot book blocked times. Shown in {{ displayTimeZone(scheduleZone) }}.</p></div>
-          <p v-if="!scheduleReady" class="muted">Save your availability first, then you can add time off.</p>
+        <article class="card timeoff-card" aria-labelledby="timeoff-title" data-tour="tour-availability-timeoff">
+          <div><p class="eyebrow">Time off</p><h2 id="timeoff-title">Block out days or hours <GmHint text="Time off hides those times from your booking page without changing your weekly hours. Existing bookings are not cancelled; you will be told if any fall inside it." label="About time off" /></h2>
+            <p class="muted">Guests cannot book blocked times. Dates and times use your schedule timezone, {{ displayTimeZone(scheduleZone) }}.</p></div>
+          <p v-if="!scheduleReady" class="muted">Save your weekly hours first (button at the bottom of the page), then you can add time off.</p>
           <form v-else class="timeoff-form" @submit.prevent="addTimeOff">
             <div class="preset-row" role="group" aria-label="Quick time off presets">
               <button class="secondary small-button" type="button" :disabled="isDemo || timeOffBusy" @click="applyPreset('today')">Today</button>
@@ -620,8 +639,10 @@ async function submit() {
               <div class="field"><label for="off-from">From</label><input id="off-from" v-model="offForm.startTime" type="time" required :disabled="isDemo || timeOffBusy" /></div>
               <div class="field"><label for="off-to">To</label><input id="off-to" v-model="offForm.endTime" type="time" required :disabled="isDemo || timeOffBusy" /></div>
             </div>
+            <p class="field-hint off-format">Pick from the calendar or type the date in your browser's format. Dates are in {{ displayTimeZone(scheduleZone) }}; today is {{ formatDay(todayInZone()) }}.</p>
+            <p v-if="offSummary" class="field-hint off-summary" aria-live="polite">Will block: <strong>{{ offSummary }}</strong> ({{ displayTimeZone(scheduleZone) }}).</p>
             <div class="field"><label for="off-reason">Reason (optional)</label><input id="off-reason" v-model="offForm.reason" maxlength="160" placeholder="Holiday, training, errand" :disabled="isDemo || timeOffBusy" /></div>
-            <div><button class="primary" type="submit" :disabled="isDemo || timeOffBusy">{{ timeOffBusy ? 'Saving…' : 'Add time off' }}</button></div>
+            <div class="stack-sm"><GmButton type="submit" variant="primary" :pending="timeOffBusy" pending-label="Saving…" :disabled-reason="isDemo ? 'Demo is read-only.' : !offForm.startDate ? 'Choose a first day, or tap Today, Tomorrow or Next 7 days.' : ''" reason-visible>Add time off</GmButton></div>
           </form>
           <p v-if="offError" class="notice error" role="alert">{{ offError }}</p>
           <div v-if="overlapResult.length" class="notice warning warning-note" role="status">
@@ -637,7 +658,21 @@ async function submit() {
               <li v-for="item in upcomingTimeOff" :key="item.id">
                 <AppIcon name="calendar" :size="18" class="off-icon" />
                 <span class="off-text"><strong>{{ timeOffLabel(item) }}</strong><small v-if="timeOffReason(item)">{{ timeOffReason(item) }}</small></span>
-                <button class="ghost small-button" type="button" :disabled="isDemo || timeOffBusy" :aria-label="`Remove time off ${timeOffLabel(item)}`" @click="pendingRemove = item">Remove</button>
+                <GmConfirm
+                  :open="pendingRemove?.id === item.id"
+                  title="Remove this time off?"
+                  :message="`${timeOffLabel(item)} will become bookable again.`"
+                  confirm-label="Remove time off"
+                  cancel-label="Keep it"
+                  tone="danger"
+                  :busy="timeOffBusy"
+                  @update:open="(open) => { if (open) pendingRemove = item; else if (!timeOffBusy) pendingRemove = null }"
+                  @confirm="pendingRemove = item; confirmRemove()"
+                >
+                  <GmHint wrap text="Demo is read-only. Exit Demo to remove time off." :disabled="!isDemo" v-slot="{ describedby }">
+                    <button class="ghost small-button" type="button" :disabled="timeOffBusy" :aria-disabled="isDemo || undefined" :aria-describedby="isDemo ? describedby : undefined" :aria-label="`Remove time off ${timeOffLabel(item)}`" @click="isDemo ? null : (pendingRemove = item)">Remove</button>
+                  </GmHint>
+                </GmConfirm>
               </li>
             </ul>
             <button v-if="pastTimeOff.length" class="ghost small-button" type="button" :aria-expanded="showPast" @click="showPast = !showPast">{{ showPast ? 'Hide past' : `Show past (${pastTimeOff.length})` }}</button>
@@ -650,7 +685,7 @@ async function submit() {
 
       <aside class="availability-side">
         <article class="card summary-card">
-          <p class="eyebrow">Schedule summary</p>
+          <p class="eyebrow">Schedule summary <span v-if="isDraft" class="chip warning">Draft</span></p>
           <div class="summary-number"
             ><strong>{{ activeDays }}</strong
             ><span>open days</span></div
@@ -659,20 +694,20 @@ async function submit() {
             ><span>Weekly availability</span><strong>{{ weeklyHours }} hours</strong></div
           >
           <div class="summary-row"
-            ><span>Booking timezone</span><strong>{{ form.timezone }}</strong></div
+            ><span>Booking timezone</span><strong>{{ displayTimeZone(form.timezone) }}</strong></div
           >
         </article>
 
         <article class="card settings-card">
-          <div><p class="eyebrow">Booking rules</p><h2>Timing and notice</h2></div>
+          <div><p class="eyebrow">Booking rules</p><h2>Timing and notice</h2><p class="muted">These rules apply to every service on your booking page.</p></div>
           <div class="field"
-            ><label for="availability-timezone">Timezone</label
+            ><label for="availability-timezone">Timezone <GmHint text="Your weekly hours and time off are read in this timezone, and guests see times converted to theirs. Pick the city where you work." label="About timezone" /></label
             ><GmSelect id="availability-timezone" v-model="form.timezone" :options="timezoneItems" label="Timezone" :disabled="isDemo || saving" required described-by="availability-timezone-help" />
-            <p id="availability-timezone-help" class="field-hint">Choose a city or timezone. With a keyboard, type the city name while the list is open.</p
+            <p id="availability-timezone-help" class="field-hint">The timezone your hours are in. Type a city name to search.</p
           ><button v-if="browserZone && browserZone !== form.timezone" class="ghost small-button" type="button" :disabled="locked" @click="useBrowserZone">Use this browser's timezone ({{ browserZone }})</button
           ></div>
           <div class="field"
-            ><label for="slot-interval">Start-time interval</label
+            ><label for="slot-interval">Start-time interval <GmHint text="How far apart appointment start times are. With 60 minutes, guests can start at 9:00, 10:00, 11:00. A 30 minute service on a 60 minute interval leaves 30 minutes free before the next one." label="About the start-time interval" /></label
             ><GmSelect
               id="slot-interval"
               v-model="form.slotIntervalMinutes"
@@ -680,8 +715,7 @@ async function submit() {
               label="Start-time interval"
               :disabled="isDemo || saving"
             /><p class="field-hint"
-              >Must cover your longest active service, currently
-              {{ maxServiceDuration || 0 }} minutes.</p
+              ><template v-if="maxServiceDuration">Must be at least as long as your longest active service ({{ longestServiceName }}, {{ maxServiceDuration }} minutes), so shorter intervals are unavailable.</template><template v-else>You have no services yet, so any interval works. Once you add one, the interval must be at least as long as it.</template></p
             ><div v-if="bufferRows.length" class="buffer-note">
               <p>The interval sets how far apart start times are. An appointment shorter than the interval leaves the rest as free time before the next one.</p>
               <ul>
@@ -692,23 +726,23 @@ async function submit() {
             </div></div
           >
           <div class="field"
-            ><label for="minimum-notice">Minimum notice</label
+            ><label for="minimum-notice">Minimum notice <GmHint text="The shortest time before an appointment that a guest can still book it. 1 day means nobody can book for later today." label="About minimum notice" /></label
             ><GmSelect
               id="minimum-notice"
               v-model="form.minimumNoticeMinutes"
               :options="noticeOptions"
               label="Minimum notice"
               :disabled="isDemo || saving"
-          /></div>
+          /><p class="field-hint">Guests cannot book closer to the start time than this.</p></div>
           <div class="field"
-            ><label for="booking-horizon">How far ahead can guests book?</label
+            ><label for="booking-horizon">How far ahead can guests book? <GmHint text="The booking horizon: guests only see days up to this far from today." label="About the booking horizon" /></label
             ><GmSelect
               id="booking-horizon"
               v-model="form.bookingHorizonDays"
               :options="horizonOptions"
               label="How far ahead can guests book?"
               :disabled="isDemo || saving"
-          /></div>
+          /><p class="field-hint">Days further away than this are hidden from guests.</p></div>
           <div v-if="serviceFit.length" class="fit-list">
             <p class="eyebrow">Active services at this interval</p>
             <ul>
@@ -747,32 +781,26 @@ async function submit() {
       </aside>
     </div>
 
-    <div v-if="showSaveBar" class="sticky-save-bar" role="status">
-      <span>{{ leavePrompt ? 'Leave without saving these availability changes?' : dirty ? 'Unsaved availability changes are kept until you save or discard them.' : 'Save your hours so guests can book you.' }}</span>
+    <div v-if="showSaveBar" class="sticky-save-bar" role="status" data-tour="tour-availability-save">
+      <span>{{ isDraft && !dirty ? 'Draft: not saved yet. Save your hours so guests can book you.' : isDraft ? 'Draft with edits, not saved yet.' : 'Unsaved availability changes.' }}</span>
       <div class="cluster">
-        <button v-if="leavePrompt" class="secondary" type="button" @click="keepEditing">Keep editing</button>
-        <button v-if="dirty" class="ghost" type="button" :disabled="saving" @click="discardChanges">Discard changes</button>
-        <button class="primary" type="button" :disabled="saving || hasIssues" :class="{ 'is-pending': saving }" @click="submit">{{ saving ? 'Saving…' : 'Save availability' }}</button>
+        <GmConfirm
+          v-model:open="leavePrompt"
+          :title="pendingRoute ? 'Leave without saving?' : 'Discard your changes?'"
+          :message="pendingRoute ? 'Your availability changes have not been saved and will be lost.' : 'Your hours go back to the last saved version.'"
+          :confirm-label="pendingRoute ? 'Leave without saving' : 'Discard changes'"
+          cancel-label="Keep editing"
+          tone="danger"
+          :busy="saving"
+          @confirm="discardChanges"
+          @cancel="keepEditing"
+        >
+          <button v-if="dirty" class="ghost" type="button" :disabled="saving" @click="leavePrompt = true">Discard changes</button>
+        </GmConfirm>
+        <GmButton variant="primary" :pending="saving" pending-label="Saving…" :disabled-reason="saveBlockReason" @click="submit">Save availability</GmButton>
       </div>
+      <span v-if="saveBlockReason" class="field-hint save-reason" role="alert">{{ saveBlockReason }}</span>
     </div>
-
-    <GmDialog
-      :open="Boolean(pendingRemove)"
-      title="Remove time off?"
-      :busy="timeOffBusy"
-      overlay-class="modal-backdrop"
-      content-class="card modal"
-      role="alertdialog"
-      @update:open="open => { if (!timeOffBusy && !open) pendingRemove = null }"
-    >
-      <p class="eyebrow">Time off</p>
-      <h2>Remove this time off?</h2>
-      <p class="muted">{{ pendingRemove ? timeOffLabel(pendingRemove) : '' }} will become bookable again.</p>
-      <div class="form-actions">
-        <button class="secondary" type="button" :disabled="timeOffBusy" @click="pendingRemove = null">Keep it</button>
-        <button class="danger" type="button" :disabled="timeOffBusy" @click="confirmRemove">{{ timeOffBusy ? 'Removing…' : 'Remove time off' }}</button>
-      </div>
-    </GmDialog>
   </section>
 </template>
 
@@ -781,6 +809,13 @@ async function submit() {
 .availability-main { min-width: 0; display: grid; gap: var(--space-4); }
 .availability-side { display: grid; gap: var(--space-4); min-width: 0; }
 .notice-action { margin-left: auto; flex: none; }
+.draft-notice span { min-width: 0; }
+.eyebrow .chip { margin-left: 8px; vertical-align: middle; }
+.off-summary strong { color: var(--ink); }
+.sticky-save-bar { flex-wrap: wrap; }
+.save-reason { flex-basis: 100%; margin: 0; color: var(--danger); text-align: right; }
+.availability-layout { padding-bottom: 96px; }
+.timeoff-card h2 { display: flex; align-items: center; gap: 4px; }
 .schedule-heading { margin-bottom: var(--space-4); }
 .schedule-heading h2, .timeoff-card h2, .settings-card h2 { margin: 0 0 4px; }
 .schedule-heading .muted, .timeoff-card .muted { margin: 0; font-size: var(--text-sm); }
@@ -860,6 +895,8 @@ async function submit() {
   .window-pill { flex: 1; min-width: 0; }
   .window-pill input { flex: 1; width: 0; }
   .timeoff-form { padding: var(--space-3); }
-  .notice-action { margin-left: 0; }
+  .save-reason { text-align: left; }
+  .notice { flex-wrap: wrap; }
+  .notice-action { margin-left: 0; flex-basis: 100%; justify-content: center; text-align: center; }
 }
 </style>

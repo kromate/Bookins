@@ -1,9 +1,14 @@
 <script setup>
+import { formatDay } from '../format-date.js'
 import { csvCell } from '../csv.js'
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
+import GmButton from '../components/ui/GmButton.vue'
+import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmDialog from '../components/ui/GmDialog.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import {
   addBookingToCalendar,
   addBookingsToCalendar,
@@ -29,6 +34,19 @@ import { isDemo, registerDemoGuard } from '../runtime.js'
 
 const state = inject('bookingState')
 const toast = inject('toast', null)
+const setup = useSetupState()
+const ok = (message, options) => toast?.(message, options)
+// Error toasts persist until dismissed, so the previous one is dismissed when the user tries again.
+let errorToastId = null
+const clearBad = () => {
+  if (errorToastId != null) toast?.dismiss?.(errorToastId)
+  errorToastId = null
+}
+const bad = (message) => {
+  clearBad()
+  errorToastId = toast?.error ? toast.error(message) : toast?.(message, { kind: 'error' })
+}
+const info = (message) => (toast?.info ? toast.info(message) : toast?.(message))
 // Time off is stored as a booking but is never a client appointment.
 const isHidden = (booking) => isTimeOff(booking)
 const realBookings = computed(() => (state.bookings || []).filter((item) => !isHidden(item)))
@@ -44,15 +62,17 @@ const serviceFilter = ref('')
 const fromDate = ref('')
 const toDate = ref('')
 const weekOffset = ref(0)
-const selected = ref(null)
-const confirmCancel = ref(false)
+// The open booking is looked up by id, so the dialog always reflects the latest state after any action or refresh.
+const selectedId = ref('')
+const selected = computed(() => realBookings.value.find((item) => item.id === selectedId.value) || null)
+const cancelOpen = ref(false)
+const discardOpen = ref(false)
 const cancellationReason = ref('')
 const cancelling = ref(false)
-const notice = ref('')
 const error = ref('')
+const detailNotice = ref('')
 const now = ref(Date.now())
 const clock = window.setInterval(() => { now.value = Date.now() }, 30_000)
-const leavePrompt = ref(false)
 const pendingRoute = ref('')
 const allowLeave = ref(false)
 const removeModeGuard = registerDemoGuard('bookins-bookings-dialog', () =>
@@ -103,9 +123,13 @@ async function connectCalendar() {
   try {
     await connectGoogleCalendar()
     await loadCalendarStatus()
-    if (!calendarConnected.value) calendarError.value = 'Google Calendar was not connected. Finish the Google sign-in window and try again.'
+    if (!calendarConnected.value) {
+      calendarError.value = 'Google Calendar was not connected. Finish the Google sign-in window and try again.'
+      bad(calendarError.value)
+    } else ok('Google Calendar connected')
   } catch (reason) {
     calendarError.value = reason?.message || 'Google Calendar could not be connected.'
+    bad(calendarError.value)
   } finally {
     calendarBusy.value = false
   }
@@ -149,21 +173,30 @@ function flash(message) {
 }
 
 async function addToCalendar(booking) {
+  clearBad()
   calendarBusy.value = true
   calendarError.value = ''
+  error.value = ''
   try {
     const result = await addBookingToCalendar(booking)
     await refresh()
-    reselect(booking.id)
-    flash(result.alreadyOnCalendar ? 'Already on your calendar.' : 'Added to Google Calendar.')
+    const text = result.alreadyOnCalendar ? 'Already on your calendar.' : 'Added to Google Calendar.'
+    ok(text)
+    if (selected.value) detailNotice.value = text
+    else flash(text)
   } catch (reason) {
-    calendarError.value = reason?.message || 'The booking could not be added to Google Calendar.'
+    const text = reason?.message || 'The booking could not be added to Google Calendar.'
+    bad(text)
+    // Show the failure where the user is looking: inside the dialog when it is open.
+    if (selected.value) error.value = text
+    else calendarError.value = text
   } finally {
     calendarBusy.value = false
   }
 }
 
 async function addAllToCalendar() {
+  clearBad()
   const targets = needsCalendar.value
   if (!targets.length) return
   calendarBusy.value = true
@@ -173,7 +206,14 @@ async function addAllToCalendar() {
     bulkOutcomes.value = await addBookingsToCalendar(targets)
     await refresh()
     const failed = bulkOutcomes.value.filter((item) => !item.ok).length
-    flash(failed ? `Added ${bulkOutcomes.value.length - failed} of ${bulkOutcomes.value.length}. ${failed} failed.` : `Added ${bulkOutcomes.value.length} to Google Calendar.`)
+    const text = failed ? `Added ${bulkOutcomes.value.length - failed} of ${bulkOutcomes.value.length}. ${failed} failed.` : `Added ${bulkOutcomes.value.length} to Google Calendar.`
+    flash(text)
+    if (failed) bad(text)
+    else ok(text)
+  } catch (reason) {
+    const text = reason?.message || 'The bookings could not be added to Google Calendar.'
+    calendarError.value = text
+    bad(text)
   } finally {
     calendarBusy.value = false
   }
@@ -248,8 +288,12 @@ onBeforeRouteLeave((to) => {
     return true
   }
   if (!selected.value) return true
+  if (!detailDirty.value) {
+    close()
+    return true
+  }
   pendingRoute.value = to.fullPath
-  leavePrompt.value = true
+  discardOpen.value = true
   return false
 })
 
@@ -312,10 +356,7 @@ const groups = computed(() => {
 })
 
 function dayLabel(key) {
-  const [y, m, d] = key.split('-').map(Number)
-  const text = new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, {
-    timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
-  })
+  const text = formatDay(key)
   if (key === todayKey.value) return `Today · ${text}`
   return text
 }
@@ -380,10 +421,7 @@ function dateParts(booking) {
 }
 
 function when(booking) {
-  return new Date(booking.starts_at).toLocaleString(undefined, displayTimeOptions({
-    dateStyle: 'full',
-    timeStyle: 'short',
-  }, booking))
+  return `${formatDay(booking.starts_at, zone(booking))}, ${new Date(booking.starts_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))}`
 }
 
 function time(booking) {
@@ -409,6 +447,7 @@ function downloadCsv(filename, rows) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 function exportCsv() {
+  if (!filtered.value.length) return
   const fmt = (booking, at) => {
     try {
       return new Intl.DateTimeFormat('en-GB', {
@@ -431,8 +470,12 @@ function exportCsv() {
       booking.notes, booking.owner_notes, booking.source === 'owner' ? 'owner' : 'guest', booking.cancellation_reason,
     ])
   }
-  downloadCsv(`bookings-${activeTab.value}-${todayKey.value}.csv`, rows)
-  toast?.(`Exported ${filtered.value.length} booking${filtered.value.length === 1 ? '' : 's'}`)
+  try {
+    downloadCsv(`bookings-${activeTab.value}-${todayKey.value}.csv`, rows)
+    ok(`Exported ${filtered.value.length} booking${filtered.value.length === 1 ? '' : 's'} to CSV`)
+  } catch (reason) {
+    bad(reason?.message || 'The CSV file could not be created.')
+  }
 }
 
 
@@ -449,8 +492,22 @@ const canMove = (booking) => ['confirmed', 'completed', 'no_show'].includes(book
 const demoHint = computed(() => (isDemo.value ? 'The demo is read-only. Exit Demo to make changes.' : ''))
 
 function reselect(id) {
-  selected.value = realBookings.value.find((item) => item.id === id) || null
-  if (selected.value) notesDraft.value = selected.value.owner_notes || ''
+  selectedId.value = id
+  notesDraft.value = selected.value?.owner_notes || ''
+}
+function openDetail(booking) {
+  detailNotice.value = ''
+  error.value = ''
+  selectedId.value = booking.id
+}
+const STATUS_HELP = 'Confirmed: booked and still to come. Completed: the appointment happened. No-show: the client did not turn up. Cancelled: you cancelled it and the slot reopened. You can undo completed and no-show.'
+const TAB_HELP = {
+  upcoming: 'Appointments that have not finished yet, soonest first.',
+  past: 'Appointments whose time has passed and that were not cancelled. Confirmed ones here still need you to mark them completed or no-show; completed and no-show ones also appear in their own tabs.',
+  completed: 'Appointments you marked as having happened.',
+  no_show: 'Appointments where the client did not turn up.',
+  cancelled: 'Cancelled appointments stay here as history.',
+  all: 'Every client booking, newest first. Time off is not listed here.',
 }
 
 function describeError(reason, fallback) {
@@ -484,20 +541,18 @@ const instantFor = (date, clock, timezone) => {
 // ---- status ----
 async function changeStatus(booking, status) {
   if (isDemo.value || actionBusy.value) return
+  clearBad()
+  const fresh = realBookings.value.find((item) => item.id === booking.id) || booking
   actionBusy.value = true
   error.value = ''
   try {
-    await setBookingStatus(booking, status)
+    await setBookingStatus(fresh, status)
     await refresh()
-    if (selected.value?.id === booking.id) reselect(booking.id)
     const doneText = status === 'confirmed' ? 'Status set back to confirmed.' : `Marked as ${statusLabel(status).toLowerCase()}.`
-    if (toast) toast(doneText)
-    else {
-      notice.value = doneText
-      window.setTimeout(() => { notice.value = '' }, 3000)
-    }
+    ok(doneText, status === 'confirmed' ? undefined : { action: { label: 'Undo', onClick: () => changeStatus(booking, 'confirmed') }, duration: 6000 })
   } catch (reason) {
     error.value = describeError(reason, 'The status could not be changed.')
+    bad(error.value)
   } finally {
     actionBusy.value = false
   }
@@ -506,27 +561,26 @@ async function changeStatus(booking, status) {
 // ---- private owner notes ----
 const notesDraft = ref('')
 const notesSaving = ref(false)
-const notesMessage = ref('')
 const notesDirty = computed(() => Boolean(selected.value) && notesDraft.value !== (selected.value.owner_notes || ''))
 watch(() => selected.value?.id, () => {
   notesDraft.value = selected.value?.owner_notes || ''
-  notesMessage.value = ''
-  if (!selected.value) messageKind.value = ''
+  if (selected.value) messageKind.value = suggestedKind(selected.value)
+  else messageKind.value = ''
 })
 async function saveNotes() {
   if (isDemo.value || !selected.value || notesSaving.value) return
+  clearBad()
   notesSaving.value = true
-  notesMessage.value = ''
   error.value = ''
   try {
     const id = selected.value.id
     await saveBookingNotes(selected.value, notesDraft.value.trim())
     await refresh()
     reselect(id)
-    notesMessage.value = 'Private note saved.'
-    toast?.('Private note saved')
+    ok('Private note saved')
   } catch (reason) {
     error.value = describeError(reason, 'The note could not be saved.')
+    bad(error.value)
   } finally {
     notesSaving.value = false
   }
@@ -536,11 +590,15 @@ async function saveNotes() {
 const MESSAGE_KINDS = [
   { id: 'confirmation', label: 'Confirmation' },
   { id: 'reminder', label: 'Reminder' },
-  { id: 'reschedule', label: 'Reschedule' },
+  { id: 'reschedule', label: 'New time' },
   { id: 'cancellation', label: 'Cancellation' },
   { id: 'followup', label: 'Follow-up' },
 ]
 const messageKind = ref('')
+// The most relevant template for a booking, preselected when its details open.
+const suggestedKind = (booking) => (isCancelled(booking) ? 'cancellation' : isPast(booking) ? 'followup' : 'confirmation')
+const SUGGESTED_WHY = { confirmation: 'this booking is coming up', followup: 'this booking is in the past', cancellation: 'this booking is cancelled' }
+const isSuggestedKind = (kind) => Boolean(selected.value) && kind === suggestedKind(selected.value)
 const messageNotice = ref('')
 function bookingLinkFor(booking) {
   const service = serviceFor(booking)
@@ -562,7 +620,7 @@ const phoneProblem = computed(() =>
 )
 const emailUsable = computed(() => Boolean(composed.value?.email) && hasRealEmail(selected.value?.guest_email))
 function openMessage(kind) {
-  messageKind.value = messageKind.value === kind ? '' : kind
+  messageKind.value = kind
   messageNotice.value = ''
 }
 async function copyMessage() {
@@ -570,22 +628,38 @@ async function copyMessage() {
   try {
     await copyText(composed.value.text)
     messageNotice.value = 'Message copied. Paste it into any app.'
-    toast?.('Message copied')
+    window.setTimeout(() => { messageNotice.value = '' }, 5000)
+    ok('Message copied. Paste it into any app.')
   } catch {
     messageNotice.value = 'The message could not be copied. Select the text above and copy it yourself.'
+    bad(messageNotice.value)
   }
 }
+const openedApp = (app) => info(`Opening ${app} with the message ready. Press send there; Bookins cannot tell if it was sent.`)
 
 // ---- new booking (walk-in / phone / recurring) ----
 const newOpen = ref(false)
 const newSaving = ref(false)
 const newError = ref('')
 const newResult = ref(null)
+const newDiscardOpen = ref(false)
 const blankForm = () => ({ serviceId: '', date: '', time: '', name: '', email: '', phone: '', notes: '', ownerNotes: '', repeatWeeks: 0 })
 const form = ref(blankForm())
 const bookableServices = computed(() => (state.services || []).filter((item) => item.active !== false))
 const formService = computed(() => (state.services || []).find((item) => item.id === form.value.serviceId))
 const formZone = computed(() => scheduleFor(formService.value)?.timezone || state.schedules?.[0]?.timezone || 'UTC')
+const newBlocked = computed(() =>
+  !setup.value.hasAvailability
+    ? { text: 'Bookings need your weekly hours first, then a service. Set your hours, then add a service, and you can add bookings here.', label: 'Set your availability', to: '/availability' }
+    : !bookableServices.value.length
+      ? { text: 'Bookings are made for a service. Add one, then come back to add a booking here.', label: 'Add a service', to: '/services' }
+      : null,
+)
+const newDirty = computed(() => {
+  if (!newOpen.value || newResult.value) return false
+  const f = form.value
+  return Boolean(f.time || f.name.trim() || f.email.trim() || f.phone.trim() || f.notes.trim() || f.ownerNotes.trim() || Number(f.repeatWeeks) > 0)
+})
 
 function openNew() {
   if (isDemo.value) return
@@ -594,21 +668,37 @@ function openNew() {
   form.value.date = todayKey.value
   newError.value = ''
   newResult.value = null
+  newDiscardOpen.value = false
   newOpen.value = true
 }
 function closeNew() {
   if (newSaving.value) return
+  newDiscardOpen.value = false
   newOpen.value = false
+}
+function requestCloseNew() {
+  if (newSaving.value) return
+  if (newDirty.value) newDiscardOpen.value = true
+  else closeNew()
+}
+function newFail(message, field) {
+  newError.value = message
+  bad(message)
+  if (field) window.setTimeout(() => document.getElementById(field)?.focus(), 0)
 }
 async function submitNew() {
   if (isDemo.value || newSaving.value) return
+  clearBad()
   newError.value = ''
   const f = form.value
-  if (!f.serviceId) return void (newError.value = 'Choose a service for this booking.')
-  if (!f.name.trim()) return void (newError.value = 'Enter the client name.')
-  if (!f.email.trim() && !f.phone.trim()) return void (newError.value = 'Enter an email address or a phone number so you can reach the client.')
+  if (!f.serviceId) return newFail('Choose a service for this booking.', 'new-service')
+  if (!f.date) return newFail('Choose a date.', 'new-date')
+  if (!f.time) return newFail('Choose a time.', 'new-time')
+  if (!f.name.trim()) return newFail('Enter the client name.', 'new-name')
+  if (!f.email.trim() && !f.phone.trim()) return newFail('Enter an email address or a phone number so you can reach the client.', 'new-phone')
+  if (f.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return newFail('That email address does not look right. Check it, or leave it blank and use a phone number.', 'new-email')
   const when = instantFor(f.date, f.time, formZone.value)
-  if (when.error) return void (newError.value = when.error)
+  if (when.error) return newFail(when.error, 'new-time')
   const repeatWeeks = Math.max(0, Math.min(12, Math.floor(Number(f.repeatWeeks) || 0)))
   newSaving.value = true
   try {
@@ -622,8 +712,11 @@ async function submitNew() {
     })
     await refresh()
     newResult.value = result
+    const count = result.created.length
+    ok(`Saved ${count} booking${count === 1 ? '' : 's'}. Nothing was sent to the client.`)
   } catch (reason) {
     newError.value = describeError(reason, 'The booking could not be saved.')
+    bad(newError.value)
   } finally {
     newSaving.value = false
   }
@@ -633,35 +726,84 @@ function messageNewClient() {
   newOpen.value = false
   if (!first) return
   window.setTimeout(() => {
+    openDetail(first)
     reselect(first.id)
     messageKind.value = 'confirmation'
   }, 0)
 }
 const skippedLabel = (item) =>
-  new Date(item.startsAt).toLocaleString(undefined, { timeZone: formZone.value, dateStyle: 'medium', timeStyle: 'short' })
+  `${formatDay(item.startsAt, formZone.value)}, ${new Date(item.startsAt).toLocaleTimeString(undefined, { timeZone: formZone.value, hour: 'numeric', minute: '2-digit' })}`
 
 // ---- reschedule ----
 const rescheduling = ref(false)
 const rescheduleSaving = ref(false)
 const rescheduleError = ref('')
-const moveNote = ref('')
+const moveWarnOpen = ref(false)
+const moveWarning = ref('')
 const moveForm = ref({ date: '', time: '' })
 const moveZone = computed(() => scheduleFor(selected.value)?.timezone || selected.value?.timezone || 'UTC')
+const moveDirty = computed(() => {
+  if (!rescheduling.value || !selected.value) return false
+  const fields = localFields(selected.value.starts_at, moveZone.value)
+  return fields.date !== moveForm.value.date || fields.time !== moveForm.value.time
+})
+const detailDirty = computed(() => notesDirty.value || moveDirty.value)
+const discardMessage = computed(() =>
+  notesDirty.value && moveDirty.value
+    ? 'Your typed private note and the new time you picked have not been saved and will be lost.'
+    : moveDirty.value
+      ? 'The new time you picked has not been saved and will be lost.'
+      : 'Your typed private note has not been saved and will be lost.',
+)
 function startReschedule() {
   if (isDemo.value || !selected.value) return
   const fields = localFields(selected.value.starts_at, moveZone.value)
   moveForm.value = { date: fields.date, time: fields.time }
   rescheduleError.value = ''
-  moveNote.value = ''
-  confirmCancel.value = false
+  detailNotice.value = ''
+  moveWarnOpen.value = false
+  cancelOpen.value = false
   rescheduling.value = true
+  window.setTimeout(() => document.getElementById('move-date')?.focus(), 0)
 }
-async function submitReschedule() {
+// Warnings (not errors): the owner may still move the booking after confirming.
+function moveWarnings(atIso) {
+  const warnings = []
+  if (Date.parse(atIso) < Date.now()) warnings.push('That time is in the past.')
+  try {
+    const schedule = scheduleFor(selected.value)
+    const windows = JSON.parse(schedule?.weekly_windows_json || '[]')
+    const f = localFields(atIso, moveZone.value)
+    const weekday = new Date(`${f.date}T12:00:00.000Z`).getUTCDay()
+    const [h, m] = f.time.split(':').map(Number)
+    const startMin = h * 60 + m
+    const endMin = startMin + duration(selected.value)
+    if (Array.isArray(windows) && windows.length && !windows.some((w) => w.weekday === weekday && startMin >= w.startMinute && endMin <= w.endMinute))
+      warnings.push('That time is outside your weekly hours, so guests could not book it themselves.')
+  } catch { /* hours unreadable: no warning */ }
+  return warnings
+}
+function requestMove() {
+  clearBad()
   if (isDemo.value || rescheduleSaving.value || !selected.value) return
   rescheduleError.value = ''
   const when = instantFor(moveForm.value.date, moveForm.value.time, moveZone.value)
   if (when.error) return void (rescheduleError.value = when.error)
   if (Date.parse(when.at) === startMs(selected.value)) return void (rescheduleError.value = 'That is the current time. Choose a different date or time.')
+  const warnings = moveWarnings(when.at)
+  if (warnings.length) {
+    moveWarning.value = `${warnings.join(' ')} Move it anyway?`
+    moveWarnOpen.value = true
+    return
+  }
+  submitReschedule()
+}
+async function submitReschedule() {
+  if (isDemo.value || rescheduleSaving.value || !selected.value) return
+  clearBad()
+  rescheduleError.value = ''
+  const when = instantFor(moveForm.value.date, moveForm.value.time, moveZone.value)
+  if (when.error) return void (rescheduleError.value = when.error)
   rescheduleSaving.value = true
   try {
     const id = selected.value.id
@@ -671,33 +813,46 @@ async function submitReschedule() {
     reselect(id)
     rescheduling.value = false
     messageKind.value = 'reschedule'
-    moveNote.value = `Booking moved. The old time is free again.${hadEvent ? ' Its Google Calendar event was not moved. Change or delete it in Google Calendar yourself.' : ''} Message the client so they know. Bookins does not send it for you.`
+    detailNotice.value = `Booking moved. The old time is free again.${hadEvent ? ' Its Google Calendar event was not moved. Change or delete it in Google Calendar yourself.' : ''} Message the client below so they know. Bookins does not send it for you.`
+    ok('Booking moved')
+    scrollDetailTop()
   } catch (reason) {
     rescheduleError.value = describeError(reason, 'The booking could not be moved.')
+    bad(rescheduleError.value)
   } finally {
     rescheduleSaving.value = false
   }
 }
+function scrollDetailTop() {
+  window.setTimeout(() => document.querySelector('.booking-detail')?.scrollTo?.({ top: 0, behavior: 'smooth' }), 50)
+}
 
 function close() {
   if (cancelling.value || actionBusy.value) return
-  selected.value = null
+  clearBad()
+  selectedId.value = ''
   messageKind.value = ''
   messageNotice.value = ''
   rescheduling.value = false
   rescheduleError.value = ''
-  moveNote.value = ''
-  confirmCancel.value = false
+  moveWarnOpen.value = false
+  detailNotice.value = ''
+  error.value = ''
+  cancelOpen.value = false
+  discardOpen.value = false
   cancellationReason.value = ''
-  leavePrompt.value = false
   pendingRoute.value = ''
 }
-
+// Every way of closing (X, Close, Esc, overlay) goes through here so a typed note is never lost silently.
+function requestClose() {
+  if (cancelling.value || actionBusy.value) return
+  if (detailDirty.value) discardOpen.value = true
+  else close()
+}
 function keepEditing() {
-  leavePrompt.value = false
+  discardOpen.value = false
   pendingRoute.value = ''
 }
-
 function discardDialog() {
   const next = pendingRoute.value
   close()
@@ -706,21 +861,25 @@ function discardDialog() {
     router.push(next)
   }
 }
+const cancelMessage = computed(() => {
+  const base = 'The appointment stays in history and the slot reopens. Bookins does not send a cancellation message; afterwards you can open one in your own WhatsApp, SMS, or email.'
+  return selected.value && onCalendar(selected.value) ? `${base} Its Google Calendar event will be renamed "Cancelled: ..." (needs your approval); if that fails the booking is still cancelled and you will be told.` : base
+})
 
 async function cancel() {
-  if (isDemo.value || !canCancel(selected.value)) return
+  if (isDemo.value || !selected.value || !canCancel(selected.value)) return
+  clearBad()
   cancelling.value = true
   error.value = ''
   try {
-    const outcome = await cancelBookingWithCalendar(selected.value, cancellationReason.value.trim() || 'Cancelled by owner')
     const cancelledId = selected.value.id
+    const outcome = await cancelBookingWithCalendar(selected.value, cancellationReason.value.trim() || 'Cancelled by owner')
     await refresh()
     reselect(cancelledId)
-    confirmCancel.value = false
     cancellationReason.value = ''
     messageKind.value = 'cancellation'
     const calendarState = outcome.calendar.state
-    notice.value =
+    detailNotice.value =
       calendarState === 'updated'
         ? 'Booking cancelled and the slot reopened. The Google Calendar event is marked as cancelled.'
         : calendarState === 'failed'
@@ -728,221 +887,111 @@ async function cancel() {
           : calendarState === 'skipped'
             ? 'Booking cancelled and the slot reopened. Its Google Calendar event was not changed because Calendar is unavailable here; update it in Google Calendar.'
             : 'Booking cancelled and the slot reopened.'
-    notice.value += ' You can message the client below. Bookins does not send it for you.'
-    window.setTimeout(() => {
-      notice.value = ''
-    }, calendarState === 'failed' || calendarState === 'skipped' ? 12000 : 8000)
+    detailNotice.value += ' You can message the client below. Bookins does not send it for you.'
+    if (calendarState === 'failed') bad(`Booking cancelled, but the Google Calendar event was not updated (${outcome.calendar.message}).`)
+    else ok('Booking cancelled and the slot reopened')
+    scrollDetailTop()
   } catch (reason) {
     error.value = reason?.message || 'The booking could not be cancelled.'
+    bad(error.value)
   } finally {
     cancelling.value = false
   }
 }
+
+// ---- empty states ----
+const hasAnyBookings = computed(() => realBookings.value.length > 0)
+async function copyShareLink() {
+  const url = state.profile?.public_link_url || ''
+  if (!url) return
+  try {
+    await copyText(url)
+    ok('Booking link copied')
+  } catch {
+    bad('The link could not be copied. Copy it from Settings.')
+  }
+}
+const exportReason = computed(() => (filtered.value.length ? '' : hasAnyBookings.value ? 'Nothing to export in this view. Pick another tab or clear the filters.' : 'No bookings yet, so there is nothing to export.'))
+const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every upcoming confirmed booking is already on your calendar.'))
 </script>
 
 <template>
   <section>
     <div class="page-header">
-      <div
-        ><p class="eyebrow">Appointments</p><h1>Bookings</h1
-        ><p class="lede"
-          >See who is coming, what they booked, and the details they shared. Times are shown in each
-          booking's own timezone. Cancelled appointments stay in history.</p
-        ></div
-      >
+      <div>
+        <p class="eyebrow">Appointments</p>
+        <h1>Bookings</h1>
+        <p class="lede">See who is coming, what they booked, and the details they shared. Times are shown in each booking's own timezone. Cancelled appointments stay in history.</p>
+      </div>
       <div class="page-header-actions">
-        <label class="search-field"
-          ><AppIcon
-            name="search"
-            :size="18" /><span class="visually-hidden">Search bookings</span
-          ><input
-            v-model="query"
-            type="search"
-            placeholder="Guest, email, reference, service"
-        /></label>
-        <button
-          class="secondary"
-          type="button"
-          :disabled="!filtered.length"
-          @click="exportCsv"
-          >Export CSV</button
-        ><button
-          class="primary"
-          type="button"
-          :disabled="isDemo"
-          :title="demoHint || undefined"
-          @click="openNew"
-          >New booking</button
-        >
+        <label class="search-field">
+          <AppIcon name="search" :size="18" /><span class="visually-hidden">Search bookings</span>
+          <input v-model="query" type="search" placeholder="Guest, email, reference, service" />
+        </label>
+        <GmButton variant="secondary" :disabled-reason="exportReason" @click="exportCsv">Export CSV</GmButton>
+        <GmButton variant="primary" :disabled-reason="demoHint" @click="openNew">New booking</GmButton>
       </div>
     </div>
 
-    <div
-      v-if="notice"
-      class="notice success"
-      role="status"
-      ><AppIcon
-        name="check"
-        :size="18" />{{ notice }}</div
-    >
-    <p
-      v-if="isDemo"
-      class="muted demo-note"
-      >{{ demoHint }} You can still open message links, which only prepare text in your own apps.</p
-    >
-    <div
-      v-if="error && !selected"
-      class="notice error"
-      role="alert"
-      >{{ error }}</div
-    >
+    <p v-if="isDemo" class="muted demo-note">{{ demoHint }} You can still open message links, which only prepare text in your own apps.</p>
+    <div v-if="error && !selected" class="notice error" role="alert">{{ error }}</div>
 
-    <div
-      class="card calendar-panel"
-      :class="{ 'is-connected': calendarConnected }"
-    >
-      <div class="calendar-copy"
-        ><strong><AppIcon
-          name="calendar"
-          :size="18" /> Google Calendar<span
-          class="chip dot"
-          :class="calendarConnected ? 'confirmed' : 'neutral'"
-          >{{ calendarConnected ? 'Connected' : calendar.state === 'loading' ? 'Checking' : 'Not connected' }}</span
-        ></strong
-        ><p
-          v-if="calendarHint"
-          class="muted"
-          >{{ calendarHint }}</p
-        ><p
-          v-else-if="calendarConnected"
-          class="muted"
-          >Add confirmed bookings to your calendar yourself. Each write asks for your approval and invites no one. Bookings that clash with other events are flagged.</p
-        ></div
-      >
+    <div class="card calendar-panel" :class="{ 'is-connected': calendarConnected }">
+      <div class="calendar-copy">
+        <strong>
+          <AppIcon name="calendar" :size="18" /> Google Calendar
+          <span class="chip dot" :class="calendarConnected ? 'confirmed' : 'neutral'">{{ calendarConnected ? 'Connected' : calendar.state === 'loading' ? 'Checking' : 'Not connected' }}</span>
+          <GmHint text="Optional. Bookins reads your calendar only to flag clashes, and adds a booking as an event only when you ask, with your approval each time. It never invites the client." label="About Google Calendar" />
+        </strong>
+        <p v-if="calendarHint" class="muted">{{ calendarHint }}</p>
+        <p v-else-if="calendarConnected" class="muted">Add confirmed bookings to your calendar yourself. Each write asks for your approval and invites no one. Bookings that clash with other events are flagged.</p>
+      </div>
       <div class="calendar-actions">
-        <button
-          v-if="calendar.state === 'not-connected'"
-          class="primary small-button"
-          type="button"
-          :disabled="calendarBusy"
-          @click="connectCalendar"
-          >{{ calendarBusy ? 'Connecting…' : 'Connect Google Calendar' }}</button
-        ><button
-          v-if="calendar.state === 'error'"
-          class="secondary small-button"
-          type="button"
-          @click="loadCalendarStatus"
-          >Check again</button
-        ><button
+        <button v-if="calendar.state === 'not-connected'" class="primary small-button" type="button" :disabled="calendarBusy" @click="connectCalendar">{{ calendarBusy ? 'Connecting…' : 'Connect Google Calendar' }}</button>
+        <button v-if="calendar.state === 'error'" class="secondary small-button" type="button" @click="loadCalendarStatus">Check again</button>
+        <GmButton
           v-if="calendarConnected"
-          class="secondary small-button"
-          type="button"
-          :disabled="calendarBusy || !needsCalendar.length"
+          variant="secondary"
+          size="sm"
+          :disabled="calendarBusy"
+          :disabled-reason="calendarBusy ? '' : addAllReason"
           @click="addAllToCalendar"
-          >{{ calendarBusy ? 'Working…' : `Add all upcoming (${needsCalendar.length})` }}</button
-        ></div
-      >
-      <p
-        v-if="calendarNotice"
-        class="calendar-line"
-        role="status"
-        >{{ calendarNotice }}</p
-      >
-      <p
-        v-if="calendarError"
-        class="calendar-line error-text"
-        role="alert"
-        >{{ calendarError }}</p
-      >
-      <p
-        v-if="conflictNote"
-        class="calendar-line muted"
-        >{{ conflictNote }}</p
-      >
-      <ul
-        v-if="bulkOutcomes.length"
-        class="calendar-outcomes"
-        ><li
-          v-for="outcome in bulkOutcomes"
-          :key="outcome.id"
-          :class="{ 'error-text': !outcome.ok }"
-          >{{ bulkLabel(outcome) }}: {{ outcome.ok ? (outcome.skipped ? 'already on calendar' : 'added') : outcome.message }}</li
-        ></ul
-      >
+        >{{ calendarBusy ? 'Working…' : `Add all upcoming (${needsCalendar.length})` }}</GmButton>
+      </div>
+      <p v-if="calendarNotice" class="calendar-line" role="status">{{ calendarNotice }}</p>
+      <p v-if="calendarError" class="calendar-line error-text" role="alert">{{ calendarError }}</p>
+      <p v-if="conflictNote" class="calendar-line muted">{{ conflictNote }}</p>
+      <ul v-if="bulkOutcomes.length" class="calendar-outcomes">
+        <li v-for="outcome in bulkOutcomes" :key="outcome.id" :class="{ 'error-text': !outcome.ok }">{{ bulkLabel(outcome) }}: {{ outcome.ok ? (outcome.skipped ? 'already on calendar' : 'added') : outcome.message }}</li>
+      </ul>
     </div>
 
+    <div data-tour="tour-bookings-list">
     <div class="filter-bar">
-      <div class="field"
-        ><label for="filter-service">Service</label
-        ><select id="filter-service" v-model="serviceFilter" class="input"
-          ><option value="">All services</option
-          ><option
-            v-for="option in serviceOptions"
-            :key="option.value"
-            :value="option.value"
-            >{{ option.label }}</option
-          ></select
-        ></div
-      >
-      <div class="field"
-        ><label for="filter-from">From</label><input
-          id="filter-from"
-          v-model="fromDate"
-          class="input"
-          type="date"
-          :max="toDate || undefined"
-      /></div>
-      <div class="field"
-        ><label for="filter-to">To</label><input
-          id="filter-to"
-          v-model="toDate"
-          class="input"
-          type="date"
-          :min="fromDate || undefined"
-      /></div>
-      <button
-        v-if="hasFilters"
-        class="ghost small-button"
-        type="button"
-        @click="clearFilters"
-        >Clear filters</button
-      >
-      <div
-        class="segmented filter-view"
-        role="group"
-        aria-label="View"
-        ><button
-          type="button"
-          :class="{ 'is-active': view === 'agenda' }"
-          :aria-pressed="view === 'agenda'"
-          @click="view = 'agenda'"
-          >Agenda</button
-        ><button
-          type="button"
-          :class="{ 'is-active': view === 'week' }"
-          :aria-pressed="view === 'week'"
-          @click="view = 'week'"
-          >Week</button
-        ></div
-      >
+      <div class="field">
+        <label for="filter-service">Service</label>
+        <select id="filter-service" v-model="serviceFilter" class="input">
+          <option value="">All services</option>
+          <option v-for="option in serviceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="filter-from">From</label>
+        <input id="filter-from" v-model="fromDate" class="input" type="date" :max="toDate || undefined" />
+      </div>
+      <div class="field">
+        <label for="filter-to">To</label>
+        <input id="filter-to" v-model="toDate" class="input" type="date" :min="fromDate || undefined" />
+      </div>
+      <button v-if="hasFilters" class="ghost small-button" type="button" @click="clearFilters">Clear filters</button>
+      <div class="segmented filter-view" role="group" aria-label="View">
+        <button type="button" :class="{ 'is-active': view === 'agenda' }" :aria-pressed="view === 'agenda'" @click="view = 'agenda'">Agenda</button>
+        <button type="button" :class="{ 'is-active': view === 'week' }" :aria-pressed="view === 'week'" @click="view = 'week'">Week</button>
+      </div>
     </div>
-    <p
-      v-if="emailFilter"
-      class="email-filter"
-      >Showing history for <strong>{{ emailFilter }}</strong
-      ><button
-        class="ghost small-button"
-        type="button"
-        @click="clearEmail"
-        >Show everyone</button
-      ></p
-    >
+    <p v-if="emailFilter" class="email-filter">Showing history for <strong>{{ emailFilter }}</strong><button class="ghost small-button" type="button" @click="clearEmail">Show everyone</button></p>
 
-    <div
-      class="tab-bar"
-      role="tablist"
-      aria-label="Booking status"
-    >
+    <div class="tab-bar" role="tablist" aria-label="Booking status">
       <button
         v-for="tab in tabs"
         :key="tab.id"
@@ -951,303 +1000,189 @@ async function cancel() {
         :aria-selected="activeTab === tab.id"
         :class="{ 'is-active': activeTab === tab.id }"
         @click="activeTab = tab.id"
-        ><span>{{ tab.label }}</span
-        ><span class="count-pill">{{ tab.count }}</span></button
-      >
+      ><span>{{ tab.label }}</span><span class="count-pill">{{ tab.count }}</span></button>
     </div>
+    <p class="tab-help muted">{{ TAB_HELP[activeTab] }} <GmHint :text="STATUS_HELP" label="What the statuses mean" /></p>
 
-    <div
-      v-if="view === 'week'"
-      class="week"
-    >
-      <div class="week-nav"
-        ><button
-          class="secondary small-button"
-          type="button"
-          @click="weekOffset -= 1"
-          >Previous</button
-        ><strong>{{ weekRange }}</strong
-        ><span class="muted">Days in {{ scheduleZone }}</span
-        ><button
-          class="secondary small-button"
-          type="button"
-          :disabled="weekOffset === 0"
-          @click="weekOffset = 0"
-          >This week</button
-        ><button
-          class="secondary small-button"
-          type="button"
-          @click="weekOffset += 1"
-          >Next</button
-        ></div
-      >
+    <div v-if="view === 'week'" class="week">
+      <div class="week-nav">
+        <button class="secondary small-button" type="button" @click="weekOffset -= 1">Previous</button>
+        <strong>{{ weekRange }}</strong>
+        <span class="muted">Days in {{ scheduleZone }}</span>
+        <button class="secondary small-button" type="button" :disabled="weekOffset === 0" @click="weekOffset = 0">This week</button>
+        <button class="secondary small-button" type="button" @click="weekOffset += 1">Next</button>
+      </div>
       <div class="week-grid">
-        <div
-          v-for="day in weekDays"
-          :key="day.key"
-          class="week-day"
-          :class="{ today: day.today }"
-        >
-          <header
-            ><small>{{ day.weekday }}</small
-            ><strong>{{ day.label }}</strong></header
-          >
+        <div v-for="day in weekDays" :key="day.key" class="week-day" :class="{ today: day.today }">
+          <header><small>{{ day.weekday }}</small><strong>{{ day.label }}</strong></header>
           <RouterLink
             v-for="off in day.off"
             :key="off.id"
             to="/availability"
             class="week-off"
             :title="`Time off${off.guest_name && off.guest_name !== 'Time off' ? ': ' + off.guest_name : ''}. Manage in Availability.`"
-            ><b>Time off</b><small>{{ off.guest_name && off.guest_name !== 'Time off' ? off.guest_name : 'Blocked' }}</small></RouterLink
-          ><button
+          ><b>Time off</b><small>{{ off.guest_name && off.guest_name !== 'Time off' ? off.guest_name : 'Blocked' }}</small></RouterLink>
+          <button
             v-for="booking in day.items"
             :key="booking.id"
             type="button"
             class="week-item"
             :class="booking.status"
             :title="`${booking.service_name} · ${booking.guest_name} · ${zoneLabel(booking)}`"
-            @click="selected = booking"
-            ><b class="tnum">{{ time(booking) }}</b
-            ><span>{{ booking.service_name }}</span
-            ><small>{{ booking.guest_name }}<template v-if="isDone(booking)"> · {{ statusLabel(booking.status) }}</template></small></button
-          >
-          <p
-            v-if="!day.items.length && !day.off.length"
-            class="week-empty"
-            >—</p
-          >
+            @click="openDetail(booking)"
+          ><b class="tnum">{{ time(booking) }}</b><span>{{ booking.service_name }}</span><small>{{ booking.guest_name }}<template v-if="isDone(booking)"> · {{ statusLabel(booking.status) }}</template></small></button>
+          <p v-if="!day.items.length && !day.off.length" class="week-empty">—</p>
         </div>
       </div>
     </div>
 
-    <div
-      v-else-if="groups.length"
-      class="booking-list"
-    >
-      <section
-        v-for="group in groups"
-        :key="group.key"
-        class="day-group"
-      >
+    <div v-else-if="groups.length" class="booking-list">
+      <section v-for="group in groups" :key="group.key" class="day-group">
         <h3 class="day-heading">{{ group.label }}<small>{{ group.items.length }}</small></h3>
-        <article
-          v-for="booking in group.items"
-          :key="booking.id"
-          class="card booking-card"
-          :class="{ 'is-cancelled': isCancelled(booking) }"
-        >
-          <div class="date-tile"
-            ><small>{{ dateParts(booking).weekday }}</small
-            ><strong>{{ dateParts(booking).day }}</strong
-            ><span>{{ dateParts(booking).month }}</span></div
-          >
+        <article v-for="booking in group.items" :key="booking.id" class="card booking-card" :class="{ 'is-cancelled': isCancelled(booking) }">
+          <div class="date-tile"><small>{{ dateParts(booking).weekday }}</small><strong>{{ dateParts(booking).day }}</strong><span>{{ dateParts(booking).month }}</span></div>
           <div class="booking-main">
-            <div class="booking-title"
-              ><h2>{{ booking.service_name }}</h2
-              ><span
-                class="chip"
-                :class="booking.status"
-                >{{ statusLabel(booking.status) }}</span
-              ><span
-                v-if="booking.source === 'owner'"
-                class="chip accent"
-                >Added by you</span
-              ><span
-                v-if="isSeries(booking)"
-                class="chip accent"
-                >Repeats weekly</span
-              ><span
-                v-if="onCalendar(booking) && !isCancelled(booking)"
-                class="chip success"
-                >On calendar</span
-              ><span
-                v-if="conflictTitles(booking).length"
-                class="chip warning"
-                :title="conflictTitles(booking).join(', ')"
-                >Clashes with calendar</span
-              ></div
-            >
-            <p
-              ><AppIcon
-                name="clock"
-                :size="16"
-              /><span class="tnum">{{
-                time(booking)
-              }}
-              · {{ duration(booking) }} min · {{ zoneLabel(booking) }}</span></p
-            >
-            <div class="guest-line"
-              ><span class="guest-avatar">{{
-                String(booking.guest_name || '?')
-                  .slice(0, 1)
-                  .toUpperCase()
-              }}</span
-              ><span
-                ><strong>{{ booking.guest_name }}</strong
-                ><small>{{ emailText(booking) }}<template v-if="booking.guest_phone"> · {{ booking.guest_phone }}</template></small></span
-              ></div
-            >
+            <div class="booking-title">
+              <h2>{{ booking.service_name }}</h2>
+              <span class="chip" :class="booking.status">{{ statusLabel(booking.status) }}</span>
+              <span v-if="booking.source === 'owner'" class="chip accent">Added by you</span>
+              <span v-if="isSeries(booking)" class="chip accent">Repeats weekly</span>
+              <span v-if="onCalendar(booking) && !isCancelled(booking)" class="chip success">On calendar</span>
+              <template v-if="conflictTitles(booking).length">
+                <span class="chip warning">Clashes with calendar</span>
+                <GmHint :text="`This booking overlaps another event on your Google Calendar: ${conflictTitles(booking).join(', ')}. Check it, or move one of them.`" label="About the calendar clash" />
+              </template>
+            </div>
+            <p>
+              <AppIcon name="clock" :size="16" /><span class="tnum">{{ time(booking) }} · {{ duration(booking) }} min · {{ zoneLabel(booking) }}</span>
+            </p>
+            <div class="guest-line">
+              <span class="guest-avatar">{{ String(booking.guest_name || '?').slice(0, 1).toUpperCase() }}</span>
+              <span><strong>{{ booking.guest_name }}</strong><small>{{ emailText(booking) }}<template v-if="booking.guest_phone"> · {{ booking.guest_phone }}</template></small></span>
+            </div>
           </div>
-          <div class="booking-end"
-            ><small class="ref">{{ booking.reference }}</small
-            ><span
-              v-if="booking.status === 'confirmed' && hasStarted(booking)"
-              class="quick-actions"
-              ><button
-                class="secondary small-button"
-                type="button"
-                :disabled="isDemo || actionBusy"
-                @click="changeStatus(booking, 'completed')"
-                >Completed</button
-              ><button
-                class="secondary small-button"
-                type="button"
-                :disabled="isDemo || actionBusy"
-                @click="changeStatus(booking, 'no_show')"
-                >No-show</button
-              ></span
-            ><span
-              v-else-if="isDone(booking)"
-              class="quick-actions"
-              ><button
-                class="ghost small-button"
-                type="button"
-                :disabled="isDemo || actionBusy"
-                @click="changeStatus(booking, 'confirmed')"
-                >Undo</button
-              ></span
-            ><button
-              class="secondary small-button"
-              type="button"
-              @click="selected = booking"
-              >View details<AppIcon
-                name="chevron"
-                :size="16" /></button
-          ></div>
+          <div class="booking-end">
+            <small class="ref">{{ booking.reference }}</small>
+            <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="quick-actions">
+              <span class="quick-label">Did it happen?</span>
+              <GmHint wrap :text="isDemo ? demoHint : 'Use when the appointment took place. You can undo this.'" v-slot="{ describedby }">
+                <button class="secondary small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'completed')">Mark completed</button>
+              </GmHint>
+              <GmHint wrap :text="isDemo ? demoHint : 'Use when the client did not turn up. You can undo this.'" v-slot="{ describedby }">
+                <button class="secondary small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'no_show')">Mark no-show</button>
+              </GmHint>
+            </span>
+            <span v-else-if="isDone(booking)" class="quick-actions">
+              <GmHint wrap :text="isDemo ? demoHint : 'Puts this booking back to confirmed.'" v-slot="{ describedby }">
+                <button class="ghost small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'confirmed')">Undo {{ booking.status === 'no_show' ? 'no-show' : 'completed' }}</button>
+              </GmHint>
+            </span>
+            <button class="secondary small-button" type="button" @click="openDetail(booking)">View details<AppIcon name="chevron" :size="16" /></button>
+          </div>
         </article>
       </section>
     </div>
 
-    <div
-      v-else
-      class="empty"
-    >
+    <div v-else class="empty">
       <span class="empty-icon"><AppIcon name="bookings" /></span>
       <h2>{{
         hasFilters
           ? 'No bookings match your filters'
-          : activeTab === 'all'
+          : !hasAnyBookings
             ? 'No bookings yet'
             : `No ${tabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || activeTab} bookings`
       }}</h2>
-      <p>{{
-        hasFilters
-          ? 'Try a guest name, email, service, booking reference, or a wider date range.'
-          : 'Confirmed guest bookings will appear here as soon as Bookins reserves the slot.'
-      }}</p>
-      <button
-        v-if="hasFilters"
-        class="secondary"
-        type="button"
-        @click="clearFilters"
-        >Clear filters</button
-      >
+      <p v-if="hasFilters">Try a guest name, email, service, booking reference, or a wider date range.</p>
+      <p v-else-if="!hasAnyBookings">
+        {{ setup.hasLink
+          ? 'Share your booking link and bookings will appear here as soon as a guest books a slot. You can also add a booking yourself for a walk-in or phone call.'
+          : `Guests book through your public booking link, which is ready once setup is done. Next step: ${(setup.nextStep?.label || 'finish setup').toLowerCase()}. You can also add a booking yourself.` }}
+      </p>
+      <p v-else>Nothing here right now. Other tabs may have bookings.</p>
+      <div class="empty-actions">
+        <GmButton v-if="hasFilters" variant="secondary" @click="clearFilters">Clear filters</GmButton>
+        <template v-else-if="!hasAnyBookings">
+          <GmButton v-if="setup.hasLink" variant="primary" @click="copyShareLink">Copy your booking link</GmButton>
+          <RouterLink v-else class="primary button-link" :to="setup.nextStep?.to || '/settings'">{{ setup.nextStep?.label || 'Finish setup' }}</RouterLink>
+          <GmButton variant="secondary" :disabled-reason="demoHint" @click="openNew">New booking</GmButton>
+        </template>
+        <template v-else>
+          <GmButton v-if="activeTab !== 'all'" variant="secondary" @click="activeTab = 'all'">View all bookings</GmButton>
+          <GmButton v-if="setup.hasLink" variant="secondary" @click="copyShareLink">Copy your booking link</GmButton>
+        </template>
+      </div>
+    </div>
     </div>
 
     <GmDialog
       :open="Boolean(selected)"
       :title="selected?.service_name || 'Booking details'"
       :busy="cancelling"
+      content-class="card modal booking-detail"
       overlay-class="modal-backdrop"
-      @update:open="open => { if (!open) close() }"
+      @update:open="open => { if (!open) requestClose() }"
     >
-      <aside
-        v-if="selected"
-        class="card modal booking-detail"
-      >
-        <div class="modal-header"
-          ><div
-            ><p class="eyebrow">Booking {{ selected.reference }}</p
-            ><h2 id="booking-detail-title">{{ selected.service_name }}</h2></div
-          ><button
-            class="icon-button"
-            type="button"
-            aria-label="Close"
-            @click="close"
-            ><AppIcon name="close" /></button
-        ></div>
-        <div
-          v-if="error"
-          class="notice error"
-          role="alert"
-          ><AppIcon
-            name="alert"
-            :size="18" />{{ error }}</div
-        >
-        <div class="detail-when"
-          ><span
-            ><AppIcon
-              name="calendar"
-              :size="20" /></span
-          ><div
-            ><strong>{{ when(selected) }}</strong
-            ><small>{{ duration(selected) }} minutes · {{ zoneLabel(selected) }}</small></div
-          ><span
-            class="chip"
-            :class="selected.status"
-            >{{ statusLabel(selected.status) }}</span
-          ></div
-        >
-        <p
-          v-if="selected.source === 'owner' || isSeries(selected)"
-          class="badge-row"
-          ><span
-            v-if="selected.source === 'owner'"
-            class="chip accent"
-            >Added by you</span
-          ><span
-            v-if="isSeries(selected)"
-            class="chip accent"
-            >Repeats weekly</span
-          ></p
-        >
-        <p
-          v-if="conflictTitles(selected).length && isUpcoming(selected)"
-          class="muted error-text"
-          >Overlaps on your Google Calendar: {{ conflictTitles(selected).join(', ') }}.</p
-        ><p
-          v-if="onCalendar(selected)"
-          class="muted"
-          >On Google Calendar{{ isCancelled(selected) ? '. The event was marked cancelled when this booking was cancelled, if Calendar was available.' : '.' }}</p
-        >
+      <template v-if="selected">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Booking {{ selected.reference }}</p>
+            <h2 id="booking-detail-title">{{ selected.service_name }}</h2>
+          </div>
+          <button class="icon-button" type="button" aria-label="Close" @click="requestClose"><AppIcon name="close" /></button>
+        </div>
+        <div v-if="error" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ error }}</div>
+        <div class="detail-when">
+          <span><AppIcon name="calendar" :size="20" /></span>
+          <div>
+            <strong>{{ when(selected) }}</strong>
+            <small>{{ duration(selected) }} minutes · {{ zoneLabel(selected) }}</small>
+          </div>
+          <span class="status-cell">
+            <span class="chip" :class="selected.status">{{ statusLabel(selected.status) }}</span>
+            <GmHint :text="STATUS_HELP" label="What the statuses mean" />
+          </span>
+        </div>
+        <div v-if="detailNotice" class="notice success" role="status"><AppIcon name="check" :size="18" />{{ detailNotice }}</div>
+
         <section
-          class="detail-section"
-          aria-labelledby="guest-heading"
+          v-if="canMove(selected) && hasStarted(selected) && !rescheduling"
+          class="panel-box"
+          aria-labelledby="happened-heading"
         >
+          <h3 id="happened-heading">Did this appointment happen?</h3>
+          <div class="form-actions">
+            <GmButton v-if="selected.status !== 'completed'" variant="secondary" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'completed')">Mark completed</GmButton>
+            <GmButton v-if="selected.status !== 'no_show'" variant="secondary" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'no_show')">Mark no-show</GmButton>
+            <GmButton v-if="isDone(selected)" variant="ghost" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'confirmed')">Undo (back to confirmed)</GmButton>
+            <GmHint text="No-show means the client did not turn up. It stays in history and you can undo it." label="About no-show" />
+          </div>
+        </section>
+
+        <p v-if="selected.source === 'owner' || isSeries(selected)" class="badge-row">
+          <span v-if="selected.source === 'owner'" class="chip accent">Added by you</span>
+          <span v-if="isSeries(selected)" class="chip accent">Repeats weekly</span>
+        </p>
+        <p v-if="conflictTitles(selected).length && isUpcoming(selected)" class="muted error-text">
+          Overlaps on your Google Calendar: {{ conflictTitles(selected).join(', ') }}.
+          <GmHint text="Your Google Calendar has another event at the same time as this booking. Check it, or reschedule one of them." label="About the calendar clash" />
+        </p>
+        <p v-if="onCalendar(selected)" class="muted">On Google Calendar{{ isCancelled(selected) ? '. The event was marked cancelled when this booking was cancelled, if Calendar was available.' : '.' }}</p>
+
+        <section class="detail-section" aria-labelledby="guest-heading">
           <h3 id="guest-heading">Guest</h3>
           <dl class="detail-list">
             <dt>Name</dt><dd>{{ selected.guest_name }}</dd>
-            <dt>Email</dt
-            ><dd
-              ><a
-                v-if="hasRealEmail(selected.guest_email)"
-                :href="`mailto:${selected.guest_email}`"
-                >{{ selected.guest_email }}</a
-              ><template v-else>No email</template></dd
-            >
+            <dt>Email</dt>
+            <dd><a v-if="hasRealEmail(selected.guest_email)" :href="`mailto:${selected.guest_email}`">{{ selected.guest_email }}</a><template v-else>No email</template></dd>
             <dt>Phone</dt><dd>{{ selected.guest_phone || 'Not supplied' }}</dd>
             <dt>Notes</dt><dd>{{ selected.notes || 'No notes supplied.' }}</dd>
           </dl>
         </section>
-        <section
-          class="panel-box"
-          aria-labelledby="owner-notes-label"
-        >
-          <label
-            id="owner-notes-label"
-            for="owner-notes"
-            ><h3>Private owner notes</h3><span class="private-tag">Private — guests never see this</span></label
-          >
+        <section class="panel-box" aria-labelledby="owner-notes-label">
+          <label id="owner-notes-label" for="owner-notes">
+            <h3>Private owner notes</h3><span class="private-tag">Private — guests never see this</span>
+            <GmHint text="Only you can see this. It is stored in your own Bookins data and is never shown to the client or included in messages. Save it before you close this window." label="About private notes" />
+          </label>
           <textarea
             id="owner-notes"
             v-model="notesDraft"
@@ -1257,449 +1192,225 @@ async function cancel() {
             placeholder="Add a note for yourself, such as preferences or follow-ups"
           ></textarea>
           <div class="form-actions">
-            <button
-              class="secondary small-button"
-              type="button"
-              :disabled="isDemo || notesSaving || !notesDirty"
-              @click="saveNotes"
-              >{{ notesSaving ? 'Saving…' : 'Save note' }}</button
-            ><span
-              v-if="notesMessage"
-              class="muted"
-              role="status"
-              >{{ notesMessage }}</span
-            ></div
-          >
+            <GmButton variant="secondary" size="sm" :pending="notesSaving" pending-label="Saving…" :disabled-reason="isDemo ? demoHint : !notesDirty ? 'Type a note to save it.' : ''" @click="saveNotes">Save note</GmButton>
+            <span v-if="notesDirty" class="muted unsaved" role="status">Not saved yet</span>
+          </div>
         </section>
 
-        <p
-          v-if="moveNote"
-          class="notice success"
-          role="status"
-          ><AppIcon
-            name="check"
-            :size="18" />{{ moveNote }}</p
-        >
-
-        <section
-          v-if="!rescheduling"
-          class="panel-box"
-          aria-labelledby="message-heading"
-        >
-          <h3 id="message-heading">Message client</h3>
-          <p class="muted">Opens WhatsApp, SMS, or email on your own device with the text filled in. Bookins does not send anything.</p>
-          <div
-            class="segmented kind-row"
-            role="group"
-            aria-label="Message type"
-            ><button
+        <section v-if="!rescheduling" class="panel-box" aria-labelledby="message-heading">
+          <h3 id="message-heading">Message client <GmHint text="Each option opens your own WhatsApp, SMS or email app with the text already written. You press send there. Bookins sends nothing and cannot tell whether you did." label="How messages work" /></h3>
+          <p class="muted">Pick a message, then open it in your own WhatsApp, SMS or email app. Bookins does not send anything.</p>
+          <div class="segmented kind-row" role="group" aria-label="Message type">
+            <button
               v-for="kind in MESSAGE_KINDS"
               :key="kind.id"
               type="button"
               :class="{ 'is-active': messageKind === kind.id }"
               :aria-pressed="messageKind === kind.id"
               @click="openMessage(kind.id)"
-              >{{ kind.label }}</button
-            ></div
-          >
-          <div
-            v-if="composed"
-            class="message-preview"
-            ><p
-              class="message-text"
-              tabindex="0"
-              aria-label="Message text"
-              >{{ composed.text }}</p
-            ><div class="form-actions"
-              ><a
-                v-if="composed.whatsapp"
-                class="secondary small-button link-button"
-                :href="composed.whatsapp"
-                target="_blank"
-                rel="noopener noreferrer"
-                >Open WhatsApp</a
-              ><a
-                v-if="composed.sms"
-                class="secondary small-button link-button"
-                :href="composed.sms"
-                >Open SMS</a
-              ><a
-                v-if="emailUsable"
-                class="secondary small-button link-button"
-                :href="composed.email"
-                >Open email</a
-              ><button
-                class="secondary small-button"
-                type="button"
-                @click="copyMessage"
-                >Copy message</button
-              ></div
-            ><p
-              v-if="!composed.whatsapp"
-              class="muted hint"
-              >{{ phoneProblem }}</p
-            ><p
-              v-if="!emailUsable"
-              class="muted hint"
-              >No email on this booking, so Open email is not available.</p
-            ><p
-              v-if="messageNotice"
-              class="muted"
-              role="status"
-              >{{ messageNotice }}</p
-            ></div
-          >
+            >{{ kind.label }}<span v-if="isSuggestedKind(kind.id)" class="suggested-dot" aria-hidden="true"></span></button>
+          </div>
+          <p v-if="composed" class="muted hint message-cue">Showing: {{ MESSAGE_KINDS.find((kind) => kind.id === messageKind)?.label }}.<template v-if="isSuggestedKind(messageKind)"> Suggested because {{ SUGGESTED_WHY[messageKind] }}.</template> Pick another type above to change it.</p>
+          <p v-else class="muted hint">Choose a message type above to preview it.</p>
+          <div v-if="composed" class="message-preview">
+            <p class="message-text" tabindex="0" aria-label="Message text">{{ composed.text }}</p>
+            <div class="form-actions">
+              <GmHint v-if="composed.whatsapp" wrap text="Opens your own WhatsApp with this message ready. You press send there." v-slot="{ describedby }">
+                <a class="secondary small-button link-button" :href="composed.whatsapp" target="_blank" rel="noopener noreferrer" :aria-describedby="describedby" @click="openedApp('WhatsApp')">Open WhatsApp</a>
+              </GmHint>
+              <GmHint v-if="composed.sms" wrap text="Opens the SMS app on this device with the message filled in. You press send there." v-slot="{ describedby }">
+                <a class="secondary small-button link-button" :href="composed.sms" :aria-describedby="describedby" @click="openedApp('SMS')">Open SMS</a>
+              </GmHint>
+              <GmHint v-if="emailUsable" wrap text="Opens your own email app with the message filled in. You press send there." v-slot="{ describedby }">
+                <a class="secondary small-button link-button" :href="composed.email" :aria-describedby="describedby" @click="openedApp('your email app')">Open email</a>
+              </GmHint>
+              <button class="secondary small-button" type="button" @click="copyMessage">Copy message</button>
+            </div>
+            <p v-if="!composed.whatsapp" class="muted hint">{{ phoneProblem }}</p>
+            <p v-if="!emailUsable" class="muted hint">No email on this booking, so Open email is not available.</p>
+            <p v-if="messageNotice" class="muted" role="status">{{ messageNotice }}</p>
+          </div>
         </section>
 
-        <div v-if="leavePrompt" class="confirm-box">
-          <strong>Leave these booking details?</strong>
-          <p class="muted">Any note or form entry that is not saved will be discarded.</p>
-          <div class="form-actions">
-            <button class="secondary" type="button" @click="keepEditing">Keep editing</button>
-            <button class="ghost" type="button" @click="discardDialog">Discard changes</button>
-          </div>
-        </div>
-
-        <div
-          v-if="canMove(selected) && hasStarted(selected) && !rescheduling"
-          class="panel-box"
-          ><h3>Did this appointment happen?</h3
-          ><div class="form-actions"
-            ><button
-              v-if="selected.status !== 'completed'"
-              class="secondary small-button"
-              type="button"
-              :disabled="isDemo || actionBusy"
-              @click="changeStatus(selected, 'completed')"
-              >Mark completed</button
-            ><button
-              v-if="selected.status !== 'no_show'"
-              class="secondary small-button"
-              type="button"
-              :disabled="isDemo || actionBusy"
-              @click="changeStatus(selected, 'no_show')"
-              >Mark no-show</button
-            ><button
-              v-if="isDone(selected)"
-              class="ghost small-button"
-              type="button"
-              :disabled="isDemo || actionBusy"
-              @click="changeStatus(selected, 'confirmed')"
-              >Undo (back to confirmed)</button
-            ></div
-          ></div
-        >
-
-        <form
-          v-if="rescheduling && canMove(selected)"
-          class="panel-box"
-          @submit.prevent="submitReschedule"
-        >
+        <form v-if="rescheduling && canMove(selected)" class="panel-box" @submit.prevent="requestMove">
           <h3>Reschedule</h3>
-          <p class="muted">Times are in {{ zoneName(moveZone) }}. The booking keeps its {{ duration(selected) }} minute length.</p>
-          <p
-            v-if="onCalendar(selected)"
-            class="muted"
-            >This booking is on your Google Calendar. Rescheduling here does not move that event; change it in Google Calendar yourself.</p
-          >
-          <div
-            v-if="rescheduleError"
-            class="notice error"
-            role="alert"
-            ><AppIcon
-              name="alert"
-              :size="18" />{{ rescheduleError }}</div
-          >
+          <p class="muted">Times are in {{ zoneName(moveZone) }}. The booking keeps its {{ duration(selected) }} minute length. You will be warned if the new time is in the past or outside your weekly hours.</p>
+          <p v-if="onCalendar(selected)" class="muted">This booking is on your Google Calendar. Rescheduling here does not move that event; change it in Google Calendar yourself.</p>
+          <div v-if="rescheduleError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ rescheduleError }}</div>
           <div class="field-row">
-            <div class="field"
-              ><label for="move-date">New date</label
-              ><input
-                id="move-date"
-                v-model="moveForm.date"
-                type="date"
-                required
-            /></div>
-            <div class="field"
-              ><label for="move-time">New time</label
-              ><input
-                id="move-time"
-                v-model="moveForm.time"
-                type="time"
-                required
-            /></div>
+            <div class="field">
+              <label for="move-date">New date</label>
+              <input id="move-date" v-model="moveForm.date" type="date" required />
+            </div>
+            <div class="field">
+              <label for="move-time">New time</label>
+              <input id="move-time" v-model="moveForm.time" type="time" required />
+            </div>
           </div>
-          <div class="form-actions modal-footer"
-            ><button
-              class="primary"
-              :class="{ 'is-pending': rescheduleSaving }"
-              type="submit"
-              :disabled="isDemo || rescheduleSaving"
-              >{{ rescheduleSaving ? 'Moving…' : 'Move booking' }}</button
-            ><button
-              class="secondary"
-              type="button"
-              :disabled="rescheduleSaving"
-              @click="rescheduling = false"
-              >Keep current time</button
-            ></div
-          >
+          <div class="form-actions modal-footer">
+            <GmConfirm
+              v-model:open="moveWarnOpen"
+              title="Move this booking anyway?"
+              :message="moveWarning"
+              confirm-label="Move anyway"
+              cancel-label="Choose another time"
+              @confirm="submitReschedule"
+            >
+              <GmButton variant="primary" type="submit" :pending="rescheduleSaving" pending-label="Moving…" :disabled-reason="demoHint">Move booking</GmButton>
+            </GmConfirm>
+            <GmButton variant="secondary" :disabled="rescheduleSaving" @click="rescheduling = false">Keep current time</GmButton>
+          </div>
         </form>
 
-        <p
-          v-if="selected.status !== 'cancelled' && !canCancel(selected)"
-          class="muted"
-          >This appointment has already happened, so it can no longer be cancelled.</p
-        >
-        <div
-          v-if="confirmCancel && canCancel(selected)"
-          class="confirm-box"
-          ><strong>Cancel and reopen this slot?</strong
-          ><p class="muted"
-            >The appointment stays in history. Bookins does not send a cancellation message; after cancelling you can open one in your own WhatsApp, SMS, or email.<template v-if="onCalendar(selected)"> Its Google Calendar event will be renamed "Cancelled: …" (needs your approval); if that fails the booking is still cancelled and you will be told.</template></p
-          ><div class="field"
-            ><label for="cancellation-reason">Reason, optional</label
-            ><textarea
-              id="cancellation-reason"
-              v-model.trim="cancellationReason"
-              maxlength="500"
-              placeholder="Add a private note for your records"
-            ></textarea></div
-          ><div class="form-actions"
-            ><button
-              class="danger solid"
-              type="button"
-              :disabled="cancelling || isDemo"
-              :class="{ 'is-pending': cancelling }"
-              @click="cancel"
-              >{{ cancelling ? 'Cancelling…' : 'Cancel booking' }}</button
-            ><button
-              class="secondary"
-              type="button"
-              :disabled="cancelling || isDemo"
-              @click="confirmCancel = false"
-              >Keep booking</button
-            ></div
-          ></div
-        >
-        <div
-          v-else
-          class="form-actions modal-footer detail-actions"
-          ><button
+        <div v-if="canCancel(selected) && !isDemo" class="field cancel-reason">
+          <label for="cancellation-reason">If you cancel: reason (optional, private)</label>
+          <textarea id="cancellation-reason" v-model.trim="cancellationReason" maxlength="500" placeholder="Add a private note for your records"></textarea>
+        </div>
+
+        <p v-if="selected.status !== 'cancelled' && !canCancel(selected)" class="muted past-note">This appointment has already happened, so it can no longer be cancelled.</p>
+        <div class="form-actions modal-footer detail-actions">
+          <GmButton
             v-if="calendarConnected && canCancel(selected) && selected.status === 'confirmed' && !onCalendar(selected)"
-            class="secondary"
-            type="button"
-            :disabled="calendarBusy"
+            variant="secondary"
+            :pending="calendarBusy"
+            pending-label="Adding…"
             @click="addToCalendar(selected)"
-            >{{ calendarBusy ? 'Adding…' : 'Add to Google Calendar' }}</button
-          ><button
-            v-if="canMove(selected) && !rescheduling"
-            class="secondary"
-            type="button"
-            :disabled="isDemo"
-            @click="startReschedule"
-            >Reschedule</button
-          ><button
+          >Add to Google Calendar</GmButton>
+          <GmButton v-if="canMove(selected) && !rescheduling" variant="secondary" :disabled-reason="demoHint" @click="startReschedule">Reschedule</GmButton>
+          <GmConfirm
             v-if="canCancel(selected)"
-            class="danger"
-            type="button"
-            :disabled="isDemo"
-            @click="confirmCancel = true"
-            >Cancel booking</button
-          ><button
-            class="secondary"
-            type="button"
-            @click="close"
-            >Close</button
-          ></div
-        >
-      </aside>
+            v-model:open="cancelOpen"
+            title="Cancel and reopen this slot?"
+            :message="cancelMessage"
+            confirm-label="Cancel booking"
+            cancel-label="Keep booking"
+            tone="danger"
+            :busy="cancelling"
+            @confirm="cancel"
+          >
+            <GmButton variant="danger" :pending="cancelling" pending-label="Cancelling…" :disabled-reason="demoHint" @click="cancelOpen = true">Cancel booking</GmButton>
+          </GmConfirm>
+          <GmButton
+            v-else-if="selected.status !== 'cancelled'"
+            variant="danger"
+            disabled-reason="This appointment has already happened, so it can no longer be cancelled."
+          >Cancel booking</GmButton>
+          <GmConfirm
+            v-model:open="discardOpen"
+            title="Discard unsaved changes?"
+            :message="discardMessage"
+            confirm-label="Discard and close"
+            cancel-label="Keep editing"
+            tone="danger"
+            @confirm="discardDialog"
+            @cancel="keepEditing"
+          >
+            <GmButton variant="secondary" @click="requestClose">Close</GmButton>
+          </GmConfirm>
+        </div>
+      </template>
     </GmDialog>
 
     <GmDialog
       :open="newOpen"
       title="New booking"
       :busy="newSaving"
+      content-class="card modal booking-detail"
       overlay-class="modal-backdrop"
-      @update:open="open => { if (!open) closeNew() }"
+      @update:open="open => { if (!open) requestCloseNew() }"
     >
-      <form
-        class="card modal booking-detail"
-        @submit.prevent="submitNew"
-      >
-        <div class="modal-header"
-          ><div
-            ><p class="eyebrow">Walk-in or phone booking</p
-            ><h2>New booking</h2></div
-          ><button
-            class="icon-button"
-            type="button"
-            aria-label="Close"
-            @click="closeNew"
-            ><AppIcon name="close" /></button
-        ></div>
+      <form novalidate @submit.prevent="submitNew">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Walk-in or phone booking</p>
+            <h2>New booking</h2>
+          </div>
+          <button class="icon-button" type="button" aria-label="Close" @click="requestCloseNew"><AppIcon name="close" /></button>
+        </div>
 
         <template v-if="newResult">
-          <div
-            class="notice success"
-            role="status"
-            ><AppIcon
-              name="check"
-              :size="18" />Saved {{ newResult.created.length }} booking{{ newResult.created.length === 1 ? '' : 's' }}. Nothing was sent to the client.</div
-          >
-          <div
-            v-if="newResult.skipped.length"
-            class="panel-box"
-            role="status"
-            ><strong>{{ newResult.skipped.length }} repeat{{ newResult.skipped.length === 1 ? '' : 's' }} skipped</strong
-            ><ul class="skipped"
-              ><li
-                v-for="item in newResult.skipped"
-                :key="item.startsAt"
-                >{{ skippedLabel(item) }}: {{ item.reason }}</li
-              ></ul
-            ></div
-          >
-          <div class="form-actions modal-footer"
-            ><button
-              v-if="newResult.created.length"
-              class="primary"
-              type="button"
-              @click="messageNewClient"
-              >Message client</button
-            ><button
-              class="secondary"
-              type="button"
-              @click="closeNew"
-              >Done</button
-            ></div
-          >
+          <div class="notice success" role="status"><AppIcon name="check" :size="18" />Saved {{ newResult.created.length }} booking{{ newResult.created.length === 1 ? '' : 's' }}. Nothing was sent to the client.</div>
+          <div v-if="newResult.skipped.length" class="panel-box" role="status">
+            <strong>{{ newResult.skipped.length }} repeat{{ newResult.skipped.length === 1 ? '' : 's' }} skipped</strong>
+            <ul class="skipped"><li v-for="item in newResult.skipped" :key="item.startsAt">{{ skippedLabel(item) }}: {{ item.reason }}</li></ul>
+          </div>
+          <div class="form-actions modal-footer">
+            <GmButton v-if="newResult.created.length" variant="primary" @click="messageNewClient">Message client</GmButton>
+            <GmButton variant="secondary" @click="closeNew">Done</GmButton>
+          </div>
         </template>
 
+        <div v-else-if="newBlocked" class="empty empty-inline">
+          <span class="empty-icon"><AppIcon name="bookings" /></span>
+          <h2>{{ !setup.hasAvailability ? 'Set your hours first' : 'Add a service first' }}</h2>
+          <p>{{ newBlocked.text }}</p>
+          <div class="empty-actions">
+            <RouterLink class="primary button-link" :to="newBlocked.to" @click="closeNew">{{ newBlocked.label }}</RouterLink>
+            <GmButton variant="secondary" @click="closeNew">Close</GmButton>
+          </div>
+        </div>
+
         <template v-else>
-          <p
-            v-if="!bookableServices.length"
-            class="muted"
-            >Add a service first. <RouterLink to="/services">Go to Services</RouterLink></p
-          >
-          <div
-            v-if="newError"
-            class="notice error"
-            role="alert"
-            ><AppIcon
-              name="alert"
-              :size="18" />{{ newError }}</div
-          >
-          <div class="field"
-            ><label for="new-service">Service</label
-            ><select
-              id="new-service"
-              v-model="form.serviceId"
-              required
-              ><option
-                v-for="item in bookableServices"
-                :key="item.id"
-                :value="item.id"
-                >{{ item.name }} · {{ item.duration_minutes }} min</option
-              ></select
-            ></div
-          >
-          <p class="muted zone-line">Date and time are in {{ zoneName(formZone) }}, your schedule's timezone. You can book outside your weekly hours, but not on top of another booking or time off.</p>
-          <div class="field-row">
-            <div class="field"
-              ><label for="new-date">Date</label
-              ><input
-                id="new-date"
-                v-model="form.date"
-                type="date"
-                required
-            /></div>
-            <div class="field"
-              ><label for="new-time">Time</label
-              ><input
-                id="new-time"
-                v-model="form.time"
-                type="time"
-                required
-            /></div>
+          <div v-if="newError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ newError }}</div>
+          <div class="field">
+            <label for="new-service">Service</label>
+            <select id="new-service" v-model="form.serviceId" required>
+              <option v-for="item in bookableServices" :key="item.id" :value="item.id">{{ item.name }} · {{ item.duration_minutes }} min</option>
+            </select>
           </div>
-          <div class="field"
-            ><label for="new-name">Client name</label
-            ><input
-              id="new-name"
-              v-model="form.name"
-              maxlength="160"
-              autocomplete="off"
-              required
-          /></div>
           <div class="field-row">
-            <div class="field"
-              ><label for="new-email">Email</label
-              ><input
-                id="new-email"
-                v-model="form.email"
-                type="email"
-                autocomplete="off"
-                aria-describedby="new-contact-hint"
-            /></div>
-            <div class="field"
-              ><label for="new-phone">Phone</label
-              ><input
-                id="new-phone"
-                v-model="form.phone"
-                type="tel"
-                autocomplete="off"
-                aria-describedby="new-contact-hint"
-            /></div>
+            <div class="field">
+              <label for="new-date">Date</label>
+              <input id="new-date" v-model="form.date" type="date" required />
+            </div>
+            <div class="field">
+              <label for="new-time">Time</label>
+              <input id="new-time" v-model="form.time" type="time" required />
+            </div>
           </div>
-          <p
-            id="new-contact-hint"
-            class="muted zone-line"
-            >Enter an email, a phone number, or both. A phone number lets you message the client on WhatsApp or SMS.</p
-          >
-          <div class="field"
-            ><label for="new-notes">Notes the client can see</label
-            ><textarea
-              id="new-notes"
-              v-model="form.notes"
-              maxlength="2000"
-          ></textarea></div>
-          <div class="field"
-            ><label for="new-owner-notes">Private owner notes <span class="private-tag">Private — guests never see this</span></label
-            ><textarea
-              id="new-owner-notes"
-              v-model="form.ownerNotes"
-              maxlength="4000"
-          ></textarea></div>
-          <div class="field"
-            ><label for="new-repeat">Repeat weekly (extra weeks, 0 to 12)</label
-            ><input
-              id="new-repeat"
-              v-model.number="form.repeatWeeks"
-              type="number"
-              min="0"
-              max="12"
-              step="1"
-            /><span
-              v-if="form.repeatWeeks > 0"
-              class="field-hint"
-              >Creates this booking plus {{ Math.min(12, Math.floor(form.repeatWeeks)) }} more at the same local time. Weeks that clash are skipped and listed afterwards.</span
-            ></div
-          >
-          <div class="form-actions modal-footer"
-            ><button
-              class="primary"
-              :class="{ 'is-pending': newSaving }"
-              type="submit"
-              :disabled="newSaving || isDemo || !bookableServices.length"
-              >{{ newSaving ? 'Saving…' : 'Save booking' }}</button
-            ><button
-              class="secondary"
-              type="button"
-              :disabled="newSaving"
-              @click="closeNew"
-              >Cancel</button
-            ></div
-          >
+          <p class="field-hint form-hint">Date and time are in {{ zoneName(formZone) }}, your schedule's timezone. You can book outside your weekly hours, but not on top of another booking or time off.</p>
+          <div class="field">
+            <label for="new-name">Client name</label>
+            <input id="new-name" v-model="form.name" maxlength="160" autocomplete="off" required />
+          </div>
+          <p id="new-contact-hint" class="field-hint form-hint">Enter an email, a phone number, or both (at least one). A phone number lets you message the client on WhatsApp or SMS.</p>
+          <div class="field-row">
+            <div class="field">
+              <label for="new-email">Email <span class="optional">(or phone)</span></label>
+              <input id="new-email" v-model="form.email" type="email" autocomplete="off" aria-describedby="new-contact-hint" />
+            </div>
+            <div class="field">
+              <label for="new-phone">Phone <span class="optional">(or email)</span></label>
+              <input id="new-phone" v-model="form.phone" type="tel" autocomplete="off" aria-describedby="new-contact-hint" />
+            </div>
+          </div>
+          <div class="field">
+            <label for="new-notes">Notes the client can see <span class="optional">(optional)</span></label>
+            <textarea id="new-notes" v-model="form.notes" maxlength="2000"></textarea>
+          </div>
+          <div class="field">
+            <label for="new-owner-notes">Private owner notes <span class="private-tag">Private — guests never see this</span></label>
+            <textarea id="new-owner-notes" v-model="form.ownerNotes" maxlength="4000"></textarea>
+          </div>
+          <div class="field">
+            <label for="new-repeat">Repeat weekly (extra weeks, 0 to 12)</label>
+            <input id="new-repeat" v-model.number="form.repeatWeeks" type="number" min="0" max="12" step="1" />
+            <span v-if="form.repeatWeeks > 0" class="field-hint">Creates this booking plus {{ Math.min(12, Math.floor(form.repeatWeeks)) }} more at the same local time. Weeks that clash are skipped and listed afterwards.</span>
+          </div>
+          <div class="form-actions modal-footer">
+            <GmButton variant="primary" type="submit" :pending="newSaving" pending-label="Saving…" :disabled-reason="demoHint">Save booking</GmButton>
+            <GmConfirm
+              v-model:open="newDiscardOpen"
+              title="Discard this booking?"
+              message="What you typed has not been saved and will be lost."
+              confirm-label="Discard"
+              cancel-label="Keep editing"
+              tone="danger"
+              @confirm="closeNew"
+            >
+              <GmButton variant="secondary" :disabled="newSaving" @click="requestCloseNew">Cancel</GmButton>
+            </GmConfirm>
+          </div>
         </template>
       </form>
     </GmDialog>
@@ -1724,6 +1435,11 @@ async function cancel() {
 .calendar-outcomes { flex: 1 1 100%; margin: 0; padding-left: 18px; font-size: var(--text-sm); }
 
 .tab-bar { margin-bottom: var(--space-4); }
+@media (max-width: 760px) {
+  .tab-bar { flex-wrap: wrap; overflow: visible; -webkit-mask-image: none; mask-image: none; }
+  .tab-bar > button { flex: 1 1 auto; justify-content: center; }
+}
+.suggested-dot { width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--accent); display: inline-block; vertical-align: middle; }
 
 /* Agenda */
 .booking-list { display: grid; gap: var(--space-5); }
@@ -1771,14 +1487,27 @@ async function cancel() {
 .week-empty { margin: auto; color: var(--line-strong); }
 
 /* Dialogs */
-.booking-detail { width: min(620px, 100%); }
+.tab-help { margin: calc(var(--space-2) * -1) 0 var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: var(--text-sm); }
+.quick-label { align-self: center; color: var(--muted); font-size: var(--text-xs); }
+.empty-actions { margin-top: var(--space-4); display: flex; justify-content: center; flex-wrap: wrap; gap: var(--space-2); }
+.button-link { min-height: 44px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); text-decoration: none; font-weight: 700; }
+.empty-inline { margin: var(--space-4) 0; }
+.status-cell { display: inline-flex; align-items: center; gap: 4px; }
+.unsaved { color: var(--warning); font-weight: 700; }
+.optional { color: var(--muted); font-weight: 400; }
+.form-hint { margin: 0 0 var(--space-4); }
+.past-note { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
+.cancel-reason { margin-top: var(--space-4); }
+.cancel-reason textarea { min-height: 64px; }
+.detail-actions { align-items: flex-start; }
+.booking-detail .notice { margin-top: var(--space-3); }
 .detail-when { padding: var(--space-3); display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-radius: var(--radius-sm); background: var(--accent-faint); }
 .detail-when > span:first-child { width: 40px; height: 40px; display: grid; place-items: center; color: var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
 .detail-when div { display: grid; gap: 2px; }
 .detail-when strong { font-size: var(--text-md); }
 .detail-when small { color: var(--muted); font-size: var(--text-sm); }
 .badge-row { margin: var(--space-3) 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
-.booking-detail > p.muted { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
+.booking-detail p.muted { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
 .detail-section { margin-top: var(--space-4); }
 .detail-section h3, .panel-box h3 { margin: 0; font-size: var(--text-sm); font-weight: 700; letter-spacing: 0.01em; }
 .detail-section h3 { margin-bottom: var(--space-2); color: var(--muted); font-size: var(--text-xs); letter-spacing: 0.06em; text-transform: uppercase; }
@@ -1813,11 +1542,17 @@ async function cancel() {
 @media (max-width: 700px) {
   .filter-bar .field { flex: 1 1 140px; }
   .booking-card { grid-template-columns: 54px minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); }
-  .booking-end { grid-column: 1/-1; grid-template-columns: 1fr auto; align-items: center; justify-items: start; }
-  .booking-end button { justify-self: end; }
+  .booking-end { grid-column: 1/-1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
+  .booking-end > .ref { flex: 1 1 100%; }
+  .quick-actions { justify-content: flex-start; }
   .date-tile { width: 54px; height: 62px; }
   .detail-when { grid-template-columns: 40px minmax(0, 1fr); }
   .detail-when .chip { grid-column: 1/-1; justify-self: start; }
   .modal-footer > button, .modal-footer > a { flex: 1 1 auto; }
+  .quick-label { width: 100%; }
 }
+</style>
+
+<style>
+.booking-detail { width: min(620px, 100%); }
 </style>

@@ -1,11 +1,15 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import { isActiveTimeOff, isTimeOff } from '../booking.js'
 import { localFields, parseWeeklyWindows, wallClockInstant } from '../scheduling.js'
 import { displayTimeZone } from '../time-display.js'
 
 const state = inject('bookingState')
+const setup = useSetupState()
+const toast = inject('toast', null)
 const DAY = 86_400_000
 const PERIODS = [
   { value: 7, label: 'Last 7 days' },
@@ -236,6 +240,14 @@ const ownerShare = computed(() => {
   const owner = list.filter(item => item.source === 'owner').length
   return { count: owner, pct: Math.round((owner / list.length) * 100) }
 })
+async function copyBookingLink() {
+  try {
+    await navigator.clipboard.writeText(state.profile?.public_link_url || '')
+    toast?.success('Booking link copied. Share it with your first client.')
+  } catch {
+    toast?.error('Could not copy the link. Open Settings to copy it.')
+  }
+}
 const percent = value => (value === null ? '—' : `${value}%`)
 </script>
 
@@ -261,13 +273,14 @@ const percent = value => (value === null ? '—' : `${value}%`)
       >
     </div>
 
-    <div v-if="!all.length" class="card empty">
+    <div v-if="!all.length" class="card empty" data-tour="tour-insights-summary">
       <span class="empty-icon"><AppIcon name="bookings" :size="22" /></span>
       <h2>No bookings to analyse yet</h2>
       <p>Insights appear after your first booking. Once clients book or you add appointments, trends and totals will show here.</p>
-      <div class="cluster">
-        <RouterLink class="primary" to="/">Share your booking link</RouterLink>
-        <RouterLink class="secondary" to="/bookings">Open bookings</RouterLink>
+      <div class="cluster empty-actions">
+        <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
+        <RouterLink v-else class="primary" to="/settings">Create your booking link</RouterLink>
+        <RouterLink class="secondary" to="/bookings">Add your first booking</RouterLink>
       </div>
     </div>
 
@@ -278,37 +291,37 @@ const percent = value => (value === null ? '—' : `${value}%`)
           <RouterLink to="/bookings">Bookings</RouterLink> so revenue and no-show rates are accurate.</span>
       </div>
 
-      <div class="stat-grid kpis stagger">
+      <div class="stat-grid kpis" data-tour="tour-insights-summary">
         <div class="card stat-tile kpi">
-          <span class="label">Bookings</span>
+          <span class="label">Bookings <GmHint text="Appointments that started in this period and were not cancelled. Time off is never counted. The line below compares with the period just before." label="About bookings" /></span>
           <p class="metric tnum">{{ count }}</p>
           <p class="sub" :class="changeTone">{{ change }}</p>
           <p class="sub">Not cancelled, {{ periodLabel }}</p>
         </div>
         <div class="card stat-tile kpi">
-          <span class="label">Utilization, next 14 days</span>
+          <span class="label">Share of open hours booked, next 14 days <GmHint text="Utilization: of the hours you are open over the next 14 days (after time off), how many already have a confirmed booking. 100% means fully booked." label="About utilization" /></span>
           <p class="metric tnum">{{ utilization ? percent(utilization.pct) : '—' }}</p>
           <p v-if="utilization && utilization.pct !== null" class="sub">{{ hoursText(utilization.booked) }} booked of {{ hoursText(utilization.open) }} open</p>
           <p v-else class="sub">Add weekly hours in Availability to measure this.</p>
           <div v-if="utilization && utilization.pct !== null" class="bar" aria-hidden="true"><span :style="{ width: `${utilization.pct}%` }" /></div>
         </div>
         <div class="card stat-tile kpi">
-          <span class="label">Cancellation rate</span>
+          <span class="label">Cancellation rate <GmHint text="Cancelled bookings as a share of all bookings that started in this period." label="About cancellation rate" /></span>
           <p class="metric tnum">{{ percent(cancellationRate) }}</p>
           <p class="sub">{{ cancelledCount }} of {{ inPeriod.length }} bookings, {{ periodLabel }}</p>
         </div>
         <div class="card stat-tile kpi">
-          <span class="label">No-show rate</span>
+          <span class="label">No-show rate <GmHint text="Of appointments that are over (completed, no-show, or past and not yet marked), the share you marked No-show. Mark past appointments in Bookings to keep this accurate." label="About no-show rate" /></span>
           <p class="metric tnum">{{ percent(outcome.rate) }}</p>
-          <p class="sub">{{ outcome.noShow }} of {{ outcome.total }} appointments held or due</p>
+          <p class="sub">{{ outcome.noShow }} of {{ outcome.total }} finished appointments were no-shows</p>
         </div>
       </div>
 
       <article class="card block">
-        <h2>Estimated revenue</h2>
+        <h2>Estimated revenue <GmHint text="An estimate only: the current display price of each service, added up for completed and past appointments. Bookins does not take payments, so this is not money received." label="About estimated revenue" /></h2>
         <p class="note">Estimated from display prices — Bookins does not take payments.</p>
         <ul v-if="revenue.length" class="revenue">
-          <li v-for="item in revenue" :key="item.currency"><strong>{{ money(item.amount, item.currency) }}</strong><span>{{ item.currency }}</span></li>
+          <li v-for="item in revenue" :key="item.currency"><strong>{{ money(item.amount, item.currency) }}</strong></li>
         </ul>
         <p v-else class="muted">No priced appointments completed or past due in {{ periodLabel }}.</p>
         <p class="muted small">Counts completed and past confirmed appointments, using each service's current price.</p>
@@ -335,12 +348,12 @@ const percent = value => (value === null ? '—' : `${value}%`)
         </article>
 
         <article class="card block">
-          <h2>Clients</h2>
+          <h2>Clients <GmHint text="Clients are matched by email. Returning means the same email also booked before this period. Repeat rate is returning clients as a share of everyone who booked in this period." label="About repeat rate" /></h2>
           <dl v-if="clients.total" class="facts">
             <div><dt>Clients booked</dt><dd>{{ clients.total }}</dd></div>
             <div><dt>New clients</dt><dd>{{ clients.fresh }}</dd></div>
             <div><dt>Returning clients</dt><dd>{{ clients.returning }}</dd></div>
-            <div><dt>Repeat rate</dt><dd>{{ percent(clients.repeatRate) }}</dd></div>
+            <div><dt>Repeat rate (returning clients)</dt><dd>{{ percent(clients.repeatRate) }}</dd></div>
           </dl>
           <p v-else class="muted">No clients booked in {{ periodLabel }}.</p>
           <p class="muted small">Clients are matched by email address. Returning means booked before this period.</p>
@@ -380,7 +393,7 @@ const percent = value => (value === null ? '—' : `${value}%`)
 
       <div class="grid grid-2 pair">
         <article class="card block">
-          <h2>Lead time</h2>
+          <h2>Lead time <GmHint text="How far ahead clients book on average: the time from when they booked online to the appointment. Bookings you add yourself are excluded." label="About lead time" /></h2>
           <div v-if="leadTime" class="metric tnum">{{ leadTime.text }}</div>
           <p v-if="leadTime" class="muted">Average time between a client booking online and the appointment, from {{ leadTime.count }} online bookings.</p>
           <p v-else class="muted">No online bookings in {{ periodLabel }}.</p>
@@ -399,6 +412,8 @@ const percent = value => (value === null ? '—' : `${value}%`)
 <style scoped>
 .insights { display: grid; gap: var(--space-4); }
 .insights .page-header { margin-bottom: 0; }
+.empty-actions { justify-content: center; }
+.label :deep(.gm-hint__bubble) { text-transform: none; letter-spacing: normal; font-weight: 500; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .period { max-width: 100%; justify-self: start; overflow-x: auto; }
 .notice a { display: inline; min-height: 0; color: inherit; font-weight: 700; text-decoration: underline; }

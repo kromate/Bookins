@@ -15,7 +15,7 @@
   --ink: #101928;
   --ink-soft: #344054;
   --muted: #5d6578; /* 5.9:1 on white; was #697087 */
-  --muted-soft: #6b7388;
+  --muted-soft: #f1f3f8; /* a light surface tint (was a dark #6b7388 that made text on it unreadable); use --muted for text */
   --surface: #ffffff;
   --surface-soft: #f8f9fc;
   --surface-blue: #f4f6ff;
@@ -1418,6 +1418,7 @@ a.list-row:hover,
   padding: var(--space-3) var(--space-4);
   min-height: 56px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
@@ -1491,18 +1492,23 @@ a.list-row:hover,
 .toast-region {
   position: fixed;
   inset: auto 0 calc(24px + env(safe-area-inset-bottom)) 0;
-  z-index: 90;
+  z-index: 2000; /* above dialogs (100), the tour and sheets; the feedback launcher is hidden while those are open */
   display: grid;
   justify-items: center;
   gap: var(--space-2);
   pointer-events: none;
 }
+.toast-region > div {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+}
 .toast {
-  max-width: min(420px, calc(100vw - 32px));
-  padding: 12px 16px;
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 10px 10px 10px 16px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   color: #fff;
   border-radius: 12px;
   background: var(--ink);
@@ -1510,6 +1516,26 @@ a.list-row:hover,
   font-size: var(--text-sm);
   pointer-events: auto;
 }
+.toast > .toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; word-break: normal; }
+.toast.error { background: #8f1d14; }
+.toast.success > svg { color: #7be0ae; }
+.toast.info > svg { color: #a9c7ff; }
+.toast-action,
+.toast-dismiss {
+  min-height: 36px;
+  padding: 0 10px;
+  flex: none;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.16);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.toast-dismiss { min-width: 36px; padding: 0; background: transparent; font-size: 20px; line-height: 1; }
+.toast-action:hover, .toast-dismiss:hover { background: rgb(255 255 255 / 0.26); }
+.toast-action:focus-visible, .toast-dismiss:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .toast-enter-active,
 .toast-leave-active {
   transition:
@@ -1874,3 +1900,212 @@ a.list-row:hover,
 @media (max-width: 760px) {
   .skeleton-main { height: 300px; }
 }
+
+/* ---------- Tour, help menu, hints ---------- */
+/* ProductTour.vue reserves room below the page (--tour-pad) so the target can scroll clear of the panel. */
+body.bookins-tour-open { padding-bottom: var(--tour-pad, 0px); }
+.bookins-tour-target {
+  outline: 3px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: var(--radius-sm);
+  transition: outline-color var(--dur-fast) var(--ease);
+}
+.tour-panel,
+.tour-offer {
+  position: fixed;
+  right: 24px;
+  bottom: 96px;
+  z-index: 85;
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 32px));
+  max-height: calc(100dvh - 140px);
+  overflow-y: auto;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  --gm-color-brand: var(--accent);
+}
+.tour-panel .gm-walkthrough { border-color: var(--accent-line, #dce1ff); }
+/* Compact: used by ProductTour when the full panel cannot clear the highlighted target. */
+.tour-panel--compact .gm-walkthrough { padding: 12px 16px; }
+.tour-panel--compact .gm-walkthrough-progress { margin: -12px -16px 8px; }
+.tour-panel--compact .gm-walkthrough p { line-height: 1.45; margin-block: 4px; }
+.tour-panel--compact .gm-walkthrough h2 { margin: 4px 0; font-size: 16px; }
+.tour-panel--compact .gm-walkthrough-notice { display: none; }
+.tour-panel--compact .gm-walkthrough-actions { margin-block: 10px 4px; }
+.tour-offer {
+  padding: 16px;
+  border: 1px solid var(--accent-line, #dce1ff);
+  background: var(--surface);
+  animation: tour-offer-in var(--dur-panel) var(--ease);
+}
+.tour-offer-title { margin: 0; font-weight: 700; font-size: var(--text-lg); }
+.tour-offer-copy { margin: 4px 0 12px; color: var(--muted); font-size: var(--text-sm); }
+.tour-offer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@keyframes tour-offer-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .tour-offer { animation: none; } .bookins-tour-target { transition: none; } }
+@media (max-width: 900px) {
+  .tour-panel,
+  .tour-offer {
+    left: 16px;
+    right: 16px;
+    width: auto;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 108px);
+  }
+  .tour-panel .gm-walkthrough { padding: 16px; }
+  .tour-panel .gm-walkthrough details { display: none; }
+  /* The feedback launcher would sit on top of the tour card's buttons. */
+  body.bookins-tour-open [data-feedback-widget] { display: none !important; }
+  .tour-panel { max-height: min(calc(100dvh - 108px), 52dvh); }
+  .tour-panel[data-dock='bottom'] { top: auto; bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .tour-panel[data-dock='top'] { top: calc(8px + env(safe-area-inset-top)); bottom: auto; }
+}
+
+.help-menu { position: relative; margin-top: 12px; }
+.help-button {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 650;
+  cursor: pointer;
+}
+.help-button:hover, .help-button[aria-expanded='true'] { background: var(--accent-faint); color: var(--accent); }
+.help-button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.help-popover {
+  position: absolute;
+  inset: auto 0 calc(100% + 6px) 0;
+  z-index: 40;
+  padding: 6px;
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+.help-popover > * {
+  min-height: 44px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.help-popover > *:hover { background: var(--accent-faint); }
+.help-popover > *:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 900px) {
+  .more-sheet .more-item {
+    min-height: 52px;
+    padding: 0 var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    font-size: var(--text-md);
+    font-weight: 650;
+    text-align: left;
+    text-decoration: none;
+  }
+  .more-sheet .more-item:focus-visible, .more-sheet a:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .more-sheet hr { width: 100%; margin: 6px 0; border: 0; border-top: 1px solid var(--line); }
+}
+
+
+/* ---------- Wave 2 shared fixes ---------- */
+/* The feedback launcher never floats above dialogs, the tour, drawers or sheets. */
+body:has(.gm-dialog-overlay) [data-feedback-widget],
+body:has(.more-sheet) [data-feedback-widget],
+body:has(.sidebar.open) [data-feedback-widget],
+body.bookins-tour-open [data-feedback-widget] { display: none !important; }
+/* Feedback launcher (fixed, bottom-right, ~56px + 24px inset) must never sit on page content.
+   Desktop: reserve a right gutter so cards, "View history" links and sticky save bars end before the launcher.
+   Phones: the launcher stays at its default spot above the bottom nav; sticky bars pad their right edge so their text and buttons never run under it. */
+@media (min-width: 901px) {
+  .workspace main { padding-right: max(var(--page-gutter), 88px); padding-bottom: 96px; }
+}
+@media (max-width: 900px) {
+  .sticky-save-bar { padding-right: 80px; }
+  .workspace main { padding-bottom: calc(var(--bottom-nav-h) + 88px + env(safe-area-inset-bottom)); }
+}
+/* Toasts never cover an open dialog. Desktop: the centred dialog card leaves the bottom strip free, so toasts stay there but
+   sit in a strip GmDialog reserves under the card. Phones: dialogs
+   are bottom sheets, so toasts move to the top of the screen above the sheet. */
+body:has(.gm-dialog-overlay) .toast-region { inset: auto 0 calc(12px + env(safe-area-inset-bottom)) 0; }
+@media (max-width: 700px) {
+  body:has(.gm-dialog-overlay) .toast-region { inset: calc(12px + env(safe-area-inset-top)) 0 auto 0; }
+}
+/* Local dev shim banner ("Offline preview"). goalmatic.dev.js prepends it before mount as a full-width block, which pushed the
+   whole app down. Keep it visible and honest, but as a small fixed pill that takes no layout space. */
+[data-goalmatic-runtime-notice] {
+  position: fixed !important;
+  left: 50% !important;
+  bottom: 6px !important;
+  top: auto !important;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: auto !important;
+  max-width: calc(100vw - 24px) !important;
+  padding: 3px 12px !important;
+  border: 1px solid rgb(146 64 14 / 0.25);
+  border-radius: 999px;
+  font-size: 11px !important;
+  line-height: 1.4 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgb(16 25 40 / 0.12);
+}
+/* Phones: shorten to one 16px line (the full sentence stays in the DOM for assistive tech) so it never covers sticky buttons. */
+@media (max-width: 900px) {
+  [data-goalmatic-runtime-notice] {
+    bottom: calc(var(--bottom-nav-h) + 2px + env(safe-area-inset-bottom)) !important;
+    font-size: 0 !important;
+    padding: 0 10px !important;
+    height: 16px;
+    line-height: 16px !important;
+  }
+  [data-goalmatic-runtime-notice]::before { content: 'Offline preview \00b7  not connected'; font-size: 10px; font-weight: 600; }
+}
+/* Topbar */
+.topbar-link { color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.topbar-title small { min-width: 0; }
+@media (max-width: 900px) {
+  .topbar { gap: var(--space-2); }
+  .topbar-title { display: grid; min-width: 0; margin-right: auto; flex: 1 1 auto; }
+  .topbar-title small { display: none; }
+  .topbar-title strong { font-size: var(--text-md); }
+  .topbar > .topbar-actions:first-child { margin-right: 0; flex: none; }
+  .topbar > .topbar-actions:last-child { flex: none; }
+}
+@media (max-width: 480px) { .topbar-title strong { font-size: var(--text-sm); } .topbar .mobile-brand { display: none; } }
+/* Visible Live / Demo switch (the workspace card menu is collapsed). */
+.mode-switch { margin: 0 0 14px; padding: 3px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #f1f3f9; }
+.mode-switch button { min-height: 36px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
+.mode-switch button[aria-pressed='true'] { background: #fff; color: var(--accent); box-shadow: 0 1px 2px rgba(16, 25, 40, 0.1); }
+.mode-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Sideways-scrolling rows fade the clipped edge so people know there is more (class set by App.vue). */
+.has-more-right { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent); }
+.has-more-left { -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent); }
+.has-more-left.has-more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }

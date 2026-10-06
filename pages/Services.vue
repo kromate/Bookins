@@ -1,9 +1,13 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, reactive, ref } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
 import GmDialog from '../components/ui/GmDialog.vue'
+import GmButton from '../components/ui/GmButton.vue'
+import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import QrCode from '../components/QrCode.vue'
 import { copyText, createServiceLink, deleteService, isTimeOff, revokeServiceLink, saveService } from '../booking.js'
 import { whatsappShareUrl } from '../messaging.js'
@@ -12,6 +16,8 @@ import { isDemo, registerDemoGuard } from '../runtime.js'
 const state = inject('bookingState')
 const refresh = inject('refreshBookings')
 const router = useRouter()
+const route = useRoute()
+const setup = useSetupState()
 const toast = inject('toast', null)
 const show = ref(false)
 const selectPortalTarget = ref(null)
@@ -20,7 +26,6 @@ const saving = ref(false)
 const deleting = ref(false)
 const editing = ref(null)
 const pendingDelete = ref(null)
-const notice = ref('')
 const error = ref('')
 const serviceBaseline = ref('')
 const dialogPrompt = ref(false)
@@ -37,6 +42,8 @@ const form = reactive({
   active: true,
   location: '',
 })
+// Availability must exist before a service can be created (services use the shared schedule).
+const needsAvailability = computed(() => !state.schedules[0] || !setup.value.hasAvailability)
 const scheduleInterval = computed(() => Number(state.schedules[0]?.slot_interval_minutes || 0))
 
 const durationError = computed(() => {
@@ -54,6 +61,13 @@ const nameConflict = computed(() => {
     (item) => item.id !== editing.value?.id && String(item.name || '').trim().toLowerCase() === name,
   )
   return other ? `You already have a service called "${other.name}". Choose a different name.` : ''
+})
+const submitReason = computed(() => {
+  if (isDemo.value) return 'The demo is read-only.'
+  if (needsAvailability.value) return 'Set your availability first, then create the service.'
+  if (nameConflict.value) return nameConflict.value
+  if (durationError.value) return 'Fix the duration: it must be a multiple of 5 minutes and fit your booking interval.'
+  return ''
 })
 const upcomingCount = (service) => {
   const now = Date.now()
@@ -87,11 +101,11 @@ async function makeLink(service) {
   try {
     await createServiceLink(service)
     await refresh()
-    notice.value = 'Direct link created.'
-    toast?.('Direct link created')
-    window.setTimeout(() => { notice.value = '' }, 2500)
+    toast?.success('Direct link created')
   } catch (reason) {
-    setLinkError(service, reason?.message || 'The direct link could not be created.')
+    const message = reason?.message || 'The direct link could not be created.'
+    setLinkError(service, message)
+    toast?.error(message)
   } finally {
     linkBusy.value = ''
   }
@@ -107,6 +121,7 @@ async function copyServiceLink(service) {
     copiedTimer = window.setTimeout(() => { copiedLink.value = '' }, 1600)
   } catch {
     setLinkError(service, 'Your browser blocked copying. Select the link and copy it manually.')
+    toast?.error('Could not copy the link. Select it and copy manually.')
   }
 }
 
@@ -119,10 +134,11 @@ async function confirmRevoke() {
     await revokeServiceLink(service)
     pendingRevoke.value = null
     await refresh()
-    notice.value = 'Direct link revoked. Anyone holding it can no longer book.'
-    window.setTimeout(() => { notice.value = '' }, 3000)
+    toast?.success('Direct link revoked. Anyone holding it can no longer book.')
   } catch (reason) {
-    setLinkError(service, reason?.message || 'The direct link could not be revoked.')
+    const message = reason?.message || 'The direct link could not be revoked.'
+    setLinkError(service, message)
+    toast?.error(message)
     pendingRevoke.value = null
   } finally {
     linkBusy.value = ''
@@ -164,7 +180,7 @@ onBeforeRouteLeave((to) => {
     allowLeave.value = false
     return true
   }
-  if (!serviceDirty.value && !pendingDelete.value) return true
+  if (!serviceDirty.value) return true
   pendingRoute.value = to.fullPath
   dialogPrompt.value = true
   return false
@@ -217,7 +233,7 @@ function close() {
 function discardChanges() {
   if (saving.value || deleting.value) return
   if (serviceDirty.value && serviceBaseline.value) Object.assign(form, JSON.parse(serviceBaseline.value))
-  pendingDelete.value = null
+  error.value = ''
   show.value = false
   editing.value = null
   dialogPrompt.value = false
@@ -236,6 +252,12 @@ function keepEditing() {
 
 function requestDeleteClose() {
   pendingDelete.value = null
+  error.value = ''
+}
+
+function askDelete(service) {
+  error.value = ''
+  pendingDelete.value = service
 }
 
 function focusKeepService(event) {
@@ -259,9 +281,9 @@ function priceLabel(service) {
 async function submit() {
   if (isDemo.value || saving.value || deleting.value) return
   const schedule = state.schedules[0]
-  if (!schedule) {
-    error.value = 'Set your availability before creating a service.'
-    show.value = false
+  if (!schedule || needsAvailability.value) {
+    // Keep the dialog and everything typed; the availability card in the dialog explains the next step.
+    error.value = 'Set your availability first. Your service details are kept here.'
     return
   }
   if (durationError.value || nameConflict.value) {
@@ -276,13 +298,10 @@ async function submit() {
     await refresh()
     show.value = false
     editing.value = null
-    notice.value = wasEditing ? 'Service updated.' : 'Service created.'
-    toast?.(wasEditing ? 'Service updated' : 'Service created')
-    window.setTimeout(() => {
-      notice.value = ''
-    }, 2000)
+    toast?.success(wasEditing ? 'Service updated' : 'Service created')
   } catch (reason) {
     error.value = reason?.message || 'The service could not be saved.'
+    toast?.error(`${error.value} Your changes are still in the form.`)
   } finally {
     saving.value = false
   }
@@ -307,33 +326,41 @@ async function pauseInstead() {
     }, state.services)
     pendingDelete.value = null
     await refresh()
-    notice.value = 'Service paused. Existing bookings are unchanged and it can be resumed any time.'
-    window.setTimeout(() => { notice.value = '' }, 3000)
+    toast?.success('Service paused. Existing bookings are unchanged; resume it any time.')
   } catch (reason) {
     error.value = reason?.message || 'The service could not be paused.'
+    toast?.error(error.value)
   } finally {
     pausing.value = false
   }
 }
 
 async function remove() {
-  if (isDemo.value) return
+  if (isDemo.value || !pendingDelete.value) return
   deleting.value = true
   error.value = ''
   try {
     await deleteService(pendingDelete.value.id)
     pendingDelete.value = null
     await refresh()
-    notice.value = 'Service deleted. Existing booking history was kept.'
-    window.setTimeout(() => {
-      notice.value = ''
-    }, 2500)
+    toast?.success('Service deleted. Existing booking history was kept.')
   } catch (reason) {
     error.value = reason?.message || 'The service could not be deleted.'
+    toast?.error(error.value)
   } finally {
     deleting.value = false
   }
 }
+
+// Overview "New service" lands here with ?new=1: open the editor, then clean the query.
+function openFromQuery() {
+  if (!route.query.new) return
+  const { new: _drop, ...rest } = route.query
+  router.replace({ path: route.path, query: rest })
+  if (!isDemo.value) open()
+}
+onMounted(openFromQuery)
+watch(() => route.query.new, openFromQuery)
 </script>
 
 <template>
@@ -346,41 +373,37 @@ async function remove() {
           be paused without losing its history.</p
         ></div
       >
-      <button
+      <GmButton
+        data-tour="tour-services-new"
         class="primary"
-        type="button"
-        :disabled="isDemo || saving || deleting"
+        :disabled-reason="isDemo ? 'The demo is read-only. Switch to your own workspace to add services.' : ''"
+        :disabled="saving || deleting"
         @click="open()"
-        ><AppIcon
-          name="plus"
-          :size="17"
-        />New service</button
+        ><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton
       >
     </div>
 
     <div
-      v-if="notice"
-      class="notice"
-      role="status"
-      >{{ notice }}</div
-    >
-    <div
-      v-if="error && !show"
+      v-if="error && !show && !pendingDelete"
       class="notice error"
       role="alert"
       >{{ error }}</div
     >
-    <div v-if="!isDemo && (serviceDirty || pendingDelete)" class="dirty-actions">
-      <span>{{ dialogPrompt ? 'Leave without saving this service?' : 'Unsaved service changes are kept until you save or discard them.' }}</span>
+
+    <article v-if="needsAvailability && !isDemo" class="card availability-first" data-tour="tour-services-availability">
+      <span class="icon-tile info"><AppIcon name="availability" :size="20" /></span>
       <div>
-        <button class="secondary" type="button" @click="keepEditing">Keep editing</button>
-        <button class="ghost" type="button" :disabled="saving || deleting" @click="discardChanges">Discard changes</button>
+        <p class="eyebrow">Step 1</p>
+        <h2>Set your availability first</h2>
+        <p class="muted">Services use your weekly hours to offer times to guests, so Bookins needs your hours before it can create a service. It takes about a minute.</p>
       </div>
-    </div>
+      <RouterLink class="primary" to="/availability">Set availability<AppIcon name="chevron" :size="15" /></RouterLink>
+    </article>
 
     <div
       v-if="state.services.length"
       class="service-grid"
+      data-tour="tour-services-list"
     >
       <article
         v-for="service in state.services"
@@ -427,6 +450,7 @@ async function remove() {
             <AppIcon class="direct-chevron" name="chevron" :size="16" />
           </summary>
           <div class="direct-body">
+            <p class="private-note">A direct link opens booking for this one service only, so you can share it in a chat or on a poster. {{ service.visibility === 'private' ? 'This service is private, so its direct link is the only way guests can book it.' : 'Optional: your public booking page already lists this service.' }}</p>
             <template v-if="linkLive(service)">
               <code>{{ service.public_link_url }}</code>
               <div class="direct-actions">
@@ -445,20 +469,22 @@ async function remove() {
           </div>
         </details>
         <div class="service-actions"
-          ><button
-            class="secondary small-button"
-            type="button"
-            :disabled="isDemo || saving || deleting"
+          ><GmButton
+            variant="secondary"
+            size="sm"
+            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
+            :disabled="saving || deleting"
             @click="open(service)"
-            ><AppIcon name="edit" :size="16" />Edit service</button
-          ><button
-            class="ghost small-button icon-delete delete-link"
-            type="button"
-            aria-label="Delete service"
-            title="Delete service"
-            :disabled="isDemo || saving || deleting"
-            @click="pendingDelete = service"
-            ><AppIcon name="trash" :size="18" /></button
+            ><template #leading><AppIcon name="edit" :size="16" /></template>Edit service</GmButton
+          ><GmButton
+            variant="ghost"
+            size="sm"
+            class="icon-delete delete-link"
+            :aria-label="`Delete ${service.name}`"
+            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
+            :disabled="saving || deleting"
+            @click="askDelete(service)"
+            ><AppIcon name="trash" :size="18" /></GmButton
           ></div
         >
       </article>
@@ -467,19 +493,18 @@ async function remove() {
     <div
       v-else
       class="empty"
+      data-tour="tour-services-list"
     >
       <span class="empty-icon"><AppIcon name="services" /></span>
       <h2>Create your first service</h2>
       <p>Set a clear name, duration, and price so guests know exactly what they are booking.</p>
-      <button
+      <p v-if="needsAvailability && !isDemo" class="muted">You will be asked to set your availability first.</p>
+      <GmButton
         class="primary"
-        type="button"
-        :disabled="isDemo || saving || deleting"
+        :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
+        :disabled="saving || deleting"
         @click="open()"
-        ><AppIcon
-          name="plus"
-          :size="17"
-        />Create service</button
+        ><template #leading><AppIcon name="plus" :size="17" /></template>Create service</GmButton
       >
     </div>
 
@@ -508,28 +533,27 @@ async function remove() {
           ><button
             class="icon-button"
             type="button"
-              aria-label="Close"
-              :disabled="saving || deleting"
+            aria-label="Close"
+            :disabled="saving || deleting"
             @click="close"
             ><AppIcon name="close" /></button
         ></div>
+        <div
+          v-if="needsAvailability && !isDemo && !editing"
+          class="notice warning availability-note"
+          role="status"
+          ><AppIcon name="availability" :size="18" /><span><strong>Set your availability first.</strong> Services use your weekly hours, so a service can only be created once you have them. You can fill in the details now; they stay here. <RouterLink to="/availability">Set availability</RouterLink></span></div
+        >
         <div
           v-if="error"
           class="notice error"
           role="alert"
           >{{ error }}</div
         >
-        <div v-if="dialogPrompt" class="dirty-actions">
-          <span>Discard these unsaved service changes?</span>
-          <div>
-            <button class="secondary" type="button" @click="keepEditing">Keep editing</button>
-            <button class="ghost" type="button" :disabled="saving || deleting" @click="discardChanges">Discard changes</button>
-          </div>
-        </div>
         <section class="form-section">
           <h3>Basics</h3>
           <div class="field"
-            ><label for="service-name">Service name</label
+            ><label for="service-name">Service name <span class="req">(required)</span></label
             ><input
               id="service-name"
               v-model.trim="form.name"
@@ -540,7 +564,7 @@ async function remove() {
               placeholder="30-minute discovery call"
           /><p v-if="nameConflict" class="field-hint field-error" role="alert">{{ nameConflict }}</p></div>
           <div class="field"
-            ><label for="service-description">Description</label
+            ><label for="service-description">Description <span class="req">(required)</span></label
             ><textarea
               id="service-description"
               v-model.trim="form.description"
@@ -555,7 +579,7 @@ async function remove() {
           <h3>Duration and price</h3>
           <div class="grid grid-2 form-grid"
             ><div class="field"
-              ><label for="service-duration">Duration</label
+              ><label for="service-duration">Duration (minutes) <GmHint text="Duration is how long one appointment lasts. The slot interval, set in Availability, is how often guests can pick a start time (for example every 30 minutes). Each booking reserves one interval, so duration cannot exceed it." label="About duration and slot interval" /></label
               ><input
                 id="service-duration"
                 v-model.number="form.durationMinutes"
@@ -571,11 +595,11 @@ async function remove() {
                 id="service-duration-hint"
                 class="field-hint"
                 :class="{ 'field-error': durationError }"
-                >{{ durationError || (scheduleInterval ? `Minutes, in steps of 5, up to your ${scheduleInterval}-minute booking interval.` : 'Minutes, in steps of 5.') }}
-                <RouterLink v-if="scheduleInterval" to="/availability">Change interval in Availability</RouterLink></p
+                >{{ durationError || (scheduleInterval ? `Up to your ${scheduleInterval}-minute slot interval.` : 'Minutes, in steps of 5.') }}
+                <RouterLink v-if="scheduleInterval" to="/availability">Change interval</RouterLink></p
               ></div
             ><div class="field price-field"
-              ><label for="service-price">Display price</label
+              ><label for="service-price">Display price <GmHint text="Shown to you and in messages as the price you have agreed with the client. Bookins does not take payments yet, so guests pay you directly. Use 0 for free." label="About display price" /></label
               ><div
                 ><GmSelect
                   v-model="form.currency"
@@ -591,40 +615,25 @@ async function remove() {
                   step="1"
                   aria-label="Price" /></div
               ><p class="field-hint"
-                >Prices are arranged with you. Online payment is not active yet.</p
+                >Guests pay you directly. Online payment is not active yet.</p
               ></div
             ></div
           >
         </section>
         <section class="form-section">
-          <h3>Booking rules</h3>
-          <div class="field"
-            ><label for="service-location">Location (optional)</label
-            ><input
-              id="service-location"
-              v-model.trim="form.location"
-              :disabled="isDemo || saving || deleting"
-              maxlength="300"
-              placeholder="Address, Phone call, or a video meeting URL" /><p class="field-hint"
-              >Included in your messages to clients and in calendar events. It is not shown on the booking page yet.</p
-            ></div>
-        </section>
-        <section class="form-section">
-          <h3>Visibility</h3>
+          <h3>Who can book, and where</h3>
           <div class="grid grid-2 form-grid"
             ><div class="field"
-              ><label for="service-visibility">Visibility</label
+              ><label for="service-visibility">Visibility <GmHint text="Public services are listed on your booking page. Private services are hidden there and can only be booked through their own direct link, which suits one-to-one or invite-only offers." label="About visibility" /></label
               ><GmSelect
                 id="service-visibility"
                 v-model="form.visibility"
                 :options="visibilityOptions"
                 label="Visibility"
                 :disabled="isDemo || saving || deleting"
-                :portal-target="selectPortalTarget || 'body'" /><p class="field-hint"
-                >Private services are hidden from your booking page and bookable only through their direct link.</p
-              ></div
+                :portal-target="selectPortalTarget || 'body'" /></div
             ><div class="field"
-              ><label for="service-status">Status</label
+              ><label for="service-status">Status <GmHint text="Paused services are hidden from guests but keep their history. You can resume them any time." label="About status" /></label
               ><GmSelect
                 id="service-status"
                 v-model="form.active"
@@ -633,18 +642,41 @@ async function remove() {
                 :disabled="isDemo || saving || deleting"
                 :portal-target="selectPortalTarget || 'body'" /></div
           ></div>
+          <div class="field"
+            ><label for="service-location">Location (optional) <GmHint text="Where the appointment happens: an address, a phone call, or a video link. It goes into your messages to clients and calendar events, but is not shown on the booking page yet." label="About location" /></label
+            ><input
+              id="service-location"
+              v-model.trim="form.location"
+              :disabled="isDemo || saving || deleting"
+              maxlength="300"
+              placeholder="Address, phone call, or a video meeting URL" /></div>
         </section>
+        <p v-if="submitReason && !isDemo" class="submit-reason" role="status">{{ submitReason }}</p>
         <div class="form-actions modal-footer"
-          ><button
+          ><GmButton
+            type="submit"
             class="primary"
-            :disabled="saving || isDemo || Boolean(durationError || nameConflict)"
-            >{{ saving ? 'Saving…' : editing ? 'Save changes' : 'Create service' }}</button
-          ><button
-            class="secondary"
-            type="button"
-            :disabled="saving || isDemo"
-            @click="close"
-            >Cancel</button
+            :pending="saving"
+            pending-label="Saving…"
+            :disabled-reason="submitReason"
+            >{{ editing ? 'Save changes' : 'Create service' }}</GmButton
+          ><GmConfirm
+            v-model:open="dialogPrompt"
+            title="Discard unsaved changes?"
+            message="Your edits to this service will be lost."
+            confirm-label="Discard changes"
+            cancel-label="Keep editing"
+            tone="danger"
+            :busy="saving"
+            @confirm="discardChanges"
+            @cancel="keepEditing"
+            ><button
+              class="secondary"
+              type="button"
+              :disabled="saving"
+              @click="close"
+              >Cancel</button
+            ></GmConfirm
           ></div
         >
       </form>
@@ -691,13 +723,7 @@ async function remove() {
           >It will disappear from your booking page. Existing bookings and contact history will stay
           available.</p
         >
-        <div v-if="dialogPrompt" class="dirty-actions">
-          <span>Close this confirmation before leaving?</span>
-          <div>
-            <button class="secondary" type="button" @click="keepEditing">Keep editing</button>
-            <button class="ghost" type="button" :disabled="saving || deleting" @click="discardChanges">Discard changes</button>
-          </div>
-        </div>
+        <div v-if="error" class="notice error" role="alert">{{ error }}</div>
         <div class="form-actions"
           ><button
             v-if="deleteUpcoming && pendingDelete.active !== false"
@@ -728,6 +754,19 @@ async function remove() {
 
 <style scoped>
 .field-error { color: var(--danger); }
+.req { color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
+.availability-first { margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-4); border-color: var(--accent); background: var(--accent-soft); }
+.availability-first > div { min-width: 0; flex: 1; }
+.availability-first h2 { margin: 0 0 4px; font-size: var(--text-lg); }
+.availability-first p { margin: 0; font-size: var(--text-sm); }
+.availability-first .eyebrow { margin-bottom: 4px; }
+.availability-first a, .availability-note a { text-decoration: none; }
+.availability-first > a { flex: none; display: inline-flex; align-items: center; gap: 4px; }
+.availability-note { display: flex; gap: var(--space-2); align-items: flex-start; }
+.availability-note a { margin-left: 4px; color: var(--accent); font-weight: 700; text-decoration: underline; }
+.submit-reason { margin: 0 0 var(--space-2); color: var(--danger); font-size: var(--text-sm); line-height: 1.45; }
+:global(.bookins-service-dialog .form-grid) { align-items: start; }
+:global(.bookins-service-dialog .modal-footer .gm-button) { min-width: 140px; }
 .private-note { margin: 0 0 var(--space-2); color: var(--muted); font-size: var(--text-xs); line-height: 1.45; }
 .direct-link { margin: var(--space-3) 0 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-soft, #fafbfd); }
 .direct-summary { min-height: var(--control-h-sm); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink-soft); font-size: var(--text-sm); font-weight: 650; list-style: none; cursor: pointer; }
@@ -739,9 +778,6 @@ async function remove() {
 .direct-link code { max-width: 100%; padding: 8px 10px; overflow: hidden; color: var(--ink-soft); border-radius: 8px; background: #f1f3f8; font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .direct-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .direct-actions a { display: inline-flex; align-items: center; text-decoration: none; }
-.dirty-actions { margin-bottom: 18px; padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #5d4d24; border: 1px solid #ead9a8; border-radius: 10px; background: #fffaf0; font-size: var(--text-sm); line-height: 1.45; }
-.dirty-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
-.dirty-actions button { min-height: var(--control-h-sm); }
 .service-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -801,9 +837,10 @@ async function remove() {
   display: flex;
   gap: var(--space-2);
 }
-.service-actions .secondary {
+.service-actions :deep(.gm-button--secondary) {
   flex: 1;
 }
+.service-actions :deep(.icon-delete) { --button-fg: var(--danger); }
 .icon-delete { width: var(--control-h-sm); padding: 0; display: inline-grid; place-items: center; flex: none; }
 .delete-link {
   color: var(--danger);
@@ -852,36 +889,11 @@ async function remove() {
   margin-top: 22px;
   justify-content: center;
 }
-:global(.bookins-service-dialog .dirty-actions),
-:global(.bookins-delete-dialog .dirty-actions) {
-  margin-bottom: 18px;
-  padding: 12px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: #5d4d24;
-  border: 1px solid #ead9a8;
-  border-radius: 10px;
-  background: #fffaf0;
-  font-size: var(--text-sm);
-  line-height: 1.45;
-}
-:global(.bookins-service-dialog .dirty-actions > div),
-:global(.bookins-delete-dialog .dirty-actions > div) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-:global(.bookins-service-dialog .dirty-actions button),
-:global(.bookins-delete-dialog .dirty-actions button) {
-  min-height: var(--control-h-sm);
-}
 @media (max-width: 700px) {
-  .dirty-actions { align-items: flex-start; flex-direction: column; }
   .service-grid {
     grid-template-columns: 1fr;
   }
+  .availability-first { align-items: stretch; flex-direction: column; }
   :global(.bookins-service-dialog .form-grid) {
     grid-template-columns: 1fr;
   }
@@ -894,15 +906,6 @@ async function remove() {
     width: 100%;
     max-height: 94vh;
     border-radius: 20px 20px 12px 12px;
-  }
-  :global(.bookins-service-dialog .dirty-actions),
-  :global(.bookins-delete-dialog .dirty-actions) {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  :global(.bookins-service-dialog .dirty-actions button),
-  :global(.bookins-delete-dialog .dirty-actions button) {
-    min-height: 44px;
   }
 }
 </style>

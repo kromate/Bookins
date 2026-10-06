@@ -105,7 +105,7 @@ export function messageVars(booking, { profile, service, timezone, bookingLink }
     time: startsAt ? formatIn(startsAt, zone, { hour: 'numeric', minute: '2-digit', hour12: true }) : '',
     timezone: zone,
     duration: minutes > 0 ? `${minutes} min` : '',
-    business: profile?.display_name || '',
+    business: String(profile?.display_name || '').trim() || 'your host',
     location: service?.location || '',
     reference: booking?.reference || '',
     booking_link: bookingLink || profile?.public_link_url || '',

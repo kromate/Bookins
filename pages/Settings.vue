@@ -1,12 +1,16 @@
 <script setup>
+import { formatDay } from '../format-date.js'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import BookinsLogo from '../components/BookinsLogo.vue'
-import GmDialog from '../components/ui/GmDialog.vue'
+import GmButton from '../components/ui/GmButton.vue'
+import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import GmSelect from '../components/ui/GmSelect.vue'
 import QrCode from '../components/QrCode.vue'
-import { copyText, createPublicLink, isTimeOff, revokePublicLink, saveMessageTemplates, saveProfile } from '../booking.js'
+import { copyText, createPublicLink, isLocalPreview, isTimeOff, revokePublicLink, saveMessageTemplates, saveProfile } from '../booking.js'
 import {
   DEFAULT_TEMPLATES,
   TEMPLATE_KINDS,
@@ -24,6 +28,7 @@ const timezoneItems = computed(() => timezoneOptions(form.timezone))
 const state = inject('bookingState')
 const refresh = inject('refreshBookings')
 const toast = inject('toast', null)
+const setup = useSetupState()
 const router = useRouter()
 const saving = ref(false)
 const linking = ref(false)
@@ -32,7 +37,6 @@ const busy = computed(() => saving.value || linking.value || revoking.value)
 const confirmRevoke = ref(false)
 const linkHeading = ref(null)
 const copied = ref(false)
-const notice = ref('')
 const error = ref('')
 const form = reactive({ displayName: '', bio: '', timezone: 'Africa/Lagos', photoUrl: '' })
 const profileBaseline = ref('')
@@ -48,18 +52,26 @@ const expiresMs = computed(() => Date.parse(state.profile?.public_link_expires_a
 const linkExpired = computed(() => Boolean(publicUrl.value) && Number.isFinite(expiresMs.value) && expiresMs.value <= clock.value)
 const expires = computed(() =>
   Number.isFinite(expiresMs.value)
-    ? new Date(expiresMs.value).toLocaleDateString(undefined, { dateStyle: 'medium' })
+    ? formatDay(expiresMs.value)
     : 'Unknown',
 )
 const scheduleZone = computed(() => state.schedules[0]?.timezone || '')
 const zoneMismatch = computed(() => Boolean(scheduleZone.value) && form.timezone !== scheduleZone.value)
-const canShare = computed(() =>
-  Boolean(
-    state.profile &&
-    state.schedules.length &&
-    state.services.some((item) => item.active !== false && item.visibility === 'public'),
-  ),
-)
+const localPreview = isLocalPreview()
+const hasPublicService = computed(() => state.services.some((item) => item.active !== false && item.visibility === 'public'))
+const canShare = computed(() => Boolean(state.profile?.id && state.schedules.length && hasPublicService.value))
+const missingForLink = computed(() => {
+  const missing = []
+  if (!state.profile?.id) missing.push('save your profile (a display name)')
+  if (!state.schedules.length) missing.push('set your weekly hours')
+  if (!hasPublicService.value) missing.push('add an active, public service')
+  return missing
+})
+const linkBlockReason = computed(() => {
+  if (isDemo.value) return 'Demo is read-only. Guest preview does not create public links.'
+  if (!missingForLink.value.length) return ''
+  return `Before you can create a link: ${missingForLink.value.join(', ')}.`
+})
 const initials = computed(
   () =>
     form.displayName
@@ -126,18 +138,17 @@ function syncProfileDraft() {
 const dirty = computed(() => normalizeProfile(form) !== profileBaseline.value)
 const removeModeGuard = registerDemoGuard('bookins-settings', () => {
   if (busy.value) return 'Wait for the current settings action to finish.'
-  if (confirmRevoke.value) return 'Close the link confirmation before switching modes.'
   if (dirty.value) return 'Finish or discard your unsaved profile changes before switching modes.'
   if (templatesDirty.value || savingTemplates.value) return 'Save or discard your message template edits before switching modes.'
   return ''
 })
 onBeforeUnmount(() => {
   removeModeGuard()
-  sectionObserver?.disconnect()
   window.clearTimeout(copiedTimer)
   window.clearInterval(clockTimer)
-  window.clearTimeout(flashTimer)
   window.clearTimeout(copiedKeyTimer)
+  window.removeEventListener('scroll', updateActiveSection)
+  window.removeEventListener('resize', updateActiveSection)
 })
 
 onBeforeRouteLeave((to) => {
@@ -146,7 +157,7 @@ onBeforeRouteLeave((to) => {
     allowLeave.value = false
     return true
   }
-  if (!dirty.value && !confirmRevoke.value) return true
+  if (!dirty.value && !templatesDirty.value) return true
   pendingRoute.value = to.fullPath
   leavePrompt.value = true
   return false
@@ -161,7 +172,8 @@ function discardChanges() {
     photoUrl: state.profile?.photo_url || '',
   })
   profileBaseline.value = normalizeProfile(form)
-  confirmRevoke.value = false
+  Object.assign(templates, cloneTemplates(resolveTemplates(state.profile)))
+  templateBaseline.value = JSON.stringify(templates)
   leavePrompt.value = false
   const route = pendingRoute.value
   pendingRoute.value = ''
@@ -176,14 +188,19 @@ function keepEditing() {
   pendingRoute.value = ''
 }
 
-let flashTimer = 0
-function flash(message) {
-  notice.value = message
-  toast?.(message)
-  window.clearTimeout(flashTimer)
-  flashTimer = window.setTimeout(() => {
-    notice.value = ''
-  }, 2200)
+function flash(message, options) {
+  toast?.(message, options)
+}
+function failToast(message) {
+  toast?.error?.(message)
+}
+function goTo(path) { router.push(path) }
+function profileNextAction() {
+  const next = setup.value.nextStep
+  if (!next || next.key === 'profile' || next.key === 'done') return undefined
+  if (next.key === 'availability') return { label: 'Set your hours', onClick: () => goTo('/availability') }
+  if (next.key === 'service') return { label: 'Create a service', onClick: () => goTo('/services') }
+  return { label: 'Create booking link', onClick: () => goToSection('settings-link') }
 }
 
 async function submit() {
@@ -198,13 +215,16 @@ async function submit() {
     })
     if (await reloadChecked()) {
       syncProfileDraft()
-      flash('Profile saved.')
+      const action = profileNextAction()
+      flash(action ? 'Profile saved' : 'Profile saved. Guests will see these details on your booking page.', action ? { action, duration: 8000 } : undefined)
     } else {
       profileBaseline.value = normalizeProfile(form)
       error.value = STALE_MESSAGE
+      failToast(STALE_MESSAGE)
     }
   } catch (reason) {
     error.value = reason?.message || 'The profile could not be saved.'
+    failToast(error.value)
   } finally {
     saving.value = false
   }
@@ -214,6 +234,7 @@ async function createLink() {
   if (isDemo.value || busy.value) return
   if (!state.profile?.id) {
     error.value = 'Save your profile before creating a booking link.'
+    failToast(error.value)
     return
   }
   linking.value = true
@@ -241,12 +262,14 @@ async function createLink() {
     }
     if (await reloadChecked()) {
       if (!dirty.value) syncProfileDraft()
-      flash('Your booking link is ready to share.')
+      flash('Booking link created. Copy it or use the share kit.', { duration: 6000, action: { label: 'Copy link', onClick: copy } })
     } else {
       error.value = STALE_MESSAGE
+      failToast(STALE_MESSAGE)
     }
   } catch (reason) {
     error.value = reason?.message || 'The public link could not be created.'
+    failToast(error.value)
   } finally {
     linking.value = false
   }
@@ -273,14 +296,16 @@ async function revoke() {
     confirmRevoke.value = false
     if (await reloadChecked()) {
       if (!dirty.value) syncProfileDraft()
-      flash('Booking link revoked.')
+      flash('Booking link revoked. Anyone opening it now sees an expired-link page.')
     } else {
       error.value = STALE_MESSAGE
+      failToast(STALE_MESSAGE)
     }
     await nextTick()
     linkHeading.value?.focus()
   } catch (reason) {
     error.value = reason?.message || 'The public link could not be revoked.'
+    failToast(error.value)
   } finally {
     revoking.value = false
   }
@@ -296,6 +321,7 @@ async function copy() {
     copiedTimer = window.setTimeout(() => { copied.value = false }, 1600)
   } catch {
     error.value = 'Your browser blocked copying. Select the link above and copy it manually.'
+    failToast(error.value)
   }
 }
 
@@ -321,6 +347,7 @@ async function copyShare(key, value) {
     copiedKeyTimer = window.setTimeout(() => { copiedKey.value = '' }, 1600)
   } catch {
     error.value = 'Your browser blocked copying. Select the text and copy it manually.'
+    failToast(error.value)
   }
 }
 
@@ -332,25 +359,29 @@ const sections = [
   { id: 'settings-delivery', label: 'Delivery status' },
 ]
 const activeSection = ref(sections[0].id)
-let sectionObserver = null
+let scrollLock = 0
 function goToSection(id) {
   activeSection.value = id
+  scrollLock = Date.now() + 900
   const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   document.getElementById(id)?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' })
 }
-onMounted(() => {
-  if (typeof IntersectionObserver === 'undefined') return
-  sectionObserver = new IntersectionObserver(
-    (entries) => {
-      const visible = entries.filter((entry) => entry.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
-      if (visible) activeSection.value = visible.target.id
-    },
-    { rootMargin: '-90px 0px -60% 0px' },
-  )
+// Scroll-spy: the active section is the last one whose top has passed the sticky header zone.
+function updateActiveSection() {
+  if (Date.now() < scrollLock) return
+  const line = window.innerHeight * 0.3
+  let current = sections[0].id
   for (const section of sections) {
     const element = document.getElementById(section.id)
-    if (element) sectionObserver.observe(element)
+    if (element && element.getBoundingClientRect().top <= line) current = section.id
   }
+  if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = sections[sections.length - 1].id
+  activeSection.value = current
+}
+onMounted(() => {
+  window.addEventListener('scroll', updateActiveSection, { passive: true })
+  window.addEventListener('resize', updateActiveSection)
+  updateActiveSection()
 })
 
 // ----- message templates -----
@@ -438,11 +469,13 @@ function resetTemplate(kind) {
   if (isDemo.value || savingTemplates.value) return
   templates[kind].subject = DEFAULT_TEMPLATES[kind].subject
   templates[kind].body = DEFAULT_TEMPLATES[kind].body
+  toast?.info?.(`${templateLabels[kind]} reset to the default wording. Save templates to keep it.`)
 }
 async function saveTemplates() {
   if (isDemo.value || savingTemplates.value || busy.value) return
   if (!state.profile?.id) {
     error.value = 'Save your profile before saving message templates.'
+    failToast(error.value)
     return
   }
   const custom = {}
@@ -458,13 +491,15 @@ async function saveTemplates() {
     if (await reloadChecked()) {
       Object.assign(templates, cloneTemplates(resolveTemplates(state.profile)))
       templateBaseline.value = JSON.stringify(templates)
-      flash('Message templates saved.')
+      flash('Message templates saved. New messages use your wording.')
     } else {
       templateBaseline.value = JSON.stringify(templates)
       error.value = STALE_MESSAGE
+      failToast(STALE_MESSAGE)
     }
   } catch (reason) {
     error.value = reason?.message || 'Message templates could not be saved.'
+    failToast(error.value)
   } finally {
     savingTemplates.value = false
   }
@@ -480,10 +515,9 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.5.1 candidate</span>
+      <span class="chip accent version-chip">Bookins v0.5.2 candidate</span>
     </div>
 
-    <div v-if="notice" class="notice" role="status"><AppIcon name="check" :size="18" />{{ notice }}</div>
     <div v-if="error" class="notice error" role="alert"><AppIcon name="info" :size="18" />{{ error }}</div>
     <div v-if="!isDemo && remoteChanged" class="notice warning" role="status">
       <AppIcon name="info" :size="18" />
@@ -508,11 +542,12 @@ async function saveTemplates() {
         <form
           id="settings-profile"
           class="card profile-form"
+          data-tour="tour-settings-profile"
           @submit.prevent="submit"
         >
           <div class="section-heading"
             ><div
-              ><p class="eyebrow">Public profile</p><h2>How guests see you</h2
+              ><p class="eyebrow">Public profile <span v-if="!state.profile?.id" class="chip warning">Not saved yet</span></p><h2>How guests see you</h2
               ><p class="muted">This information appears at the top of your booking page.</p></div
             ></div
           >
@@ -532,7 +567,7 @@ async function saveTemplates() {
           >
           <div class="form-section">
             <div class="field"
-              ><label for="profile-name">Display name</label
+              ><label for="profile-name">Display name <GmHint text="The name guests see at the top of your booking page and in confirmations. Use your own name or your business name." label="About display name" /></label
               ><input
                 id="profile-name"
                 v-model.trim="form.displayName"
@@ -555,9 +590,9 @@ async function saveTemplates() {
           </div>
           <div class="form-section">
             <div class="field"
-              ><label for="profile-timezone">Booking timezone</label
+              ><label for="profile-timezone">Booking timezone <GmHint text="Your schedule's timezone is what bookings actually use. Keep this the same as the timezone on the Availability page." label="About booking timezone" /></label
               ><GmSelect id="profile-timezone" v-model="form.timezone" :options="timezoneItems" label="Booking timezone" :disabled="isDemo || busy" required described-by="profile-timezone-help" />
-                <p id="profile-timezone-help" class="field-hint">Choose a city or timezone. With a keyboard, type the city name while the list is open.</p
+                <p id="profile-timezone-help" class="field-hint">Shown on your booking page. Type a city name to search.</p
               ><p v-if="zoneMismatch" class="field-hint zone-warning" role="status">Your schedule runs in {{ displayTimeZone(scheduleZone) }}, and bookings use the schedule timezone. <button class="ghost small-button" type="button" :disabled="busy" @click="form.timezone = scheduleZone">Use {{ scheduleZone }}</button></p
             ></div>
             <div class="field"
@@ -571,10 +606,22 @@ async function saveTemplates() {
               /><p class="field-hint">Use a square image with a public HTTPS URL.</p></div
             >
           </div>
+          <div class="profile-actions stack-sm">
+            <GmButton
+              type="submit"
+              variant="primary"
+              :pending="saving"
+              pending-label="Saving…"
+              :disabled="busy && !saving"
+              :disabled-reason="isDemo ? 'Demo is read-only.' : !form.displayName ? 'Enter a display name first.' : state.profile?.id && !dirty ? 'Saved. Change something to save again.' : ''"
+              reason-visible
+              >Save profile</GmButton
+            >
+          </div>
         </form>
 
         <div id="settings-link" class="link-section">
-          <article class="card booking-page-card">
+          <article class="card booking-page-card" data-tour="tour-settings-link">
             <div class="booking-card-mark"><BookinsLogo compact /></div>
             <p class="eyebrow">Public booking page</p>
             <h2 ref="linkHeading" tabindex="-1">{{ linkExpired ? 'Your link has expired' : publicUrl ? 'Your link is active' : 'Create your booking link' }}</h2>
@@ -591,7 +638,7 @@ async function saveTemplates() {
                 /><code>{{ publicUrl }}</code></div
               >
               <div class="link-status" :class="{ expired: linkExpired }"
-                ><span><i />{{ linkExpired ? 'Expired' : 'Active' }}</span><small>{{ linkExpired ? 'Expired' : 'Expires' }} {{ expires }}</small></div
+                ><span><i />{{ linkExpired ? 'Expired' : 'Active' }}</span><small>{{ linkExpired ? 'Expired' : 'Expires' }} {{ expires }} <GmHint text="Booking links expire for your guests' safety. Before it does, create a new link here and share that one instead; the old one stops working." label="About link expiry" /></small></div
               >
               <p v-if="linkExpired" class="readiness-hint">Guests opening this link now see an expired-link page. Create a new link and share it again.</p>
               <div class="form-actions"
@@ -619,62 +666,60 @@ async function saveTemplates() {
                     name="external"
                     :size="15" /></a
               ></div>
-              <button
-                class="revoke-link"
-                type="button"
-                :disabled="isDemo || busy"
-                @click="confirmRevoke = true"
-                >Revoke this booking link</button
-              >
+              <p v-if="localPreview" class="readiness-hint">Local preview: the Preview tab cannot see this browser's in-memory sample data, so it may say the link is no longer valid. Hosted links work normally.</p>
+              <p class="readiness-hint">Want a link for one service? Create it from that service on the <router-link to="/services">Services page</router-link> <GmHint text="A service direct link opens straight to that service, so guests skip choosing one. It is separate from this profile link and has its own expiry." label="About per-service links" />.</p>
+              <div class="revoke-row">
+                <GmConfirm
+                  v-model:open="confirmRevoke"
+                  title="Stop this booking link?"
+                  message="Anyone opening it will see an expired-link page. Your profile, services and existing bookings stay intact."
+                  confirm-label="Revoke link"
+                  cancel-label="Keep link"
+                  tone="danger"
+                  :busy="revoking"
+                  @confirm="revoke"
+                >
+                  <button
+                    class="secondary small-button revoke-link"
+                    type="button"
+                    :disabled="isDemo || busy"
+                    @click="confirmRevoke = true"
+                    >Revoke this booking link</button
+                  >
+                </GmConfirm>
+              </div>
             </template>
             <template v-else>
-              <div class="readiness-list">
-                <span :class="{ done: state.profile }"
-                  ><AppIcon
-                    :name="state.profile ? 'check' : 'chevron'"
-                    :size="14"
-                  />Saved profile</span
-                >
-                <span :class="{ done: state.schedules.length }"
-                  ><AppIcon
-                    :name="state.schedules.length ? 'check' : 'chevron'"
-                    :size="14"
-                  />Weekly availability</span
-                >
-                <span
-                  :class="{
-                    done: state.services.some(
-                      (item) => item.active !== false && item.visibility === 'public',
-                    ),
-                  }"
-                  ><AppIcon
-                    :name="
-                      state.services.some(
-                        (item) => item.active !== false && item.visibility === 'public',
-                      )
-                        ? 'check'
-                        : 'chevron'
-                    "
-                    :size="14"
-                  />Public active service</span
+              <ul class="readiness-list" aria-label="What you need before creating a link">
+                <li :class="{ done: state.profile?.id }">
+                  <AppIcon :name="state.profile?.id ? 'check' : 'chevron'" :size="14" />
+                  <span>Saved profile</span>
+                  <button v-if="!state.profile?.id" class="ghost small-button" type="button" @click="goToSection('settings-profile')">Save profile</button>
+                </li>
+                <li :class="{ done: state.schedules.length }">
+                  <AppIcon :name="state.schedules.length ? 'check' : 'chevron'" :size="14" />
+                  <span>Weekly availability</span>
+                  <router-link v-if="!state.schedules.length" class="ghost small-button" to="/availability">Set hours</router-link>
+                </li>
+                <li :class="{ done: hasPublicService }">
+                  <AppIcon :name="hasPublicService ? 'check' : 'chevron'" :size="14" />
+                  <span>Active public service</span>
+                  <router-link v-if="!hasPublicService" class="ghost small-button" to="/services">Add service</router-link>
+                </li>
+              </ul>
+              <div class="stack-sm">
+                <GmButton
+                  class="create-link"
+                  variant="primary"
+                  :pending="linking"
+                  pending-label="Creating…"
+                  :disabled="busy && !linking"
+                  :disabled-reason="linkBlockReason"
+                  reason-visible
+                  @click="createLink"
+                  >Create booking link</GmButton
                 >
               </div>
-              <button
-                class="primary create-link"
-                type="button"
-                :disabled="busy || !canShare || isDemo"
-                @click="createLink"
-                >{{ linking ? 'Creating…' : 'Create booking link'
-                }}<AppIcon
-                  name="chevron"
-                  :size="15"
-              /></button>
-              <p
-                v-if="!canShare"
-                class="readiness-hint"
-                >Finish the missing setup items before creating a link.</p
-              >
-              <p v-if="isDemo" class="readiness-hint">Guest preview does not create grants or public links.</p>
             </template>
           </article>
 
@@ -710,6 +755,7 @@ async function saveTemplates() {
           <p class="eyebrow">Message templates</p>
           <h2 id="templates-title">Messages to your guests</h2>
           <p class="muted">These open in your own WhatsApp, SMS, or email. Bookins does not send them.</p>
+          <p class="field-hint">Variables like {{ variableToken('guest_name') }} are replaced with the booking's details when you open a message. <GmHint text="Click a variable chip under the message to insert it where your cursor is. Unknown names are left as plain text." label="About message variables" /></p>
           <p class="field-hint">
             Preview uses {{ sampleBooking.real ? `your most recent booking (${sampleBooking.booking.guest_name})` : 'a sample booking' }}.
           </p>
@@ -728,7 +774,7 @@ async function saveTemplates() {
             <div v-if="activeKind === kind" class="template-block">
               <div class="template-head">
                 <h3>{{ templateLabels[kind] }}</h3>
-                <button class="ghost small-button" type="button" :disabled="isDemo || savingTemplates || isDefault(kind)" @click="resetTemplate(kind)">Reset to default</button>
+                <GmButton variant="ghost" size="sm" :disabled="savingTemplates" :disabled-reason="isDemo ? 'Demo is read-only.' : isDefault(kind) ? 'Already the default.' : ''" @click="resetTemplate(kind)">Reset to default</GmButton>
               </div>
               <div class="template-grid">
                 <div class="template-edit">
@@ -741,7 +787,7 @@ async function saveTemplates() {
                     <textarea :id="`tpl-${kind}-body`" :ref="setTemplateField(kind, 'body')" v-model="templates[kind].body" :disabled="isDemo || savingTemplates" rows="6" maxlength="2000" @focus="lastField[kind] = 'body'"></textarea>
                     <p class="field-hint">{{ templates[kind].body.length }}/2000 characters</p>
                   </div>
-                  <p class="var-label" :id="`tpl-${kind}-vars`">Insert a variable at the cursor</p>
+                  <p class="var-label" :id="`tpl-${kind}-vars`">Insert a variable at the cursor <GmHint text="Each chip is replaced with real booking details, for example the guest's name, the service and the time, when the message opens." label="About variables" /></p>
                   <div class="var-chips" role="group" :aria-label="`Insert a variable into ${templateLabels[kind]}`">
                     <button v-for="name in TEMPLATE_VARIABLES" :key="name" class="chip var-chip" type="button" :disabled="isDemo || savingTemplates" @mousedown.prevent @click="insertVariable(kind, name)">{{ variableToken(name) }}</button>
                   </div>
@@ -754,76 +800,43 @@ async function saveTemplates() {
               </div>
             </div>
           </template>
-          <p v-if="templatesDirty && !isDemo" class="field-hint">Unsaved template changes. Use the save bar below.</p>
+          <p v-if="templatesDirty && !isDemo" class="field-hint">Unsaved template changes. Save them here or in the bar at the bottom.</p>
+          <div v-if="templatesDirty && !isDemo" class="stack-sm"><GmButton variant="secondary" :pending="savingTemplates" pending-label="Saving…" :disabled="busy && !savingTemplates" @click="saveTemplates">Save templates</GmButton></div>
         </section>
 
         <article id="settings-delivery" class="card provider-card">
-          <p class="eyebrow">Delivery status</p><h2>What this release confirms</h2>
-          <ul
-            ><li
-              ><span class="status-icon ready"
-                ><AppIcon
-                  name="check"
-                  :size="14" /></span
-              ><div
-                ><strong>On-screen booking confirmation</strong><small>Available now</small></div
-              ></li
-            ><li
-              ><span class="status-icon pending">·</span
-              ><div
-                ><strong>Email and calendar delivery</strong><small>Not connected yet</small></div
-              ></li
-            ><li
-              ><span class="status-icon pending">·</span
-              ><div
-                ><strong>Online payments</strong><small>Prices are arranged with you</small></div
-              ></li
-            ></ul
-          >
+          <p class="eyebrow">What Bookins does and does not do</p><h2>Delivery and integrations</h2>
+          <ul>
+            <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>On-screen booking confirmation</strong><small>Guests see their confirmation right after booking.</small></div></li>
+            <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>Guest messages from your own apps</strong><small>Open WhatsApp, SMS or email with the message filled in. Bookins does not send or confirm delivery.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Google Calendar</strong><small>Optional, per booking, needs your approval each time, and never invites guests. Needs a connected Google account.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Daily agenda email to you</strong><small>A scheduled workflow emails your day's bookings to your account address. Not yet confirmed on a live account.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Guest emails and online payments</strong><small>Not available. Prices are arranged with you.</small></div></li>
+          </ul>
         </article>
       </div>
     </div>
 
     <div v-if="showSaveBar" class="sticky-save-bar" role="status">
-      <span>{{ leavePrompt ? 'Leave without saving these changes?' : dirty && templatesDirty ? 'Unsaved profile and template changes' : dirty ? 'Unsaved profile changes' : 'Unsaved template changes' }}</span>
+      <span>{{ dirty && templatesDirty ? 'Unsaved profile and template changes' : dirty ? 'Unsaved profile changes' : 'Unsaved template changes' }}</span>
       <div class="cluster">
-        <button v-if="leavePrompt" class="secondary" type="button" @click="keepEditing">Keep editing</button>
-        <button v-if="dirty" class="ghost" type="button" :disabled="busy" @click="discardChanges">Discard changes</button>
+        <GmConfirm
+          v-model:open="leavePrompt"
+          :title="pendingRoute ? 'Leave without saving?' : 'Discard your changes?'"
+          :message="pendingRoute ? 'Your changes have not been saved and will be lost.' : 'Your edits go back to the last saved version.'"
+          :confirm-label="pendingRoute ? 'Leave without saving' : 'Discard changes'"
+          cancel-label="Keep editing"
+          tone="danger"
+          :busy="busy"
+          @confirm="discardChanges"
+          @cancel="keepEditing"
+        >
+          <button class="ghost" type="button" :disabled="busy" @click="leavePrompt = true">Discard changes</button>
+        </GmConfirm>
         <button v-if="templatesDirty" class="secondary" type="button" :class="{ 'is-pending': savingTemplates }" :disabled="isDemo || savingTemplates || busy" @click="saveTemplates">{{ savingTemplates ? 'Saving…' : 'Save templates' }}</button>
         <button v-if="dirty" class="primary" type="submit" form="settings-profile" :class="{ 'is-pending': saving }" :disabled="busy || isDemo">{{ saving ? 'Saving…' : 'Save profile' }}</button>
       </div>
     </div>
-
-    <GmDialog
-      :open="confirmRevoke"
-      title="Stop this booking link?"
-      :busy="revoking"
-      overlay-class="modal-backdrop"
-      content-class="card modal revoke-modal"
-      role="alertdialog"
-      @update:open="open => { if (!revoking) confirmRevoke = open }"
-    >
-      <span class="revoke-icon"><AppIcon name="link" /></span><p class="eyebrow">Revoke link</p
-        ><h2 id="revoke-title">Stop this booking link?</h2
-        ><p class="muted"
-          >Anyone opening it will see an expired-link state. Your profile, services, and existing
-          bookings stay intact.</p
-        ><p v-if="error" role="alert" class="notice error">{{ error }}</p>
-        <div class="form-actions"
-          ><button
-            class="secondary"
-            type="button"
-            :disabled="revoking"
-            @click="confirmRevoke = false"
-            >Keep link</button>
-          <button
-            class="danger"
-            type="button"
-            :disabled="revoking"
-            @click="revoke"
-            >{{ revoking ? 'Revoking…' : 'Revoke link' }}</button
-          ></div>
-    </GmDialog>
   </section>
 </template>
 
@@ -862,10 +875,15 @@ async function saveTemplates() {
 .link-status.expired i { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
 .link-status small { color: var(--muted); font-size: var(--text-xs); }
 .booking-page-card .form-actions > * { flex: 1; justify-content: center; }
-.revoke-link { min-height: var(--control-h); margin: var(--space-2) auto 0; padding: 0 12px; display: block; color: var(--danger); border: 0; background: transparent; font-size: var(--text-sm); text-decoration: underline; }
-.readiness-list { margin: var(--space-4) 0; display: grid; gap: 8px; }
-.readiness-list span { min-height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 8px; color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-sm); }
-.readiness-list span.done { color: var(--success); border-color: #c8ead9; background: var(--success-soft); }
+.revoke-row { margin-top: var(--space-3); display: flex; justify-content: center; }
+.revoke-link { color: var(--danger); }
+.profile-actions { margin-top: var(--space-4); }
+.eyebrow .chip { margin-left: 8px; vertical-align: middle; }
+.readiness-hint a { color: var(--accent); }
+.readiness-list { margin: var(--space-4) 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.readiness-list li { min-height: 44px; padding: 0 8px 0 12px; display: flex; align-items: center; gap: 8px; color: var(--muted); border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: var(--text-sm); }
+.readiness-list li > span { flex: 1; }
+.readiness-list li.done { color: var(--success); border-color: #c8ead9; background: var(--success-soft); }
 .create-link { width: 100%; }
 .readiness-hint { margin: 10px 0 0; color: var(--muted); font-size: var(--text-xs); text-align: center; }
 
@@ -908,9 +926,9 @@ async function saveTemplates() {
 .provider-card li strong { font-size: var(--text-sm); }
 .provider-card li small { color: var(--muted); font-size: var(--text-xs); }
 
-.revoke-modal { max-width: 460px; text-align: center; }
-.revoke-icon { width: 48px; height: 48px; margin: 0 auto var(--space-3); display: grid; place-items: center; color: var(--danger); border-radius: 50%; background: var(--danger-soft); }
-.revoke-modal .form-actions { margin-top: var(--space-4); justify-content: center; }
+/* Share-kit helper text must wrap, never truncate. */
+.share-actions p, .share-card .field-hint, .share-card .muted { white-space: normal; overflow: visible; text-overflow: clip; display: block; -webkit-line-clamp: unset; max-width: none; }
+.snippet { min-height: 120px; }
 
 @media (max-width: 1050px) {
   .settings-shell { grid-template-columns: 1fr; gap: var(--space-3); }
@@ -926,6 +944,7 @@ async function saveTemplates() {
   .link-section { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
+  .notice { flex-wrap: wrap; }
   .notice-action { margin-left: 0; }
 }
 </style>

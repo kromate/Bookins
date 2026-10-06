@@ -1,19 +1,32 @@
 <script setup>
-defineProps({
+// `disabledReason`: when set the button is aria-disabled (still focusable), clicks are blocked, and the reason is shown
+// in a GmHint (hover / focus / tap). Add `reason-visible` to also print it under the button.
+// Native `disabled` stays for plain disabled states without a reason (busy states use `pending`).
+import { computed, useId } from 'vue'
+import GmHint from './GmHint.vue'
+
+defineOptions({ inheritAttrs: false })
+const props = defineProps({
   variant: { type: String, default: 'primary', validator: value => ['primary', 'secondary', 'ghost', 'danger'].includes(value) },
   size: { type: String, default: 'md', validator: value => ['sm', 'md'].includes(value) },
   type: { type: String, default: 'button', validator: value => ['button', 'submit', 'reset'].includes(value) },
   disabled: Boolean,
   pending: Boolean,
   pendingLabel: { type: String, default: 'Working…' },
+  disabledReason: { type: String, default: '' },
+  reasonVisible: Boolean,
 })
 
 const emit = defineEmits(['click'])
+const reasonId = `gm-button-reason-${useId()}`
+const reasoned = computed(() => Boolean(props.disabledReason))
+const blocked = computed(() => props.disabled || props.pending || reasoned.value)
 
-function activate(event, blocked) {
-  if (blocked) {
+function activate(event) {
+  if (blocked.value) {
     event.preventDefault()
-    event.stopPropagation()
+    // Reasoned clicks must bubble to the hint wrapper so a tap shows the reason.
+    if (!reasoned.value) event.stopPropagation()
     return
   }
   emit('click', event)
@@ -21,25 +34,30 @@ function activate(event, blocked) {
 </script>
 
 <template>
-  <button
-    class="gm-button"
-    :class="[`gm-button--${variant}`, `gm-button--${size}`]"
-    :type="type"
-    :disabled="disabled"
-    :aria-disabled="pending || undefined"
-    :aria-busy="pending || undefined"
-    @click="activate($event, disabled || pending)"
-  >
-    <span class="gm-button__content" :class="{ 'gm-button__content--hidden': pending }" :aria-hidden="pending || undefined">
-      <span v-if="$slots.leading" class="gm-button__accessory"><slot name="leading" /></span>
-      <span class="gm-button__label"><slot /></span>
-      <span v-if="$slots.trailing" class="gm-button__accessory"><slot name="trailing" /></span>
-    </span>
-    <span class="gm-button__pending" :class="{ 'gm-button__content--hidden': !pending }" :aria-hidden="!pending || undefined">
-      <span class="gm-button__spinner" aria-hidden="true" />
-      <span>{{ pendingLabel }}</span>
-    </span>
-  </button>
+  <GmHint :text="disabledReason" wrap :disabled="!reasoned" v-slot="{ describedby }">
+    <button
+      v-bind="$attrs"
+      class="gm-button"
+      :class="[`gm-button--${variant}`, `gm-button--${size}`, { 'gm-button--reasoned': reasoned }]"
+      :type="type"
+      :disabled="disabled && !reasoned"
+      :aria-disabled="pending || reasoned || undefined"
+      :aria-busy="pending || undefined"
+      :aria-describedby="reasoned ? (reasonVisible ? reasonId : describedby) : undefined"
+      @click="activate"
+    >
+      <span class="gm-button__content" :class="{ 'gm-button__content--hidden': pending }" :aria-hidden="pending || undefined">
+        <span v-if="$slots.leading" class="gm-button__accessory"><slot name="leading" /></span>
+        <span class="gm-button__label"><slot /></span>
+        <span v-if="$slots.trailing" class="gm-button__accessory"><slot name="trailing" /></span>
+      </span>
+      <span class="gm-button__pending" :class="{ 'gm-button__content--hidden': !pending }" :aria-hidden="!pending || undefined">
+        <span class="gm-button__spinner" aria-hidden="true" />
+        <span>{{ pendingLabel }}</span>
+      </span>
+    </button>
+  </GmHint>
+  <span v-if="reasoned && reasonVisible" :id="reasonId" class="gm-button__reason field-hint">{{ disabledReason }}</span>
 </template>
 
 <style scoped>
@@ -97,7 +115,8 @@ function activate(event, blocked) {
   animation: gm-button-spin 800ms linear infinite;
 }
 .gm-button:focus-visible { outline: 3px solid var(--gm-color-focus, #2563eb); outline-offset: 2px; }
-.gm-button:disabled { opacity: 0.6; cursor: not-allowed; }
+.gm-button:disabled, .gm-button--reasoned { opacity: 0.6; cursor: not-allowed; }
+.gm-button__reason { display: block; margin-top: 6px; font-size: var(--text-sm, 14px); color: var(--muted, #5d6578); }
 .gm-button[aria-busy='true'] { opacity: 1; cursor: progress; }
 .gm-button:not([aria-busy='true']) .gm-button__spinner { animation: none; }
 @media (hover: hover) { .gm-button:hover:not(:disabled):not([aria-disabled='true']) { transform: translateY(-1px); box-shadow: 0 2px 5px rgb(0 0 0 / 0.12); } }

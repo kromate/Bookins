@@ -609,6 +609,22 @@ const confirmationDuration = computed(() =>
   confirmation.value ? Math.round((Date.parse(confirmationEnd.value) - Date.parse(confirmation.value.startsAt)) / 60_000) : 0,
 )
 
+async function bookAnother() {
+  confirmation.value = null
+  selectedSlot.value = null
+  notes.value = ''
+  submitAttempted.value = false
+  banner.value = null
+  resetAttempt()
+  interacted = true
+  window.scrollTo({ top: 0 })
+  if (singleService.value) await choose(page.value.services[0])
+  else {
+    selectedService.value = null
+    resetAvailability()
+  }
+}
+
 function downloadIcs() {
   if (!calendarEvent.value) return
   const blob = new Blob([buildBookingIcs(calendarEvent.value)], { type: 'text/calendar;charset=utf-8' })
@@ -748,6 +764,7 @@ onBeforeUnmount(() => {
               {{ t('confirm.google') }}
             </a>
           </div>
+          <button class="primary another-button" type="button" @click="bookAnother">{{ t('confirm.another') }}</button>
           <p class="truth-note">
             {{ t('confirm.note') }}
           </p>
@@ -755,7 +772,7 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-else>
-        <section class="host-card">
+        <section class="host-card" :class="{ compact: step > 1 }">
           <img
             v-if="showPhoto"
             :src="safePhotoUrl"
@@ -768,7 +785,7 @@ onBeforeUnmount(() => {
           <div>
             <p class="eyebrow">{{ t('host.eyebrow') }}</p>
             <h1>{{ page.profile.displayName }}</h1>
-            <p v-if="page.profile.bio" class="host-bio">{{ page.profile.bio }}</p>
+            <p v-if="page.profile.bio && step === 1" class="host-bio">{{ page.profile.bio }}</p>
             <span class="tz-line">
               <AppIcon name="clock" :size="14" />
               <label v-if="zonesDiffer" for="booking-tz-mode">{{ t('tz.shownIn') }}</label>
@@ -862,6 +879,7 @@ onBeforeUnmount(() => {
                   </template>
                 </div>
                 <p class="calendar-zone">{{ t('cal.zone', { zone: displayedZoneLabel }) }}</p>
+                <p class="calendar-zone calendar-legend">{{ t('cal.legend') }}</p>
               </div>
 
               <div v-if="rangeLoading" class="slots-loading" role="status" aria-live="polite">
@@ -908,6 +926,7 @@ onBeforeUnmount(() => {
                 <p>{{ demoPreview ? t('form.textDemo') : t('form.text') }}</p>
               </div>
               <div class="mobile-selection">
+                <small>{{ t('sum.with', { host: page.profile.displayName }) }}</small>
                 <strong>{{ selectedService.name }}</strong>
                 <span>{{ selectedSlotLabel }}</span>
                 <small>{{ displayedZoneLabel }} · {{ t('svc.min', { count: selectedService.durationMinutes }) }} · {{ priceLabel(selectedService) }}</small>
@@ -948,14 +967,14 @@ onBeforeUnmount(() => {
                   />
                   <p v-if="shownError('email')" id="booking-guest-email-error" class="field-error">{{ shownError('email') }}</p>
                 </div>
-                <div class="field">
+                <div class="field field-wide">
                   <label for="booking-guest-phone">{{ t('form.phone') }} <span>{{ t('form.optional') }}</span></label>
                   <input
                     id="booking-guest-phone"
                     v-model="contact.phone"
                     :disabled="submitting"
                     :aria-invalid="shownError('phone') ? 'true' : undefined"
-                    :aria-describedby="shownError('phone') ? 'booking-guest-phone-error' : undefined"
+                    :aria-describedby="shownError('phone') ? 'booking-guest-phone-error' : 'booking-guest-phone-hint'"
                     type="tel"
                     inputmode="tel"
                     autocomplete="tel"
@@ -964,8 +983,9 @@ onBeforeUnmount(() => {
                     @blur="touched.phone = true"
                   />
                   <p v-if="shownError('phone')" id="booking-guest-phone-error" class="field-error">{{ shownError('phone') }}</p>
+                  <p v-else id="booking-guest-phone-hint" class="phone-hint">{{ t('form.phoneHint', { host: page.profile.displayName }) }}</p>
                 </div>
-                <div class="field">
+                <div class="field field-wide">
                   <label for="booking-guest-notes">{{ t('form.notes') }} <span>{{ t('form.optional') }}</span></label>
                   <textarea
                     id="booking-guest-notes"
@@ -992,6 +1012,7 @@ onBeforeUnmount(() => {
 
           <aside v-if="selectedService" class="booking-summary">
             <p class="eyebrow">{{ t('sum.eyebrow') }}</p>
+            <p class="summary-host">{{ t('sum.with', { host: page.profile.displayName }) }}</p>
             <h2>{{ selectedService.name }}</h2>
             <p>{{ selectedService.description }}</p>
             <dl>
@@ -1260,8 +1281,19 @@ onBeforeUnmount(() => {
   margin-top: 10px;
 }
 .guest-form {
-  max-width: 540px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
 }
+.guest-form > :not(.field) { grid-column: 1 / -1; }
+.guest-form .field-wide { grid-column: 1 / -1; }
+.phone-hint { margin: 5px 0 0; color: #697087; font-size: 14px; }
+.host-card.compact { margin-bottom: 18px; }
+.host-card.compact .host-avatar, .host-card.compact img { width: 44px; height: 44px; border-radius: 13px; font-size: 16px; }
+.host-card.compact h1 { font-size: 20px; }
+.calendar-legend { margin-top: 4px; font-size: 14px; }
+.summary-host { margin: 0 0 4px; color: #2336dc; font-size: 14px; font-weight: 700; }
+.another-button { margin-top: 18px; }
 .guest-form .field {
   margin-bottom: 14px;
 }
@@ -1422,7 +1454,8 @@ onBeforeUnmount(() => {
 .confirmation-card dl {
   margin: 0;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  text-align: center;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
 }
 .confirmation-card dl div {
@@ -1604,6 +1637,9 @@ onBeforeUnmount(() => {
 .calendar-link { min-height: 44px; padding: 0 14px; text-decoration: none; align-items: center; }
 .booking-heading h2:focus, .confirmation-card h1:focus { outline: none; }
 .booking-heading h2:focus-visible, .confirmation-card h1:focus-visible { outline: 3px solid #8c98ff; outline-offset: 4px; }
+@media (max-width: 560px) {
+  .guest-form { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 820px) {
   .mobile-selection { display: grid; }
   .calendar { max-width: none; }
@@ -1622,10 +1658,11 @@ onBeforeUnmount(() => {
   margin: 0 0 18px;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   list-style: none;
 }
+.stepper li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .confirmation-wrap > .stepper { margin-inline: auto; }
 .stepper li {
   min-height: 44px;
@@ -1759,8 +1796,12 @@ onBeforeUnmount(() => {
 }
 @media (max-width: 480px) {
   .stepper { gap: 4px; }
-  .stepper li { padding: 0 6px; gap: 5px; font-size: 13px; }
-  .stepper i { width: 22px; height: 22px; }
+  .stepper li { min-width: 0; padding: 0 6px; gap: 5px; justify-content: center; font-size: 13px; }
+  .stepper i { width: 22px; height: 22px; flex: none; }
+  /* Four labels do not fit a phone row: number-only steps, with the active step's label shown. */
+  .stepper { grid-template-columns: repeat(4, auto); justify-content: start; }
+  .stepper li > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .stepper li.active > span { position: static; width: auto; height: auto; clip-path: none; }
   .secure-note { display: none; }
   .reference-box { flex-wrap: wrap; }
   .slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

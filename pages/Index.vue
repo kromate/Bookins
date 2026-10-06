@@ -1,6 +1,10 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
+import GmButton from '../components/ui/GmButton.vue'
+import GmHint from '../components/ui/GmHint.vue'
+import { useSetupState } from '../setup.js'
 import { copyText, isActiveBooking, isActiveTimeOff, setBookingStatus } from '../booking.js'
 import { composeMessage } from '../messaging.js'
 import { isDemo } from '../runtime.js'
@@ -8,6 +12,9 @@ import { displayTimeZone, zonedDateKey } from '../time-display.js'
 
 const state = inject('bookingState')
 const refresh = inject('refreshBookings', async () => true)
+const router = useRouter()
+const setup = useSetupState()
+const startTour = inject('startTour', null)
 const copied = ref(false)
 const toast = inject('toast', null)
 const now = ref(Date.now())
@@ -59,23 +66,20 @@ const setupSteps = computed(() => isDemo.value
       { label: 'Review sample services', done: true, to: '/services' },
       { label: 'Guest preview available', done: true, to: '/demo/guest' },
     ]
-  : [
-      { label: 'Complete your public profile', done: Boolean(state.profile?.display_name), to: '/settings' },
-      {
-        label: 'Set your weekly availability',
-        done: openDays.value > 0,
-        to: '/availability',
-      },
-      { label: 'Create an active public service', done: activeServices.value > 0, to: '/services' },
-      { label: linkExpired.value ? 'Renew your expired booking link' : 'Publish your booking link', done: linkActive.value, to: '/settings' },
-    ])
+  : setup.value.steps.map((step) => ({
+      ...step,
+      // A locked step points at the step that unlocks it.
+      to: step.key === 'service' && step.lockedReason ? '/availability' : step.to,
+    })))
 const completedSteps = computed(() => setupSteps.value.filter((step) => step.done).length)
 const setupProgress = computed(() => (completedSteps.value / setupSteps.value.length) * 100)
-const nextStep = computed(
-  () => setupSteps.value.find((step) => !step.done) || (isDemo.value
-    ? { label: 'Open guest preview', to: '/demo/guest' }
-    : { label: 'Review your booking page', to: '/settings' }),
-)
+const nextStep = computed(() => {
+  if (isDemo.value) return setupSteps.value.find((step) => !step.done) || { label: 'Open guest preview', to: '/demo/guest', description: '' }
+  const next = setup.value.nextStep
+  // The service step is blocked until hours exist, but the checklist order already puts availability first.
+  return { ...next, to: next.key === 'service' && !setup.value.hasAvailability ? '/availability' : next.to }
+})
+const newService = () => router.push({ path: '/services', query: { new: '1' } })
 
 const todayKey = computed(() => zonedDateKey(now.value, scheduleZone.value))
 const tomorrowKey = computed(() => {
@@ -127,8 +131,10 @@ async function markStatus(booking, status) {
   try {
     await setBookingStatus(booking, status)
     await refresh()
+    toast?.success(status === 'completed' ? `Marked ${booking.guest_name} as completed` : `Marked ${booking.guest_name} as no-show`)
   } catch (reason) {
     statusError.value = reason?.message || 'The booking status could not be saved.'
+    toast?.error(statusError.value)
   } finally {
     statusBusy.value = ''
   }
@@ -157,13 +163,14 @@ async function copyLink() {
   try {
     await copyText(publicUrl.value)
     copied.value = true
-    toast?.('Booking link copied')
+    toast?.success('Booking link copied')
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
       copied.value = false
     }, 1600)
   } catch {
     copyError.value = 'Your browser blocked copying. Select the link and copy it manually.'
+    toast?.error('Could not copy the link. Select it and copy manually.')
   }
 }
 </script>
@@ -177,9 +184,12 @@ async function copyLink() {
         <p class="lede">{{ isDemo ? 'Review the prepared owner workspace, then open a labelled guest preview.' : 'Set your hours, share one link, and keep every confirmed appointment in view.' }}</p>
       </div>
       <div class="page-header-actions">
-        <RouterLink :class="isDemo ? 'secondary' : 'primary'" to="/services">
-          <AppIcon name="plus" :size="17" />{{ isDemo ? 'View services' : 'New service' }}
+        <RouterLink v-if="isDemo" class="secondary" to="/services">
+          <AppIcon name="plus" :size="17" />View services
         </RouterLink>
+        <GmButton v-else @click="newService">
+          <template #leading><AppIcon name="plus" :size="17" /></template>New service
+        </GmButton>
       </div>
     </div>
 
@@ -189,12 +199,12 @@ async function copyLink() {
         <RouterLink to="/bookings">Review</RouterLink></span>
     </div>
 
-    <div class="stat-grid stagger">
+    <div class="stat-grid stagger" data-tour="tour-overview-stats">
       <RouterLink class="card stat-tile" to="/services">
         <span class="label">Active services</span>
         <span class="icon-tile"><AppIcon name="services" :size="18" /></span>
         <p class="metric tnum">{{ activeServices }}</p>
-        <p class="metric-sub">Ready to book</p>
+        <p class="metric-sub">{{ activeServices ? 'Ready to book' : 'None yet' }}</p>
       </RouterLink>
       <RouterLink class="card stat-tile" to="/bookings">
         <span class="label">Upcoming</span>
@@ -206,7 +216,7 @@ async function copyLink() {
         <span class="label">This month</span>
         <span class="icon-tile warning"><AppIcon name="calendar" :size="18" /></span>
         <p class="metric tnum">{{ thisMonthBookings }}</p>
-        <p class="metric-sub">Bookings in {{ scheduleZone }}</p>
+        <p class="metric-sub">{{ state.schedules[0] ? `Bookings in ${scheduleZone}` : 'Set your hours to begin' }}</p>
       </RouterLink>
       <RouterLink class="card stat-tile" to="/availability">
         <span class="label">Open weekdays</span>
@@ -231,14 +241,16 @@ async function copyLink() {
             <span class="day-time tnum">{{ formatTime(booking) }}</span>
             <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ booking.service_name }} · {{ statusLabel[booking.status] }}</small></span>
             <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="day-actions">
-              <button class="secondary small-button" type="button" :disabled="isDemo || Boolean(statusBusy)" @click="markStatus(booking, 'completed')">Completed</button>
-              <button class="ghost small-button delete-link" type="button" :disabled="isDemo || Boolean(statusBusy)" @click="markStatus(booking, 'no_show')">No-show</button>
+              <GmButton variant="secondary" size="sm" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'completed')">Mark completed</GmButton>
+              <GmButton variant="ghost" size="sm" class="delete-link" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'no_show')">Mark no-show</GmButton>
             </span>
           </li>
         </ul>
         <div v-else class="empty compact">
           <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
           <p>No bookings today.</p>
+          <RouterLink v-if="!isDemo && !setup.isComplete" class="secondary small-button" :to="nextStep.to">{{ nextStep.label }}</RouterLink>
+          <RouterLink v-else-if="!isDemo && publicUrl" class="secondary small-button" to="/settings">Share your booking link</RouterLink>
         </div>
       </article>
 
@@ -246,7 +258,7 @@ async function copyLink() {
         <div class="section-heading">
           <div>
             <p class="eyebrow">Tomorrow</p>
-            <h2>Reminder queue</h2>
+            <h2>Reminder queue <GmHint text="Bookins does not send reminders for you. For each booking tomorrow, it prepares a message and opens it in your own WhatsApp, SMS or email app so you press send yourself." label="About reminders" /></h2>
             <p class="tz-label muted">{{ tomorrowKey }} · Opens your own WhatsApp, SMS, or mail app. Bookins does not send.</p>
           </div>
         </div>
@@ -265,7 +277,7 @@ async function copyLink() {
         </ul>
         <div v-else class="empty compact">
           <span class="empty-icon"><AppIcon name="clock" :size="20" /></span>
-          <p>No confirmed bookings tomorrow.</p>
+          <p>No confirmed bookings tomorrow. Reminders for tomorrow's guests will appear here.</p>
         </div>
       </article>
     </div>
@@ -301,18 +313,21 @@ async function copyLink() {
           <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
           <h2>No upcoming bookings</h2>
           <p>Your next confirmed appointment will appear here.</p>
+          <RouterLink v-if="!isDemo && !setup.isComplete" class="primary small" :to="nextStep.to">{{ nextStep.label }}</RouterLink>
+          <RouterLink v-else-if="!isDemo" class="secondary small-button" to="/bookings">Open bookings</RouterLink>
         </div>
       </article>
 
       <aside class="dashboard-side">
-        <article v-if="setupComplete" class="card ready-card">
+        <article v-if="setupComplete" class="card ready-card" data-tour="tour-overview-checklist">
           <span class="icon-tile success"><AppIcon name="check" :size="18" /></span>
           <div class="ready-copy">
             <h2>{{ isDemo ? 'Demo is ready to explore' : 'You are ready to book' }}</h2>
             <RouterLink :to="nextStep.to">{{ isDemo ? nextStep.label : 'View booking link' }} <AppIcon name="chevron" :size="14" /></RouterLink>
+            <button v-if="startTour" class="link-button" type="button" @click="startTour()">Replay the tour</button>
           </div>
         </article>
-        <article v-else class="card setup-card">
+        <article v-else class="card setup-card" data-tour="tour-overview-checklist">
           <div class="section-heading">
             <div>
               <p class="eyebrow">Launch checklist</p>
@@ -322,11 +337,14 @@ async function copyLink() {
           </div>
           <div class="progress-track" aria-hidden="true"><span :style="{ width: `${setupProgress}%` }" /></div>
           <div class="setup-list">
-            <RouterLink v-for="step in setupSteps" :key="step.label" :to="step.to" :class="{ done: step.done }">
-              <span><AppIcon :name="step.done ? 'check' : 'chevron'" :size="14" /></span>{{ step.label }}
+            <RouterLink v-for="step in setupSteps" :key="step.label" :to="step.to" :class="{ done: step.done, current: !isDemo && !step.done && step.key === nextStep.key }" :aria-current="!isDemo && !step.done && step.key === nextStep.key ? 'step' : undefined">
+              <span><AppIcon :name="step.done ? 'check' : 'chevron'" :size="14" /></span>
+              <span class="step-text">{{ step.label }}<small v-if="step.lockedReason && !step.done">{{ step.lockedReason }}: set your hours first</small></span>
+              <span v-if="step.done" class="visually-hidden">Done</span>
             </RouterLink>
           </div>
-          <RouterLink class="secondary setup-action" :to="nextStep.to">{{ nextStep.label }}<AppIcon name="chevron" :size="14" /></RouterLink>
+          <p v-if="!isDemo && nextStep.description" class="next-description"><strong>Next:</strong> {{ nextStep.description }}</p>
+          <RouterLink class="primary setup-action" :to="nextStep.to">{{ nextStep.label }}<AppIcon name="chevron" :size="14" /></RouterLink>
         </article>
 
         <article class="card link-card">
@@ -378,6 +396,7 @@ async function copyLink() {
 .day-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
 .day-actions a { display: inline-flex; align-items: center; text-decoration: none; }
 .delete-link { color: var(--danger); }
+.day-actions :deep(.delete-link) { --button-fg: var(--danger); }
 .reminded { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-xs); }
 .upcoming-copy { min-width: 0; display: grid; gap: 2px; }
 .upcoming-copy strong, .upcoming-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -392,7 +411,7 @@ async function copyLink() {
 .upcoming-time { color: var(--ink-soft); font-size: var(--text-sm); font-weight: 700; }
 .list-row-end > svg { color: var(--muted); }
 .progress-number { color: var(--accent); font-size: var(--text-md); font-weight: 800; }
-.progress-track { height: 8px; margin: -4px 0 var(--space-4); overflow: hidden; border-radius: 99px; background: var(--muted-soft); }
+.progress-track { height: 8px; margin: -4px 0 var(--space-4); overflow: hidden; border-radius: 99px; background: #e6e9f2; }
 .progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-panel) var(--ease); }
 .setup-list { display: grid; margin-bottom: var(--space-4); }
 .setup-list a { min-height: 44px; display: flex; align-items: center; gap: var(--space-3); color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: var(--text-sm); text-decoration: none; }
@@ -400,6 +419,14 @@ async function copyLink() {
 .setup-list a.done { color: var(--muted); }
 .setup-list a.done > span { color: var(--success); border-color: var(--success); background: var(--success-soft); }
 .setup-action { width: 100%; justify-content: space-between; }
+.setup-list a > .step-text { width: auto; height: auto; display: grid; gap: 1px; border: 0; border-radius: 0; background: none; color: inherit; place-items: start; }
+.setup-list a > .step-text small { color: var(--muted); font-size: var(--text-xs); }
+.setup-list a.current { color: var(--ink); font-weight: 700; }
+.setup-list a.current > span:first-child { color: var(--accent); border-color: var(--accent); }
+.next-description { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
+.link-button { padding: 0; width: fit-content; min-height: 32px; color: var(--muted); border: 0; background: none; font-size: var(--text-xs); text-decoration: underline; cursor: pointer; }
+.empty.compact .small-button, .empty.compact .small { margin-top: var(--space-2); }
+.section-heading h2 :deep(.gm-hint) { vertical-align: middle; }
 .ready-card { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-color: var(--success); background: var(--success-soft); }
 .ready-copy { min-width: 0; display: grid; gap: 2px; }
 .ready-copy h2 { margin: 0; font-size: var(--text-md); }

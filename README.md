@@ -46,6 +46,7 @@ preview data.
 - Contacts with private notes and tags, booking history, and no-show counts.
 - Insights: booking trends, estimated revenue from display prices, top services, busiest times, cancellation and no-show rates, and new vs returning clients.
 - Share kit: link, QR code, WhatsApp share, and a website button snippet.
+- Guided first run: an optional product tour and Help menu, setup steps in order (profile, availability, service, link), tooltips, and a reason on every disabled control.
 
 Bookins does not take payments, send guest emails or SMS, or let guests reschedule themselves yet.
 
