@@ -70,6 +70,27 @@ function stickyTop() {
   if (!bar || getComputedStyle(bar).position !== 'sticky') return 0
   return Math.max(0, bar.getBoundingClientRect().bottom)
 }
+// Targets can live inside a scrollable container that is not the window (the sidebar, a dialog). Scroll each such ancestor
+// the minimum amount that brings the target into its visible box (like scrollIntoView({ block: 'nearest' })) without
+// touching the window scroll, which the placement code below manages itself.
+function scrollableAncestors(element) {
+  const list = []
+  for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node)
+    if (/(auto|scroll)/.test(overflowY) && node.scrollHeight > node.clientHeight + 1) list.push(node)
+  }
+  return list
+}
+function revealInScrollParents(element) {
+  for (const parent of scrollableAncestors(element)) {
+    const box = parent.getBoundingClientRect()
+    const rect = element.getBoundingClientRect()
+    const top = box.top + parent.clientTop + PAD
+    const bottom = box.top + parent.clientTop + parent.clientHeight - PAD
+    if (rect.top < top) parent.scrollTop += rect.top - top
+    else if (rect.bottom > bottom) parent.scrollTop += Math.min(rect.bottom - bottom, rect.top - top)
+  }
+}
 const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 function padded(rect) {
   return { left: rect.left - PAD, right: rect.right + PAD, top: rect.top - PAD, bottom: rect.bottom + PAD }
@@ -226,6 +247,7 @@ async function layout(scroll) {
   const vh = window.innerHeight
   const top = stickyTop()
   const narrow = isNarrow()
+  if (scroll) revealInScrollParents(highlighted)
   for (let attempt = 0; attempt < 7; attempt++) {
     const element = highlighted
     const child = scroll ? narrowTarget(element) : null
@@ -233,6 +255,7 @@ async function layout(scroll) {
     const ok = narrow ? await layoutMobile(element, scroll, top, vh) : layoutDesktop(element, scroll, vw, vh, top, final)
     if (ok || !scroll || !child || attempt === 6) return
     moveHighlight(child)
+    revealInScrollParents(child)
   }
 }
 let layoutQueued = false

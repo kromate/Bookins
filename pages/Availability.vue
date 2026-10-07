@@ -1,12 +1,43 @@
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
+import WeeklyHoursEditor from '../components/WeeklyHoursEditor.vue'
+import IntervalField from '../components/IntervalField.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmHint from '../components/ui/GmHint.vue'
-import { createTimeOff, isActiveTimeOff, isTimeOff, removeTimeOff, saveSchedule } from '../booking.js'
+import {
+  createTimeOff,
+  hasTeam,
+  isActiveTimeOff,
+  isOwnerMember,
+  isStaffActive,
+  isTimeOff,
+  ownerStaff,
+  removeTimeOff,
+  saveSchedule,
+  servicesForStaff,
+  teamMembers,
+} from '../booking.js'
+import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.js'
+import {
+  DAY_NAMES,
+  applyScheduleToDays,
+  copyDaysInto,
+  dayIssues,
+  durationWords,
+  endMinute,
+  intervalFromQuery,
+  makeDays,
+  minute,
+  smallestIntervalFor,
+  validWindows,
+  weeklyHoursTotal,
+  weeklyWindowsFromDays,
+  windowsAreSaveable,
+} from '../weekly-hours.js'
 import { localFields, wallClockInstant } from '../scheduling.js'
 import { isDemo, registerDemoGuard } from '../runtime.js'
 import { formatDay } from '../format-date.js'
@@ -18,6 +49,7 @@ const state = inject('bookingState')
 const refresh = inject('refreshBookings')
 const toast = inject('toast', null)
 const router = useRouter()
+const route = useRoute()
 const saving = ref(false)
 const error = ref('')
 const availabilityBaseline = ref('')
@@ -25,18 +57,24 @@ const leavePrompt = ref(false)
 const pendingRoute = ref('')
 const allowLeave = ref(false)
 const remoteChanged = ref(false)
-const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const defaultWindow = () => ({ start: '09:00', end: '17:00' })
+const names = DAY_NAMES
 const timeOffBusy = ref(false)
 const pendingRemove = ref(null)
-const days = reactive(
-  names.map((name, weekday) => ({
-    name,
-    weekday,
-    active: weekday > 0 && weekday < 6,
-    windows: [defaultWindow()],
-  })),
-)
+const days = reactive(makeDays())
+
+// ----- team: whose calendar is being edited -----
+// Single-owner installs never see the switcher and edit the owner's schedule exactly as before.
+const team = computed(() => hasTeam(state))
+const members = computed(() => teamMembers(state, { includeInactive: true }))
+const selectedStaffId = ref('')
+const currentMember = computed(() => {
+  if (!team.value) return ownerStaff(state)
+  return members.value.find((item) => item.id === selectedStaffId.value) || members.value[0]
+})
+const currentSchedule = computed(() => scheduleOf(state, currentMember.value))
+const isOwnerView = computed(() => !team.value || isOwnerMember(currentMember.value))
+const whose = computed(() => (isOwnerView.value ? 'your' : `${memberFirstName(currentMember.value)}'s`))
+const pendingMember = ref('')
 const form = reactive({
   timezone: 'Africa/Lagos',
   slotIntervalMinutes: 60,
@@ -86,90 +124,63 @@ function discardChanges() {
     days[index].windows = savedDay.windows.map((item) => ({ ...item }))
   })
   leavePrompt.value = false
-  const route = pendingRoute.value
+  const nextRoute = pendingRoute.value
+  const nextMember = pendingMember.value
   pendingRoute.value = ''
-  if (route) {
+  pendingMember.value = ''
+  if (nextMember) switchMember(nextMember)
+  else if (nextRoute) {
     allowLeave.value = true
-    router.push(route)
+    router.push(nextRoute)
   }
 }
 
 function keepEditing() {
   leavePrompt.value = false
   pendingRoute.value = ''
+  pendingMember.value = ''
 }
 
-// ----- time helpers -----
-const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/
-function minute(value) {
-  const match = TIME_PATTERN.exec(String(value ?? ''))
-  return match ? Number(match[1]) * 60 + Number(match[2]) : Number.NaN
+// Switching person with unsaved edits asks first (the confirmation sits by the save bar).
+function requestMember(id) {
+  if (id === currentMember.value?.id || saving.value) return
+  if (dirty.value) {
+    pendingMember.value = id
+    leavePrompt.value = true
+    return
+  }
+  switchMember(id)
+}
+function switchMember(id) {
+  selectedStaffId.value = id
+  error.value = ''
+  overlapResult.value = []
+  offError.value = ''
+  showPast.value = false
+  hydrate()
+  router.replace({ path: '/availability', query: id === ownerStaff(state).id ? {} : { staff: id } })
 }
 
-// A 23:59 end means end of day, so a slot that runs until midnight still fits.
-function endMinute(value) {
-  const parsed = minute(value)
-  return parsed === 1439 ? 1440 : parsed
-}
-
-function time(value) {
-  const bounded = Math.min(1439, Math.max(0, Number(value) || 0))
-  return `${String(Math.floor(bounded / 60)).padStart(2, '0')}:${String(bounded % 60).padStart(2, '0')}`
-}
-
-const cloneWindows = (windows) => windows.map((item) => ({ start: item.start, end: item.end }))
-
-// ----- validation (inline; mirrors what the hosted engine requires) -----
-function dayIssue(day) {
-  if (!day.active) return ''
-  const parsed = day.windows.map((item) => ({ start: minute(item.start), end: endMinute(item.end) }))
-  if (parsed.some((item) => !Number.isFinite(item.start) || !Number.isFinite(item.end)))
-    return 'Enter both a start and an end time for every window.'
-  if (parsed.some((item) => item.start >= item.end))
-    return 'Each window needs an end time after its start time.'
-  const sorted = [...parsed].sort((left, right) => left.start - right.start)
-  for (let index = 1; index < sorted.length; index += 1)
-    if (sorted[index].start < sorted[index - 1].end)
-      return 'Windows on the same day cannot overlap.'
-  return ''
-}
-const issues = computed(() => Object.fromEntries(days.map((day) => [day.weekday, dayIssue(day)])))
+const issues = computed(() => dayIssues(days))
 const hasIssues = computed(() => Object.values(issues.value).some(Boolean))
-const isDraft = computed(() => !isDemo.value && !state.schedules.length)
+const isDraft = computed(() => !isDemo.value && !currentSchedule.value)
 const showSaveBar = computed(() => !isDemo.value && (dirty.value || isDraft.value))
 const saveBlockReason = computed(() => {
   const bad = days.find((day) => issues.value[day.weekday])
   return bad ? `Fix ${bad.name}: ${issues.value[bad.weekday]}` : ''
 })
 
-function validWindows(day) {
-  return day.windows
-    .map((item) => ({ start: minute(item.start), end: endMinute(item.end) }))
-    .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end) && item.start < item.end)
-}
-
 const activeDays = computed(() => days.filter((day) => day.active).length)
-const activeServices = computed(() => state.services.filter((item) => item.active !== false))
+// With a team, only the services this person offers shape their interval and fit analysis.
+const activeServices = computed(() =>
+  (team.value ? servicesForStaff(state, currentMember.value) : state.services).filter((item) => item.active !== false),
+)
 const maxServiceDuration = computed(() =>
   Math.max(0, ...activeServices.value.map((item) => Number(item.duration_minutes || 0))),
 )
-const weeklyHours = computed(() => {
-  const total = days.reduce(
-    (sum, day) =>
-      day.active ? sum + validWindows(day).reduce((inner, item) => inner + item.end - item.start, 0) / 60 : sum,
-    0,
-  )
-  return Math.round(total * 10) / 10
-})
+const weeklyHours = computed(() => weeklyHoursTotal(days))
 
-const intervalOptions = computed(() =>
-  [15, 30, 45, 60, 90, 120].map((value) => ({
-    value,
-    label: 'Every ' + value + ' minutes' + (maxServiceDuration.value > value ? ' (too short for a service)' : ''),
-    disabled: maxServiceDuration.value > value,
-  })),
-)
-const longestServiceName = computed(() => activeServices.value.find((item) => Number(item.duration_minutes || 0) === maxServiceDuration.value)?.name || '')
+const longestServiceName = computed(() => displayName(activeServices.value.find((item) => Number(item.duration_minutes || 0) === maxServiceDuration.value)?.name || ''))
 const noticeOptions = [
   { value: 30, label: '30 minutes' },
   { value: 60, label: '1 hour' },
@@ -182,30 +193,9 @@ const horizonOptions = [14, 30, 60, 90, 180].map((value) => ({ value, label: val
 // ----- editing actions -----
 const locked = computed(() => isDemo.value || saving.value)
 
-function addWindow(day) {
-  const last = [...day.windows].map((item) => endMinute(item.end)).filter(Number.isFinite).sort((a, b) => a - b).pop()
-  const start = Number.isFinite(last) ? last + 60 : 9 * 60
-  if (start >= 23 * 60) {
-    error.value = `There is no room left after ${day.windows.at(-1)?.end || 'the last window'} on ${day.name}.`
-    return
-  }
-  error.value = ''
-  day.windows.push({ start: time(start), end: time(Math.min(start + 120, 1439)) })
-}
-
-function removeWindow(day, index) {
-  if (day.windows.length <= 1) return
-  day.windows.splice(index, 1)
-}
-
-function copyDayToWeekdays(source) {
-  if (isDemo.value || saving.value) return
-  for (const day of days.slice(1, 6)) {
-    if (day === source) continue
-    day.active = source.active
-    day.windows = cloneWindows(source.windows)
-  }
-  toast?.info(`Copied ${source.name}'s hours to Monday to Friday. Save to keep them.`)
+function onEditorNotice(notice) {
+  if (notice.kind === 'error') error.value = notice.text
+  else { error.value = ''; toast?.info?.(notice.text) }
 }
 
 function useBrowserZone() {
@@ -213,42 +203,49 @@ function useBrowserZone() {
 }
 
 // ----- hydrate from state -----
+const FORM_DEFAULTS = { timezone: 'Africa/Lagos', slotIntervalMinutes: 60, minimumNoticeMinutes: 60, bookingHorizonDays: 60 }
+const formFromSchedule = (schedule) => ({
+  timezone: schedule.timezone || form.timezone,
+  slotIntervalMinutes: Number(schedule.slot_interval_minutes),
+  minimumNoticeMinutes: Number(schedule.minimum_notice_minutes),
+  bookingHorizonDays: Number(schedule.booking_horizon_days),
+})
 function hydrate() {
-  const existing = state.schedules[0]
+  const existing = currentSchedule.value
   remoteChanged.value = false
   if (!existing) {
+    // No hours saved yet: a team member starts from a copy of the owner's hours (a suggestion until saved).
+    const owner = !isOwnerView.value ? scheduleOf(state, ownerStaff(state)) : null
+    copyDaysInto(days, makeDays())
+    Object.assign(form, FORM_DEFAULTS)
+    if (owner) {
+      try {
+        applyScheduleToDays(days, owner)
+        Object.assign(form, formFromSchedule(owner))
+      } catch { /* owner hours unreadable: keep the defaults */ }
+    }
     syncBaseline()
     return
   }
-  Object.assign(form, {
-    timezone: existing.timezone || form.timezone,
-    slotIntervalMinutes: Number(existing.slot_interval_minutes),
-    minimumNoticeMinutes: Number(existing.minimum_notice_minutes),
-    bookingHorizonDays: Number(existing.booking_horizon_days),
-  })
+  Object.assign(form, formFromSchedule(existing))
   try {
-    const windows = JSON.parse(existing.weekly_windows_json)
-    if (!Array.isArray(windows)) throw new Error('not an array')
+    applyScheduleToDays(days, existing)
     error.value = ''
-    days.forEach((day) => {
-      const own = windows
-        .filter((item) => item.weekday === day.weekday)
-        .sort((left, right) => left.startMinute - right.startMinute)
-      day.active = own.length > 0
-      day.windows = own.length
-        ? own.map((item) => ({ start: time(item.startMinute), end: time(item.endMinute) }))
-        : [defaultWindow()]
-    })
   } catch {
     error.value = 'The saved weekly schedule needs repair. Review each day, then save it again.'
   }
   syncBaseline()
 }
 
-onMounted(hydrate)
+selectedStaffId.value = String(route.query.staff || '') || ownerStaff(state).id
+onMounted(() => {
+  hydrate()
+  applyIntervalQuery()
+})
+watch(() => [route.query.interval, route.query.from], () => applyIntervalQuery())
 
 watch(
-  () => state.schedules[0],
+  () => currentSchedule.value,
   () => {
     if (saving.value) return
     if (dirty.value) remoteChanged.value = true
@@ -258,7 +255,7 @@ watch(
 
 // ----- fit analysis -----
 const savedDayWindows = computed(() => {
-  const existing = state.schedules[0]
+  const existing = currentSchedule.value
   const map = {}
   try {
     for (const item of JSON.parse(existing?.weekly_windows_json || '[]')) {
@@ -283,14 +280,14 @@ const draftDayWindows = computed(() =>
 const serviceFit = computed(() =>
   activeServices.value.map((service) => {
     const now = bookableDays(service, draftDayWindows.value, form.slotIntervalMinutes)
-    const before = state.schedules[0]
-      ? bookableDays(service, savedDayWindows.value, Number(state.schedules[0].slot_interval_minutes))
+    const before = currentSchedule.value
+      ? bookableDays(service, savedDayWindows.value, Number(currentSchedule.value.slot_interval_minutes))
       : new Set()
     const lost = [...before].filter((weekday) => !now.has(weekday)).sort()
     const duration = Number(service.duration_minutes || 0)
     return {
       id: service.id,
-      name: service.name,
+      name: displayName(service.name),
       duration,
       tooLong: duration > form.slotIntervalMinutes,
       days: now.size,
@@ -321,6 +318,7 @@ const bookingsOutside = computed(() => {
   const nowMs = Date.now()
   return state.bookings
     .filter((item) => item.status !== 'cancelled' && !isTimeOff(item) && Date.parse(item.starts_at) > nowMs)
+    .filter((item) => !team.value || item.schedule_id === currentSchedule.value?.id)
     .filter((item) => {
       const start = new Date(item.starts_at)
       const end = Date.parse(item.ends_at) > start.getTime() ? new Date(item.ends_at) : null
@@ -336,15 +334,16 @@ const outsideLabel = (booking) =>
 
 
 // ----- time off -----
-const scheduleZone = computed(() => state.schedules[0]?.timezone || form.timezone)
+const scheduleZone = computed(() => currentSchedule.value?.timezone || form.timezone)
 const showPast = ref(false)
 const timeOffClock = ref(Date.now())
 const timeOffTimer = window.setInterval(() => { timeOffClock.value = Date.now() }, 60_000)
 onBeforeUnmount(() => window.clearInterval(timeOffTimer))
-const scheduleReady = computed(() => state.schedules.length > 0)
+const scheduleReady = computed(() => Boolean(currentSchedule.value))
 const sortedTimeOff = computed(() =>
   state.bookings
     .filter((item) => isActiveTimeOff(item))
+    .filter((item) => !team.value || item.schedule_id === currentSchedule.value?.id)
     .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)),
 )
 const upcomingTimeOff = computed(() => sortedTimeOff.value.filter((item) => Date.parse(item.ends_at) > timeOffClock.value))
@@ -407,6 +406,8 @@ async function addTimeOff() {
       startsAt: range.start.toISOString(),
       endsAt: range.end.toISOString(),
       reason: offForm.reason,
+      // With a team, time off blocks only this person's calendar.
+      ...(team.value ? { staffId: currentMember.value.id } : {}),
     })
     overlapResult.value = result?.overlapping || []
     offForm.reason = ''
@@ -453,9 +454,52 @@ const timeOffReason = (item) => (item.notes || (item.guest_name !== 'Time off' ?
 const bufferRows = computed(() =>
   activeServices.value.map((service) => {
     const duration = Number(service.duration_minutes || 0)
-    return { id: service.id, name: service.name, duration, free: Number(form.slotIntervalMinutes) - duration }
+    return { id: service.id, name: displayName(service.name), duration, free: Number(form.slotIntervalMinutes) - duration }
   }),
 )
+
+// The side lists show only the longest service when there are many (a 60-service workspace would otherwise make
+// this page thousands of pixels tall); every service stays one click away.
+const COLLAPSE_OVER = 3
+const longestRow = (list) => list.reduce((best, item) => (!best || item.duration > best.duration ? item : best), null)
+const bufferShown = computed(() => (bufferRows.value.length > COLLAPSE_OVER ? [longestRow(bufferRows.value)] : bufferRows.value))
+const fitShown = computed(() => (serviceFit.value.length > COLLAPSE_OVER ? [longestRow(serviceFit.value)] : serviceFit.value))
+const fitProblems = computed(() => serviceFit.value.filter((item) => item.tooLong || (item.days === 0 && activeDays.value > 0)).length)
+const WARNING_LIMIT = 5
+// A saved schedule whose interval is being changed: every service on it gets new start times.
+const intervalChange = computed(() => {
+  const saved = Number(currentSchedule.value?.slot_interval_minutes || 0)
+  const next = Number(form.slotIntervalMinutes)
+  return saved && next !== saved ? { from: saved, to: next } : null
+})
+
+// ----- "Fix interval in Availability" (?interval=240 from Services or the CSV import) -----
+const highlightInterval = ref(false)
+const intervalField = ref(null)
+const returnToImport = ref(false)
+let highlightTimer = 0
+onBeforeUnmount(() => window.clearTimeout(highlightTimer))
+function applyIntervalQuery() {
+  const wanted = intervalFromQuery(route.query.interval)
+  const from = String(route.query.from || '')
+  if (!wanted && !from) return
+  const { interval: _interval, from: _from, ...rest } = route.query
+  router.replace({ path: route.path, query: rest })
+  if (from === 'import') returnToImport.value = true
+  if (!wanted || isDemo.value) return
+  const need = smallestIntervalFor(Math.max(wanted, maxServiceDuration.value))
+  if (!need) return
+  if (Number(form.slotIntervalMinutes) >= need) {
+    toast?.info?.(`Your interval is already ${form.slotIntervalMinutes} minutes (${durationWords(form.slotIntervalMinutes)}), which fits a ${wanted}-minute service.`)
+    return
+  }
+  form.slotIntervalMinutes = need
+  highlightInterval.value = true
+  window.clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => { highlightInterval.value = false }, 6000)
+  nextTick(() => intervalField.value?.el?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }))
+  toast?.info?.(`Interval set to ${need} minutes (${durationWords(need)}) so a ${wanted}-minute service fits. Press Save availability to apply it. Every service on this schedule will then start only every ${need} minutes.`, { duration: 9000 })
+}
 
 // ----- save -----
 function flash(message, options) {
@@ -470,20 +514,12 @@ async function reloadChecked() {
 
 async function submit() {
   if (isDemo.value || saving.value) return
-  const weeklyWindows = days
-    .filter((day) => day.active)
-    .flatMap((day) =>
-      day.windows.map((item) => ({
-        weekday: day.weekday,
-        startMinute: minute(item.start),
-        endMinute: endMinute(item.end),
-      })),
-    )
+  const weeklyWindows = weeklyWindowsFromDays(days)
   if (!weeklyWindows.length) {
     error.value = 'Open at least one day so guests can find a time.'
     return
   }
-  if (hasIssues.value || weeklyWindows.some((item) => !Number.isInteger(item.startMinute) || !Number.isInteger(item.endMinute) || item.startMinute < 0 || item.endMinute > 1440 || item.startMinute >= item.endMinute)) {
+  if (hasIssues.value || !windowsAreSaveable(weeklyWindows)) {
     error.value = 'Fix the highlighted days before saving.'
     return
   }
@@ -494,7 +530,11 @@ async function submit() {
   saving.value = true
   error.value = ''
   try {
-    await saveSchedule(state.schedules[0], { name: 'Working hours', ...form, weeklyWindows })
+    await saveSchedule(
+      currentSchedule.value,
+      { name: isOwnerView.value ? 'Working hours' : currentSchedule.value?.name || `${currentMember.value.name} hours`, ...form, weeklyWindows },
+      team.value ? currentMember.value : null,
+    )
   } catch (reason) {
     error.value = reason?.message || 'Availability could not be saved.'
     toast?.error?.(error.value)
@@ -504,7 +544,11 @@ async function submit() {
   try {
     if (await reloadChecked()) {
       hydrate()
-      if (hasActiveService.value) flash('Availability saved. Guests can now book these hours.')
+      if (returnToImport.value) {
+        returnToImport.value = false
+        flash(`Availability saved. Your interval is now ${form.slotIntervalMinutes} minutes.`, { duration: 12000, action: { label: 'Continue your import', onClick: () => router.push({ path: '/services', query: { import: '1' } }) } })
+      } else if (!isOwnerView.value) flash(`Hours saved for ${memberFirstName(currentMember.value)}. Their calendar is separate from yours.`)
+      else if (hasActiveService.value) flash('Availability saved. Guests can now book these hours.')
       else flash('Availability saved', { duration: 9000, action: { label: 'Create your first service', onClick: () => router.push('/services') } })
     } else {
       syncBaseline()
@@ -525,10 +569,27 @@ async function submit() {
       <div
         ><p class="eyebrow">Working hours</p><h1>Availability</h1
         ><p class="lede"
-          >Choose when guests can book you. Times are shown in your booking timezone and confirmed
-          slots are removed automatically.</p
+          ><template v-if="team">Each person on your team has their own working hours and time off, so two people can be booked at the same time. Pick whose calendar to edit.</template
+          ><template v-else>Choose when guests can book you. Times are shown in your booking timezone and confirmed
+          slots are removed automatically.</template></p
         ></div
       >
+    </div>
+
+    <div v-if="team" class="member-switch" data-tour="tour-availability-member" role="group" aria-label="Whose calendar to edit">
+      <span class="switch-label">Editing <GmHint text="Hours and time off are saved per person. Switching person never changes anyone else's calendar." label="About editing per person" /></span>
+      <div class="segmented switch-list">
+        <button
+          v-for="member in members"
+          :key="member.id"
+          type="button"
+          :class="{ 'is-active': member.id === currentMember.id }"
+          :aria-pressed="member.id === currentMember.id"
+          :disabled="saving"
+          @click="requestMember(member.id)"
+        ><i class="switch-dot" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ memberName(member) }}<small v-if="!isStaffActive(member)" class="switch-inactive">inactive</small></button>
+      </div>
+      <router-link class="ghost small-button" to="/team">Manage team</router-link>
     </div>
 
     <div v-if="isDemo" class="notice info" role="status">
@@ -537,7 +598,8 @@ async function submit() {
     </div>
     <div v-if="isDraft" class="notice warning draft-notice" role="status">
       <AppIcon name="info" :size="18" />
-      <span><strong>Draft, not saved yet.</strong> These hours are a suggestion. Guests cannot book you until you press Save availability.</span>
+      <span v-if="isOwnerView"><strong>Draft, not saved yet.</strong> These hours are a suggestion. Guests cannot book you until you press Save availability.</span>
+      <span v-else><strong>{{ currentMember.name }} has no hours saved yet.</strong> These hours are a copy of yours as a suggestion. They cannot be booked, or assigned bookings, until you press Save availability.</span>
       <button class="primary small notice-action" type="button" :disabled="saving || hasIssues" @click="submit">Save availability</button>
     </div>
     <div v-else-if="needsFirstService" class="notice success" role="status">
@@ -562,67 +624,17 @@ async function submit() {
         <article class="card schedule-card" data-tour="tour-availability-hours">
           <div class="schedule-heading"
             ><div
-              ><p class="eyebrow">Weekly schedule <span v-if="isDraft" class="chip warning">Not saved yet</span><span v-else-if="dirty && !isDemo" class="chip warning">Unsaved changes</span><span v-else-if="!isDemo" class="chip success">Saved</span></p><h2>Regular hours</h2
+              ><p class="eyebrow">Weekly schedule<template v-if="team"> · {{ memberName(currentMember) }}</template> <span v-if="isDraft" class="chip warning">Not saved yet</span><span v-else-if="dirty && !isDemo" class="chip warning">Unsaved changes</span><span v-else-if="!isDemo" class="chip success">Saved</span></p><h2>{{ isOwnerView ? 'Regular hours' : `${memberFirstName(currentMember)}'s regular hours` }}</h2
               ><p class="muted">Turn a day on, then set one or more booking windows, for example before and after a lunch break.</p></div
             ></div
           >
-          <div class="days">
-            <div
-              v-for="day in days"
-              :key="day.weekday"
-              class="day"
-              :class="{ closed: !day.active }"
-            >
-              <label class="day-toggle"
-                ><input
-                  v-model="day.active"
-                  :disabled="locked"
-                  type="checkbox"
-                /><span aria-hidden="true"><i /></span><strong>{{ day.name }}</strong></label
-              >
-              <div class="windows">
-                <template v-if="day.active">
-                  <div v-for="(item, index) in day.windows" :key="index" class="times">
-                    <div class="window-pill">
-                      <input
-                        v-model="item.start"
-                        type="time"
-                        required
-                        :disabled="locked"
-                        :aria-label="`${day.name} window ${index + 1} start time`" /><span class="to">to</span
-                      ><input
-                        v-model="item.end"
-                        type="time"
-                        required
-                        :disabled="locked"
-                        :aria-label="`${day.name} window ${index + 1} end time`" />
-                    </div>
-                    <button
-                      v-if="day.windows.length > 1"
-                      class="ghost small-button icon-button"
-                      type="button"
-                      :disabled="locked"
-                      :aria-label="`Remove ${day.name} window ${index + 1}`"
-                      @click="removeWindow(day, index)"
-                      >Remove</button
-                    >
-                  </div>
-                  <div class="day-actions">
-                    <button class="ghost small-button" type="button" :disabled="locked" @click="addWindow(day)">+ Add window</button>
-                    <button class="ghost small-button" type="button" :disabled="locked" @click="copyDayToWeekdays(day)">Copy to Mon-Fri</button>
-                  </div>
-                  <p v-if="issues[day.weekday]" class="day-issue" role="alert">{{ issues[day.weekday] }}</p>
-                </template>
-                <span v-else class="muted-closed">Unavailable</span>
-              </div>
-            </div>
-          </div>
+          <WeeklyHoursEditor class="days" :days="days" :disabled="locked" @notice="onEditorNotice" />
         </article>
 
         <article class="card timeoff-card" aria-labelledby="timeoff-title" data-tour="tour-availability-timeoff">
-          <div><p class="eyebrow">Time off</p><h2 id="timeoff-title">Block out days or hours <GmHint text="Time off hides those times from your booking page without changing your weekly hours. Existing bookings are not cancelled; you will be told if any fall inside it." label="About time off" /></h2>
-            <p class="muted">Guests cannot book blocked times. Dates and times use your schedule timezone, {{ displayTimeZone(scheduleZone) }}.</p></div>
-          <p v-if="!scheduleReady" class="muted">Save your weekly hours first (button at the bottom of the page), then you can add time off.</p>
+          <div><p class="eyebrow">Time off<template v-if="team"> · {{ memberName(currentMember) }}</template></p><h2 id="timeoff-title">Block out days or hours <GmHint :text="team ? `Time off blocks only ${whose} calendar. The rest of the team can still be booked. Existing bookings are not cancelled; you will be told if any fall inside it.` : 'Time off hides those times from your booking page without changing your weekly hours. Existing bookings are not cancelled; you will be told if any fall inside it.'" label="About time off" /></h2>
+            <p class="muted">Guests cannot book blocked times<template v-if="team"> with {{ isOwnerView ? 'you' : memberFirstName(currentMember) }}</template>. Dates and times use {{ whose }} schedule timezone, {{ displayTimeZone(scheduleZone) }}.</p></div>
+          <p v-if="!scheduleReady" class="muted">Save {{ whose }} weekly hours first (button at the bottom of the page), then you can add time off.</p>
           <form v-else class="timeoff-form" @submit.prevent="addTimeOff">
             <div class="preset-row" role="group" aria-label="Quick time off presets">
               <button class="secondary small-button" type="button" :disabled="isDemo || timeOffBusy" @click="applyPreset('today')">Today</button>
@@ -699,32 +711,42 @@ async function submit() {
         </article>
 
         <article class="card settings-card">
-          <div><p class="eyebrow">Booking rules</p><h2>Timing and notice</h2><p class="muted">These rules apply to every service on your booking page.</p></div>
+          <div><p class="eyebrow">Booking rules</p><h2>Timing and notice</h2><p class="muted">{{ team ? `These rules apply to ${whose} calendar only.` : 'These rules apply to every service on your booking page.' }}</p></div>
           <div class="field"
             ><label for="availability-timezone">Timezone <GmHint text="Your weekly hours and time off are read in this timezone, and guests see times converted to theirs. Pick the city where you work." label="About timezone" /></label
             ><GmSelect id="availability-timezone" v-model="form.timezone" :options="timezoneItems" label="Timezone" :disabled="isDemo || saving" required described-by="availability-timezone-help" />
             <p id="availability-timezone-help" class="field-hint">The timezone your hours are in. Type a city name to search.</p
           ><button v-if="browserZone && browserZone !== form.timezone" class="ghost small-button" type="button" :disabled="locked" @click="useBrowserZone">Use this browser's timezone ({{ browserZone }})</button
           ></div>
-          <div class="field"
-            ><label for="slot-interval">Start-time interval <GmHint text="How far apart appointment start times are. With 60 minutes, guests can start at 9:00, 10:00, 11:00. A 30 minute service on a 60 minute interval leaves 30 minutes free before the next one." label="About the start-time interval" /></label
-            ><GmSelect
-              id="slot-interval"
-              v-model="form.slotIntervalMinutes"
-              :options="intervalOptions"
-              label="Start-time interval"
-              :disabled="isDemo || saving"
-            /><p class="field-hint"
-              ><template v-if="maxServiceDuration">Must be at least as long as your longest active service ({{ longestServiceName }}, {{ maxServiceDuration }} minutes), so shorter intervals are unavailable.</template><template v-else>You have no services yet, so any interval works. Once you add one, the interval must be at least as long as it.</template></p
-            ><div v-if="bufferRows.length" class="buffer-note">
+          <IntervalField
+            id="slot-interval"
+            ref="intervalField"
+            v-model="form.slotIntervalMinutes"
+            :max-duration="maxServiceDuration"
+            :longest-name="longestServiceName"
+            :disabled="isDemo || saving"
+            :highlight="highlightInterval"
+            :team="team"
+            :who="isOwnerView ? 'your' : `${memberFirstName(currentMember)}'s`"
+          >
+            <div v-if="bufferRows.length" class="buffer-note">
               <p>The interval sets how far apart start times are. An appointment shorter than the interval leaves the rest as free time before the next one.</p>
               <ul>
-                <li v-for="row in bufferRows" :key="row.id">
+                <li v-for="row in bufferShown" :key="row.id">
                   <strong>{{ row.name }}</strong>: {{ row.duration }} min appointment<template v-if="row.free >= 0"> + {{ row.free }} min free before the next one</template><template v-else> (longer than the interval)</template>
                 </li>
               </ul>
-            </div></div
-          >
+              <p v-if="bufferRows.length > COLLAPSE_OVER" class="list-count">Longest of {{ bufferRows.length }} active services.</p>
+              <details v-if="bufferRows.length > COLLAPSE_OVER" class="see-all">
+                <summary>See all {{ bufferRows.length }} services</summary>
+                <ul>
+                  <li v-for="row in bufferRows" :key="row.id">
+                    <strong>{{ row.name }}</strong>: {{ row.duration }} min<template v-if="row.free >= 0"> + {{ row.free }} min free</template><template v-else> (longer than the interval)</template>
+                  </li>
+                </ul>
+              </details>
+            </div>
+          </IntervalField>
           <div class="field"
             ><label for="minimum-notice">Minimum notice <GmHint text="The shortest time before an appointment that a guest can still book it. 1 day means nobody can book for later today." label="About minimum notice" /></label
             ><GmSelect
@@ -744,19 +766,35 @@ async function submit() {
               :disabled="isDemo || saving"
           /><p class="field-hint">Days further away than this are hidden from guests.</p></div>
           <div v-if="serviceFit.length" class="fit-list">
-            <p class="eyebrow">Active services at this interval</p>
+            <p class="eyebrow">{{ team ? `${isOwnerView ? 'Your' : memberFirstName(currentMember) + '\'s'} active services at this interval` : 'Active services at this interval' }}</p>
             <ul>
-              <li v-for="item in serviceFit" :key="item.id">
+              <li v-for="item in fitShown" :key="item.id">
                 <span>{{ item.name }} <small>{{ item.duration }} min</small></span>
                 <strong :class="item.tooLong || (item.days === 0 && activeDays) ? 'bad' : 'ok'">{{ item.tooLong ? 'Longer than interval' : item.days === 0 ? 'No window fits' : `Bookable ${item.days} ${item.days === 1 ? 'day' : 'days'}` }}</strong>
               </li>
             </ul>
+            <p v-if="serviceFit.length > COLLAPSE_OVER" class="list-count">Longest of {{ serviceFit.length }} active services<template v-if="fitProblems">; {{ fitProblems }} {{ fitProblems === 1 ? 'does' : 'do' }} not fit</template>.</p>
+            <details v-if="serviceFit.length > COLLAPSE_OVER" class="see-all">
+              <summary>See all {{ serviceFit.length }} services</summary>
+              <ul>
+                <li v-for="item in serviceFit" :key="item.id">
+                  <span>{{ item.name }} <small>{{ item.duration }} min</small></span>
+                  <strong :class="item.tooLong || (item.days === 0 && activeDays) ? 'bad' : 'ok'">{{ item.tooLong ? 'Longer than interval' : item.days === 0 ? 'No window fits' : `Bookable ${item.days} ${item.days === 1 ? 'day' : 'days'}` }}</strong>
+                </li>
+              </ul>
+            </details>
+          </div>
+          <div v-if="intervalChange" class="notice info warning-note" role="status">
+            <AppIcon name="info" :size="18" />
+            <div><strong>This changes start times for all services</strong>
+            <p>Guests can start every {{ intervalChange.to }} minutes instead of every {{ intervalChange.from }}{{ team && !isOwnerView ? ` on ${memberFirstName(currentMember)}'s calendar` : '' }}. Existing bookings are not moved.</p></div>
           </div>
           <div v-if="hiddenWarnings.length" class="notice warning warning-note" role="status">
             <AppIcon name="info" :size="18" />
             <div><strong>This change would hide services</strong>
             <ul>
-              <li v-for="item in hiddenWarnings" :key="item.id">{{ item.name }}<template v-if="item.lost.length"> on {{ item.lost.join(', ') }}</template><template v-else> on every day</template></li>
+              <li v-for="item in hiddenWarnings.slice(0, WARNING_LIMIT)" :key="item.id">{{ item.name }}<template v-if="item.lost.length"> on {{ item.lost.join(', ') }}</template><template v-else> on every day</template></li>
+              <li v-if="hiddenWarnings.length > WARNING_LIMIT">and {{ hiddenWarnings.length - WARNING_LIMIT }} more services</li>
             </ul></div>
           </div>
           <div v-if="bookingsOutside.length" class="notice warning warning-note" role="status">
@@ -773,8 +811,9 @@ async function submit() {
               name="sparkle"
               :size="17"
             /><p
-              >All current services share this schedule, so Bookins prevents two confirmed bookings
-              from using the same time.</p
+              ><template v-if="team">Each person has their own calendar. Bookins prevents two bookings at the same time for the same person, but two different people can be booked at once.</template
+              ><template v-else>All current services share this schedule, so Bookins prevents two confirmed bookings
+              from using the same time.</template></p
             ></div
           >
         </article>
@@ -786,9 +825,9 @@ async function submit() {
       <div class="cluster">
         <GmConfirm
           v-model:open="leavePrompt"
-          :title="pendingRoute ? 'Leave without saving?' : 'Discard your changes?'"
-          :message="pendingRoute ? 'Your availability changes have not been saved and will be lost.' : 'Your hours go back to the last saved version.'"
-          :confirm-label="pendingRoute ? 'Leave without saving' : 'Discard changes'"
+          :title="pendingRoute ? 'Leave without saving?' : pendingMember ? 'Switch without saving?' : 'Discard your changes?'"
+          :message="pendingRoute ? 'Your availability changes have not been saved and will be lost.' : pendingMember ? `Your unsaved changes to ${whose} hours will be lost.` : 'Your hours go back to the last saved version.'"
+          :confirm-label="pendingRoute ? 'Leave without saving' : pendingMember ? 'Switch and discard' : 'Discard changes'"
           cancel-label="Keep editing"
           tone="danger"
           :busy="saving"
@@ -820,28 +859,13 @@ async function submit() {
 .schedule-heading h2, .timeoff-card h2, .settings-card h2 { margin: 0 0 4px; }
 .schedule-heading .muted, .timeoff-card .muted { margin: 0; font-size: var(--text-sm); }
 .days { margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); }
-.day { min-height: 72px; padding: 14px var(--space-5); display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: start; gap: var(--space-4); border-top: 1px solid var(--line); transition: background var(--dur-fast) var(--ease); }
-.day.closed { background: var(--surface-soft); }
-.day.closed .day-toggle strong { color: var(--muted); font-weight: 600; }
-.day-toggle { min-height: var(--control-h); display: flex; align-items: center; gap: 12px; cursor: pointer; }
-.day-toggle strong { font-size: var(--text-sm); font-weight: 650; }
-.day-toggle input { position: absolute; width: 1px; height: 1px; min-height: 0; opacity: 0; }
-.day-toggle > span { width: 40px; height: 24px; padding: 3px; display: flex; align-items: center; flex: none; border-radius: 99px; background: #c9cfdd; transition: background var(--dur-fast) var(--ease); }
-.day-toggle > span i { width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(16, 25, 40, 0.18); transition: transform var(--dur-fast) var(--ease); }
-.day-toggle input:checked + span { background: var(--accent); }
-.day-toggle input:checked + span i { transform: translateX(16px); }
-.day-toggle input:focus-visible + span { outline: 3px solid rgba(35, 54, 220, 0.22); outline-offset: 2px; }
-.windows { display: grid; gap: var(--space-2); min-width: 0; }
-.times { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.window-pill { display: inline-flex; align-items: center; gap: 4px; padding: 0 4px; min-height: var(--control-h); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: #fff; }
-.window-pill:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
-.window-pill input { width: 112px; min-width: 0; min-height: 38px; padding: 0 8px; color: var(--ink); border: 0; border-radius: var(--radius-pill); background: transparent; font-size: var(--text-md); font-variant-numeric: tabular-nums; }
-.window-pill input:focus, .window-pill input:focus-visible { outline: 0; box-shadow: none; }
-.to { color: var(--muted); font-size: var(--text-sm); }
-.day-actions { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
-.icon-button { padding: 0 12px; color: var(--muted); }
-.day-issue { margin: 0; color: var(--danger); font-size: var(--text-sm); }
-.muted-closed { min-height: var(--control-h); display: inline-flex; align-items: center; color: var(--muted); font-size: var(--text-sm); }
+
+.member-switch { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.switch-label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
+.switch-list { max-width: 100%; display: flex; flex-wrap: wrap; }
+.switch-list button { display: inline-flex; align-items: center; gap: 8px; }
+.switch-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
+.switch-inactive { color: var(--muted); font-size: var(--text-xs); }
 
 .timeoff-card { display: grid; gap: var(--space-3); }
 .timeoff-form { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
@@ -860,6 +884,10 @@ async function submit() {
 .buffer-note p { margin: 0 0 6px; }
 .buffer-note ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .buffer-note strong { color: var(--ink); font-weight: 600; }
+.list-count { margin: 6px 0 0; color: var(--muted); font-size: var(--text-xs); }
+.see-all { margin-top: 6px; }
+.see-all summary { min-height: 32px; display: flex; align-items: center; color: var(--accent); cursor: pointer; font-size: var(--text-sm); font-weight: 650; }
+.see-all ul { max-height: 260px; margin-top: 4px; overflow: auto; }
 .fit-list ul, .warning-note ul { margin: 6px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .fit-list li { display: flex; justify-content: space-between; gap: 10px; font-size: var(--text-sm); }
 .fit-list small { color: var(--muted); font-size: var(--text-xs); }
@@ -889,11 +917,8 @@ async function submit() {
   .availability-side { grid-template-columns: 1fr 1fr; align-items: start; }
 }
 @media (max-width: 780px) {
-  .day { grid-template-columns: 1fr; gap: var(--space-2); padding: 14px var(--space-4); }
   .days { margin: 0 calc(var(--space-4) * -1) calc(var(--space-4) * -1); }
   .availability-side { grid-template-columns: 1fr; }
-  .window-pill { flex: 1; min-width: 0; }
-  .window-pill input { flex: 1; width: 0; }
   .timeoff-form { padding: var(--space-3); }
   .save-reason { text-align: left; }
   .notice { flex-wrap: wrap; }

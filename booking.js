@@ -10,8 +10,80 @@ import {
   validateWeeklyWindows,
   wallClockInstant,
 } from './scheduling.js'
-import { createSampleHistory } from './demo/history.js'
-import { countryFromTimezone, normalizePhone } from './messaging.js'
+import { createSampleHistory, createSampleTeam, sampleService } from './demo/history.js'
+import { countryFromTimezone, normalizePhone, openedField } from './messaging.js'
+import {
+  OWNER_STATUSES,
+  PLACEHOLDER_EMAIL_DOMAIN,
+  TIME_OFF_SERVICE_ID,
+  contactOffers,
+  contactTags,
+  hasRealEmail,
+  isActiveBooking,
+  isActiveTimeOff,
+  isTimeOff,
+} from './records.js'
+import {
+  OWNER_STAFF_ID,
+  STAFF_COPY_MAX,
+  STAFF_COPY_WARN,
+  isOwnerMember,
+  ownerStaff,
+  scheduleForStaff,
+  staffById,
+  staffCopies,
+  staffServiceCopyEstimate,
+  hasTeam,
+  isStaffActive,
+  parseServiceIds,
+  serviceBaseId,
+} from './team.js'
+import { serializeService, slugBase, uniqueServiceSlug, serviceDisplayMeta } from './services.js'
+import { splitDescription } from './service-meta.js'
+import { normalizeFilters } from './campaigns.js'
+
+// Pure helpers live in their own modules; pages keep importing everything from booking.js.
+export {
+  PLACEHOLDER_EMAIL_DOMAIN,
+  TIME_OFF_SERVICE_ID,
+  contactOffers,
+  contactTags,
+  hasRealEmail,
+  isActiveBooking,
+  isActiveTimeOff,
+  isTimeOff,
+  slugBase,
+  uniqueServiceSlug,
+  serializeService,
+  serviceDisplayMeta,
+}
+export { exportServicesCsv, importErrorReportCsv, parseServiceCsv, serviceCsvTemplate } from './services.js'
+export {
+  OWNER_STAFF_ID,
+  STAFF_COPY_MAX,
+  STAFF_COPY_WARN,
+  hasTeam,
+  isOwnerMember,
+  isStaffCopy,
+  isStaffActive,
+  ownerStaff,
+  scheduleForStaff,
+  servicesForStaff,
+  staffById,
+  staffCopies,
+  staffForBooking,
+  staffServiceCopyEstimate,
+  teamMembers,
+} from './team.js'
+export {
+  SEGMENT_PRESETS,
+  campaignQueue,
+  emailBatches,
+  normalizeFilters,
+  exportCampaignCsv,
+  segmentContacts,
+} from './campaigns.js'
+export { messageQueue } from './messaging.js'
 
 const TABLES = {
   profiles: 'profiles',
@@ -19,25 +91,10 @@ const TABLES = {
   services: 'services',
   bookings: 'bookings',
   contacts: 'contacts',
+  staff: 'staff',
+  campaigns: 'campaigns',
 }
 
-// Reserved `.invalid` domain (RFC 2606): never deliverable, never someone else's mailbox.
-export const PLACEHOLDER_EMAIL_DOMAIN = 'bookins.invalid'
-export const TIME_OFF_SERVICE_ID = 'time-off'
-const OWNER_STATUSES = ['confirmed', 'completed', 'no_show']
-
-/**
- * Owner time off is stored as a `blocked` booking so the hosted engine treats it as busy.
- * `isTimeOff` matches every time-off record, including removed (cancelled) ones, so pages can
- * exclude them from clients and metrics. `isActiveTimeOff` matches only blocks still in force.
- */
-export const isActiveTimeOff = (booking) => booking?.status === 'blocked'
-export const isTimeOff = (booking) => isActiveTimeOff(booking) || booking?.service_id === TIME_OFF_SERVICE_ID
-/** A real appointment that still holds its time (not cancelled, not time off). */
-export const isActiveBooking = (booking) => OWNER_STATUSES.includes(booking?.status)
-export const hasRealEmail = (email) =>
-  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '')) &&
-  !String(email).toLowerCase().endsWith(`@${PLACEHOLDER_EMAIL_DOMAIN}`)
 const localPreviewState = Object.create(null)
 
 export function isLocalPreview() {
@@ -94,7 +151,7 @@ function createLocalPreviewState() {
       },
     ],
     services: [
-      {
+      sampleService({
         id: 'preview-service-1',
         slug: 'discovery-call',
         name: 'Discovery call',
@@ -107,8 +164,8 @@ function createLocalPreviewState() {
         visibility: 'public',
         active: true,
         revision: 'preview-1',
-      },
-      {
+      }, { category: 'Consultations', sortOrder: 1, rebookAfterDays: 30 }),
+      sampleService({
         id: 'preview-service-2',
         slug: 'product-consultation',
         name: 'Product consultation',
@@ -121,7 +178,7 @@ function createLocalPreviewState() {
         visibility: 'public',
         active: true,
         revision: 'preview-1',
-      },
+      }, { category: 'Consultations', sortOrder: 2, rebookAfterDays: 45, prepNotes: 'Share your goals and any current designs before the session.' }),
     ],
     bookings: [
       {
@@ -190,6 +247,12 @@ function hydrateLocalPreview() {
   })
   source.bookings.push(...history.bookings)
   source.contacts = history.contacts
+  const team = createSampleTeam({ timezone: 'Africa/Lagos', idPrefix: 'preview', baseService: source.services[1] })
+  source.schedules.push(...team.schedules)
+  source.services.push(...team.services)
+  source.bookings.push(...team.bookings)
+  source.staff = team.staff
+  source.campaigns = team.campaigns
   for (const table of Object.values(TABLES))
     localPreviewState[table] = Array.isArray(source[table]) ? source[table] : []
   localPreviewState.hydrated = true
@@ -250,15 +313,18 @@ async function remove(table, id) {
 
 export async function loadOwnerWorkspace() {
   return runOwnerCall('loadOwnerWorkspace', async () => {
-    const [profiles, schedules, services, bookings, contacts] = await Promise.all([
+    const [profiles, schedules, services, bookings, contacts, staff, campaigns] = await Promise.all([
       list(TABLES.profiles),
       list(TABLES.schedules),
       list(TABLES.services),
       list(TABLES.bookings),
       // Contacts is optional (added in v0.5.0); an unbound Table must not block the workspace.
       list(TABLES.contacts).catch(() => []),
+      // Staff and campaigns are optional (added in v0.6.0); unbound Tables behave as empty.
+      list(TABLES.staff).catch(() => []),
+      list(TABLES.campaigns).catch(() => []),
     ])
-    return { profile: profiles[0] || null, schedules, services, bookings, contacts }
+    return { profile: profiles[0] || null, schedules, services, bookings, contacts, staff, campaigns }
   })
 }
 
@@ -304,10 +370,14 @@ function assertScheduleInput(input) {
   return windows.windows
 }
 
-export async function saveSchedule(existing, input) {
+/**
+ * Creates or updates a schedule. For a team member without one, pass `existing = null` and the
+ * member as `staff`: the schedule is created and linked to the member's `schedule_id`.
+ */
+export async function saveSchedule(existing, input, staff = null) {
   return runOwnerCall(
     'saveSchedule',
-    () => {
+    async () => {
       const weeklyWindows = assertScheduleInput(input)
       const value = {
         name: input.name,
@@ -320,52 +390,29 @@ export async function saveSchedule(existing, input) {
         revision: String(Date.now()),
         updated_at: new Date().toISOString(),
       }
-      return existing?.id ? update(TABLES.schedules, existing.id, value) : create(TABLES.schedules, value)
+      if (existing?.id) return update(TABLES.schedules, existing.id, value)
+      const created = await create(TABLES.schedules, value)
+      // The implicit owner has no staff row; real members are linked so scheduleForStaff finds it.
+      if (staff?.id && !staff.implicit && !isOwnerMember(staff) && created?.id)
+        await update(TABLES.staff, staff.id, { schedule_id: created.id, updated_at: new Date().toISOString() })
+      return created
     },
-    [existing, input],
+    [existing, input, staff],
   )
 }
 
-export function slugBase(name) {
-  const base = String(name || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return base || 'service'
-}
-
-export function uniqueServiceSlug(name, existing, existingServices = []) {
-  const base = slugBase(name)
-  const taken = new Set(
-    existingServices.filter((item) => item && item.id !== existing?.id).map((item) => item.slug),
-  )
-  if (existing?.slug && (existing.slug === base || new RegExp(`^${base}-\\d+$`).test(existing.slug)) && !taken.has(existing.slug))
-    return existing.slug
-  let slug = base
-  for (let n = 2; taken.has(slug); n += 1) slug = `${base}-${n}`
-  return slug
-}
-
+/**
+ * Creates or updates a service. `input` is the form shape (see `serializeService`); the optional
+ * category, sortOrder, rebookAfterDays and prepNotes are written as fields AND as the description
+ * trailer. Old call sites without those keys keep working and keep the existing values.
+ */
 export async function saveService(existing, input, existingServices = []) {
-  const value = {
-    slug: uniqueServiceSlug(input.name, existing, existingServices),
-    name: input.name,
-    description: input.description,
-    duration_minutes: input.durationMinutes,
-    schedule_id: input.scheduleId,
-    price: input.price || 0,
-    currency: input.currency || 'NGN',
-    visibility: input.visibility,
-    active: input.active,
-    location: String(input.location ?? existing?.location ?? '').trim().slice(0, 300),
-    revision: String(Date.now()),
-    updated_at: new Date().toISOString(),
-  }
   return runOwnerCall(
     'saveService',
-    () => (existing?.id ? update(TABLES.services, existing.id, value) : create(TABLES.services, value)),
+    () => {
+      const value = serializeService(input, existing, existingServices)
+      return existing?.id ? update(TABLES.services, existing.id, value) : create(TABLES.services, value)
+    },
     [existing, input, existingServices],
   )
 }
@@ -491,6 +538,33 @@ function overlapError(overlaps) {
   return notStarted(409, 'BOOKING_SLOT_TAKEN', `This time overlaps ${label}.`)
 }
 
+/** { staff_id, staff_name } stored on a booking. The implicit owner is stored as 'owner' with the business name. */
+function staffSnapshot(state, member) {
+  if (!member) return {}
+  const owner = isOwnerMember(member)
+  return {
+    staff_id: owner ? OWNER_STAFF_ID : member.id,
+    // The implicit owner has no name of its own: snapshot the business name only when one exists (never a placeholder).
+    staff_name: owner && member.implicit ? String(state.profile?.display_name || '').trim() : member.name || '',
+  }
+}
+
+/** The member who will perform an owner-created booking and the schedule it occupies. */
+function resolveBookingMember(state, service, serviceSchedule, staffId) {
+  if (staffId) {
+    const member = staffById(state, staffId)
+    if (!member) throw notStarted(404, 'BOOKING_STAFF_NOT_FOUND', 'Choose a team member from the list.')
+    if (!isStaffActive(member)) throw notStarted(409, 'BOOKING_STAFF_INACTIVE', `${member.name} is not active.`)
+    const schedule = scheduleForStaff(state, member)
+    if (!schedule) throw notStarted(409, 'BOOKING_SCHEDULE_UNAVAILABLE', `Set working hours for ${member.name} first.`)
+    return { member, schedule }
+  }
+  const copyOf = splitDescription(service.description).meta.s
+  const copyMember = copyOf ? staffById(state, copyOf) : null
+  if (copyMember) return { member: copyMember, schedule: serviceSchedule }
+  return { member: hasTeam(state) ? ownerStaff(state) : null, schedule: serviceSchedule }
+}
+
 /**
  * Owner-created booking (walk-in, phone, or recurring). Owners may book outside weekly hours
  * and inside minimum notice, but never on top of another booking or time off.
@@ -501,7 +575,10 @@ export function createOwnerBooking(state, input = {}) {
   return runOwnerCall(
     'createOwnerBooking',
     async () => {
-      const { service, schedule, minutes } = serviceContext(state, input.serviceId)
+      const context = serviceContext(state, input.serviceId)
+      const { service, minutes } = context
+      const { member, schedule } = resolveBookingMember(state, service, context.schedule, input.staffId)
+      const staffFields = hasTeam(state) || input.staffId ? staffSnapshot(state, member) : {}
       const contact = ownerContact(input.contact, schedule.timezone)
       const repeatWeeks = Math.max(0, Math.min(12, Math.floor(Number(input.repeatWeeks) || 0)))
       const first = Date.parse(input.startsAt)
@@ -540,6 +617,7 @@ export function createOwnerBooking(state, input = {}) {
             owner_notes: String(input.ownerNotes || '').trim().slice(0, 4000),
             status: 'confirmed',
             source: 'owner',
+            ...staffFields,
             series_id: seriesId,
             reservation_key: `${schedule.id}|${startsAt.toISOString()}`,
             created_at: new Date().toISOString(),
@@ -589,6 +667,11 @@ export function rescheduleBooking(state, booking, startsAt) {
           ends_at: ends,
           reservation_key: `${booking.schedule_id}|${begins}`,
           status: 'confirmed',
+          // A moved booking needs fresh reminders: forget that the old time's messages were opened.
+          reminder_opened_at: '',
+          reminder24_opened_at: '',
+          reminder2_opened_at: '',
+          prep_opened_at: '',
         })
       } catch (error) {
         if (isUniqueViolation(error))
@@ -630,7 +713,10 @@ export function createTimeOff(state, input = {}) {
   return runOwnerCall(
     'createTimeOff',
     async () => {
-      const schedule = (state.schedules || [])[0]
+      // Time off blocks one member's schedule: the chosen member (`staffId`), else the owner's.
+      const member = input.staffId ? staffById(state, input.staffId) : ownerStaff(state)
+      if (input.staffId && !member) throw notStarted(404, 'BOOKING_STAFF_NOT_FOUND', 'Choose a team member from the list.')
+      const schedule = scheduleForStaff(state, member)
       if (!schedule) throw notStarted(409, 'BOOKING_SCHEDULE_UNAVAILABLE', 'Set your availability before adding time off.')
       const start = Date.parse(input.startsAt)
       const end = Date.parse(input.endsAt)
@@ -659,6 +745,7 @@ export function createTimeOff(state, input = {}) {
         notes: reason,
         status: 'blocked',
         source: 'owner',
+        ...(hasTeam(state) ? staffSnapshot(state, member) : {}),
         reservation_key: `block:${crypto.randomUUID()}`,
         created_at: new Date().toISOString(),
       })
@@ -753,15 +840,6 @@ export function saveContact(existing, input = {}) {
     },
     [existing, input],
   )
-}
-
-export function contactTags(contact) {
-  try {
-    const tags = JSON.parse(contact?.tags_json || '[]')
-    return Array.isArray(tags) ? tags.filter((tag) => typeof tag === 'string') : []
-  } catch {
-    return []
-  }
 }
 
 export async function copyText(value) {
@@ -1136,4 +1214,430 @@ export function openingOverlapsBusy(opening, busy) {
   const start = Date.parse(opening.startsAt)
   const end = Date.parse(opening.endsAt) || start
   return busy.some((range) => range.start < end && range.end > start)
+}
+
+// ---- team members, staff-as-schedule (v0.6.0) ----
+
+const isEmailShape = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+
+/** Creates or updates a team member. Omitted keys keep their saved value. */
+export function saveStaff(existing, input = {}) {
+  return runOwnerCall(
+    'saveStaff',
+    async () => {
+      const has = (key) => input[key] !== undefined
+      const name = String(has('name') ? input.name : existing?.name ?? '').trim().slice(0, 120)
+      if (!name) throw notStarted(400, 'BOOKING_STAFF_INVALID', 'Enter the team member\'s name.')
+      const email = String(has('email') ? input.email : existing?.email ?? '').trim().toLowerCase().slice(0, 254)
+      if (email && !isEmailShape(email)) throw notStarted(400, 'BOOKING_STAFF_INVALID', 'Enter a valid email address, or leave it blank.')
+      const color = String(has('color') ? input.color : existing?.color ?? '').trim()
+      if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw notStarted(400, 'BOOKING_STAFF_INVALID', 'Choose a colour from the palette.')
+      const serviceIds = has('serviceIds')
+        ? [...new Set((input.serviceIds || []).filter((id) => typeof id === 'string' && id))]
+        : parseServiceIds(existing)
+      const value = {
+        name,
+        role: String(has('role') ? input.role : existing?.role ?? '').trim().slice(0, 120),
+        photo_url: String(has('photoUrl') ? input.photoUrl : existing?.photo_url ?? '').trim().slice(0, 2000),
+        color,
+        phone: String(has('phone') ? input.phone : existing?.phone ?? '').trim().slice(0, 40),
+        email,
+        active: has('active') ? input.active !== false : existing ? existing.active !== false : true,
+        schedule_id: String(has('scheduleId') ? input.scheduleId : existing?.schedule_id ?? ''),
+        service_ids_json: JSON.stringify(serviceIds),
+        is_owner: has('isOwner') ? Boolean(input.isOwner) : Boolean(existing?.is_owner),
+        revision: String(Date.now()),
+        updated_at: new Date().toISOString(),
+      }
+      return existing?.id && !existing.implicit ? update(TABLES.staff, existing.id, value) : create(TABLES.staff, value)
+    },
+    [existing, input],
+  )
+}
+
+async function setCopiesActive(state, member, active) {
+  let changed = 0
+  for (const copy of staffCopies(state, null, member)) {
+    if (copy.active === active) continue
+    if (active) {
+      const base = (state.services || []).find((item) => item.id === serviceBaseId(copy))
+      if (base && base.active === false) continue
+    }
+    await update(TABLES.services, copy.id, { active, updated_at: new Date().toISOString() })
+    changed += 1
+  }
+  return changed
+}
+
+/** Deactivates a member and hides their service copies from the guest page. Bookings are kept. Pass `state` to hide copies. */
+export function deactivateStaff(member, state = null) {
+  return runOwnerCall(
+    'deactivateStaff',
+    async () => {
+      if (isOwnerMember(member)) throw notStarted(409, 'BOOKING_STAFF_INVALID', 'The owner cannot be deactivated.')
+      const record = await update(TABLES.staff, member.id, { active: false, updated_at: new Date().toISOString() })
+      const hidden = state ? await setCopiesActive(state, member, false) : 0
+      return { staff: record, hidden }
+    },
+    [member, state],
+  )
+}
+
+export function reactivateStaff(member, state = null) {
+  return runOwnerCall(
+    'reactivateStaff',
+    async () => {
+      const record = await update(TABLES.staff, member.id, { active: true, updated_at: new Date().toISOString() })
+      const restored = state ? await setCopiesActive(state, member, true) : 0
+      return { staff: record, restored }
+    },
+    [member, state],
+  )
+}
+
+/**
+ * Creates or updates one service copy per (service, member), bound to the member's own schedule and
+ * tagged in the description trailer, so a guest picks "With Amaka". Idempotent. Returns
+ * { created, updated, skipped: [{ staffId, reason }], estimate }. Refuses above STAFF_COPY_MAX, and above
+ * STAFF_COPY_WARN unless `confirmOverCap`.
+ */
+export function createStaffServices(state, service, staffIds, { confirmOverCap = false } = {}) {
+  return runOwnerCall(
+    'createStaffServices',
+    async () => {
+      if (!service?.id || serviceBaseId(service) || splitDescription(service.description).meta.s)
+        throw notStarted(400, 'BOOKING_SERVICE_INVALID', 'Choose a regular service, not a team copy.')
+      const skipped = []
+      const eligible = []
+      for (const id of [...new Set(staffIds || [])]) {
+        const member = staffById(state, id)
+        if (!member || isOwnerMember(member)) {
+          skipped.push({ staffId: id, reason: 'Pick team members other than yourself.' })
+          continue
+        }
+        const offered = parseServiceIds(member)
+        const schedule = scheduleForStaff(state, member)
+        if (!isStaffActive(member)) skipped.push({ staffId: id, reason: `${member.name} is not active.` })
+        else if (!schedule) skipped.push({ staffId: id, reason: `Set working hours for ${member.name} first.` })
+        else if (offered.length && !offered.includes(service.id)) skipped.push({ staffId: id, reason: `${member.name} does not offer this service.` })
+        else if (Number(service.duration_minutes) > Number(schedule.slot_interval_minutes))
+          skipped.push({
+            staffId: id,
+            reason: `${service.name} is ${service.duration_minutes} min but ${member.name}'s booking interval is ${schedule.slot_interval_minutes} min. Increase it in Availability.`,
+          })
+        else eligible.push({ member, schedule })
+      }
+      const estimate = staffServiceCopyEstimate(state, { serviceIds: [service.id], staffIds: eligible.map((item) => item.member.id) })
+      if (estimate.overMax)
+        throw notStarted(409, 'BOOKING_STAFF_COPY_CAP', `This would create ${estimate.total} team service copies. The limit is ${estimate.max}. Offer fewer services per person.`)
+      if (estimate.overCap && !confirmOverCap)
+        throw notStarted(409, 'BOOKING_STAFF_COPY_CAP', `This would bring team service copies to ${estimate.total} (over ${estimate.warnAt}). Confirm, or offer fewer services per person.`)
+      const meta = serviceDisplayMeta(service)
+      const known = [...(state.services || [])]
+      const created = []
+      const updated = []
+      for (const { member, schedule } of eligible) {
+        const copy = staffCopies(state, service, member)[0] || null
+        const value = serializeService(
+          {
+            name: service.name,
+            description: meta.text,
+            durationMinutes: service.duration_minutes,
+            scheduleId: schedule.id,
+            price: service.price || 0,
+            currency: service.currency || 'NGN',
+            visibility: service.visibility,
+            active: service.active !== false && isStaffActive(member),
+            location: service.location || '',
+            category: meta.category,
+            sortOrder: meta.sortOrder,
+            rebookAfterDays: meta.rebookAfterDays,
+            prepNotes: meta.prepNotes,
+            staffId: member.id,
+            staffName: member.name,
+            baseId: service.id,
+            slug: copy ? copy.slug : uniqueServiceSlug(`${service.slug} ${member.name}`, null, known),
+          },
+          copy,
+          known,
+        )
+        if (copy) updated.push(await update(TABLES.services, copy.id, value))
+        else {
+          const record = await create(TABLES.services, value)
+          known.push(record)
+          created.push(record)
+        }
+      }
+      return { created, updated, skipped, estimate }
+    },
+    [state, service, staffIds, { confirmOverCap }],
+  )
+}
+
+/** Re-applies a base service's fields to every existing per-member copy of it. */
+export async function syncStaffServices(state, service) {
+  const ids = [...new Set(staffCopies(state, service).map((copy) => splitDescription(copy.description).meta.s))]
+  return ids.length ? createStaffServices(state, service, ids, { confirmOverCap: true }) : { created: [], updated: [], skipped: [], estimate: null }
+}
+
+/** Removes the per-member copies of a service (all of them, or one member's). Existing bookings keep their snapshots. */
+export function deleteStaffServiceCopies(state, service, member = null) {
+  return runOwnerCall(
+    'deleteStaffServiceCopies',
+    async () => {
+      const copies = staffCopies(state, service, member)
+      for (const copy of copies) await remove(TABLES.services, copy.id)
+      return { removed: copies.length }
+    },
+    [state, service, member],
+  )
+}
+
+/** Moves one booking to a member. Returns the saved record, or throws a not-started BOOKING_SLOT_TAKEN. */
+async function assignOne(state, known, booking, staffId) {
+  if (isTimeOff(booking)) throw notStarted(409, 'BOOKING_NOT_ACTIVE', 'Time off is not assigned to a person.')
+  const member = staffById(state, staffId)
+  if (!member) throw notStarted(404, 'BOOKING_STAFF_NOT_FOUND', 'Choose a team member from the list.')
+  if (!isStaffActive(member)) throw notStarted(409, 'BOOKING_STAFF_INACTIVE', `${member.name} is not active.`)
+  const snapshot = staffSnapshot(state, member)
+  // Finished or cancelled bookings keep their schedule and key; only the reporting label changes.
+  if (booking.status !== 'confirmed') return update(TABLES.bookings, booking.id, snapshot)
+  const target = scheduleForStaff(state, member)
+  if (!target) throw notStarted(409, 'BOOKING_SCHEDULE_UNAVAILABLE', `Set working hours for ${member.name} first.`)
+  if (target.id === booking.schedule_id) return update(TABLES.bookings, booking.id, snapshot)
+  const begins = new Date(booking.starts_at).toISOString()
+  const ends = new Date(booking.ends_at).toISOString()
+  const overlaps = findOverlaps(known, target.id, begins, ends, booking.id)
+  if (overlaps.length) {
+    const first = overlaps[0]
+    const label = isTimeOff(first) ? 'time off' : `${first.guest_name || 'another booking'} (${first.service_name || 'booking'})`
+    throw notStarted(409, 'BOOKING_SLOT_TAKEN', `${member.name} is not free then: this overlaps ${label}.`)
+  }
+  try {
+    return await update(TABLES.bookings, booking.id, {
+      ...snapshot,
+      schedule_id: target.id,
+      reservation_key: `${target.id}|${begins}`,
+    })
+  } catch (error) {
+    if (isUniqueViolation(error)) throw notStarted(409, 'BOOKING_SLOT_TAKEN', `${member.name} has another booking at this exact time.`)
+    throw error
+  }
+}
+
+/**
+ * Assigns a booking to a team member (or back to the owner with `OWNER_STAFF_ID`). A confirmed booking moves to
+ * the member's schedule with the same non-atomic overlap check as rescheduling (time off counts); completed,
+ * no-show and cancelled bookings only change their staff label.
+ */
+export function assignBookingStaff(state, booking, staffId) {
+  return runOwnerCall('assignBookingStaff', () => assignOne(state, [...(state.bookings || [])], booking, staffId), [state, booking, staffId])
+}
+
+/** Assigns many bookings, one at a time, each seeing the earlier moves. Returns { moved: [records], refused: [{ booking, reason }] }. */
+export function bulkAssignStaff(state, bookings, staffId) {
+  return runOwnerCall(
+    'bulkAssignStaff',
+    async () => {
+      const known = [...(state.bookings || [])]
+      const moved = []
+      const refused = []
+      for (const booking of bookings) {
+        try {
+          const saved = await assignOne(state, known, booking, staffId)
+          moved.push(saved)
+          const at = known.findIndex((item) => item.id === booking.id)
+          if (at >= 0) known[at] = { ...known[at], ...saved }
+        } catch (error) {
+          if (error?.outcome !== 'not_started') throw error
+          refused.push({ booking, reason: error.message })
+        }
+      }
+      return { moved, refused }
+    },
+    [state, bookings, staffId],
+  )
+}
+
+// ---- services CSV import ----
+
+const demoReadOnly = () => {
+  const error = new Error('Demo is read-only. Nothing was changed. Exit Demo to use this action.')
+  error.code = 'DEMO_READ_ONLY'
+  return error
+}
+
+/**
+ * Writes the new/update rows of `parseServiceCsv`, `concurrency` at a time. Each row is one complete create or
+ * update (never a partial row); skipped and error rows are never written. Idempotent by slug, so a re-run after
+ * a closed tab only does the remaining work. `signal` (AbortSignal) stops dispatching new rows.
+ * `onProgress({ done, total, created, updated, failed })` fires after every row.
+ * Returns { created, updated, skipped, failed: [{ line, reason }], cancelled, remaining, imported: [{ line, slug, id, staffNames }] }.
+ */
+export async function importServices(rows, { onProgress, signal, concurrency = 4 } = {}) {
+  if (isDemo.value) throw demoReadOnly()
+  const work = rows.filter((row) => row.status === 'new' || row.status === 'update')
+  const result = { created: 0, updated: 0, skipped: rows.filter((row) => row.status === 'skip').length, failed: [], cancelled: false, remaining: 0, imported: [] }
+  let cursor = 0
+  let done = 0
+  const next = async () => {
+    while (cursor < work.length) {
+      if (signal?.aborted) return
+      const row = work[cursor]
+      cursor += 1
+      try {
+        const saved = await saveService(row.existing || null, row.values, [])
+        result.imported.push({ line: row.line, slug: row.slug, id: saved?.id || row.existingId, staffNames: row.values.staffNames || [] })
+        if (row.status === 'new') result.created += 1
+        else result.updated += 1
+      } catch (error) {
+        const reason = isUniqueViolation(error)
+          ? 'A service with this slug already exists. Re-run the import to update it.'
+          : error?.message || 'Could not save this service.'
+        result.failed.push({ line: row.line, reason })
+      }
+      done += 1
+      onProgress?.({ done, total: work.length, created: result.created, updated: result.updated, failed: result.failed.length })
+    }
+  }
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(8, Number(concurrency) || 4)) }, next))
+  result.cancelled = Boolean(signal?.aborted) && cursor < work.length
+  result.remaining = work.length - cursor
+  result.failed.sort((a, b) => a.line - b.line)
+  return result
+}
+
+// ---- message journey: "opened by you" ----
+
+/** Records that the owner opened a message for a booking ("opened by you", never "sent"). `opened=false` undoes it. */
+export function markMessageOpened(booking, kind, opened = true) {
+  return runOwnerCall(
+    'markMessageOpened',
+    async () => {
+      const field = openedField(kind)
+      if (!field) throw notStarted(400, 'BOOKING_MESSAGE_INVALID', 'This message type cannot be marked as opened.')
+      return update(TABLES.bookings, booking.id, { [field]: opened ? new Date().toISOString() : '' })
+    },
+    [booking, kind, opened],
+  )
+}
+
+// ---- campaigns (owner-opened; nothing is sent by Bookins) ----
+
+const cleanCode = (value) => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 40)
+
+/** Creates or updates a campaign: { name, segment (filters), template ({ subject, body, channel }), offerText, offerCode, status, audienceCount }. */
+export function saveCampaign(existing, input = {}) {
+  return runOwnerCall(
+    'saveCampaign',
+    async () => {
+      const has = (key) => input[key] !== undefined
+      const name = String(has('name') ? input.name : existing?.name ?? '').trim().slice(0, 120)
+      if (!name) throw notStarted(400, 'BOOKING_CAMPAIGN_INVALID', 'Name the campaign.')
+      const status = has('status') ? input.status : existing?.status || 'draft'
+      if (!['draft', 'active', 'done'].includes(status)) throw notStarted(400, 'BOOKING_CAMPAIGN_INVALID', 'Choose draft, active, or done.')
+      const template = has('template') ? input.template || {} : parseJsonRecord(existing?.template_json)
+      const value = {
+        name,
+        segment_json: JSON.stringify(has('segment') ? normalizeFilters(input.segment) : parseJsonRecord(existing?.segment_json)),
+        template_json: JSON.stringify({
+          channel: ['whatsapp', 'sms', 'email'].includes(template.channel) ? template.channel : 'whatsapp',
+          ...(typeof template.subject === 'string' ? { subject: template.subject.slice(0, 300) } : {}),
+          ...(typeof template.body === 'string' ? { body: template.body.slice(0, 2000) } : {}),
+        }),
+        offer_text: String(has('offerText') ? input.offerText : existing?.offer_text ?? '').trim().slice(0, 500),
+        offer_code: cleanCode(has('offerCode') ? input.offerCode : existing?.offer_code),
+        status,
+        audience_count: Math.max(0, Math.round(Number(has('audienceCount') ? input.audienceCount : existing?.audience_count) || 0)),
+      }
+      if (!existing?.id) value.created_at = new Date().toISOString()
+      return existing?.id ? update(TABLES.campaigns, existing.id, value) : create(TABLES.campaigns, { ...value, last_opened_at: '' })
+    },
+    [existing, input],
+  )
+}
+
+function parseJsonRecord(text) {
+  try {
+    const value = JSON.parse(text || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+export function deleteCampaign(campaign) {
+  const id = typeof campaign === 'string' ? campaign : campaign?.id
+  return runOwnerCall('deleteCampaign', () => remove(TABLES.campaigns, id), [campaign])
+}
+
+/** Marks a campaign as opened by you (it never claims a send). */
+export function touchCampaign(campaign) {
+  return runOwnerCall('touchCampaign', () => update(TABLES.campaigns, campaign.id, { last_opened_at: new Date().toISOString() }), [campaign])
+}
+
+// The contact record behind a row of the Contacts or Campaigns page, or the minimum needed to create one.
+function contactBase(contact) {
+  const record = contact?.record || (contact?.id && contact.email && contact.updated_at !== undefined ? contact : null)
+  const email = String(contact?.email || record?.email || '').trim().toLowerCase()
+  if (!isEmailShape(email)) throw notStarted(400, 'BOOKING_CONTACT_INVALID', 'This client has no email or phone key to save a record under.')
+  return { record, email, name: String(contact?.name || record?.name || '').trim().slice(0, 160), phone: String(contact?.phone || record?.phone || '').trim().slice(0, 40) }
+}
+
+function saveContactFields(contact, fields) {
+  const base = contactBase(contact)
+  const stamp = new Date().toISOString()
+  if (base.record?.id) return update(TABLES.contacts, base.record.id, { ...fields, updated_at: stamp })
+  return create(TABLES.contacts, { email: base.email, name: base.name, phone: base.phone, notes: '', tags_json: '[]', ...fields, updated_at: stamp })
+}
+
+/** Opted-out contacts are excluded from every campaign queue, email batch and CSV export. */
+export function setMarketingOptOut(contact, optOut = true) {
+  return runOwnerCall(
+    'setMarketingOptOut',
+    () => saveContactFields(contact, { marketing_opt_out: Boolean(optOut), marketing_opt_out_at: optOut ? new Date().toISOString() : '' }),
+    [contact, optOut],
+  )
+}
+
+/** Tracks an offer code for a contact: { code, status: 'offered' | 'redeemed', at }. The owner honours the offer by hand. */
+export function recordOffer(contact, { code, status = 'offered', at } = {}) {
+  return runOwnerCall(
+    'recordOffer',
+    () => {
+      const clean = cleanCode(code)
+      if (!clean) throw notStarted(400, 'BOOKING_OFFER_INVALID', 'Enter an offer code.')
+      const base = contactBase(contact)
+      const stamp = at || new Date().toISOString()
+      const offers = contactOffers(base.record).filter((item) => item.code !== clean)
+      offers.push({ code: clean, status: status === 'redeemed' ? 'redeemed' : 'offered', at: stamp })
+      return saveContactFields(contact, {
+        offers_json: JSON.stringify(offers.slice(-50)),
+        ...(status === 'redeemed' ? {} : { last_campaign_at: stamp }),
+      })
+    },
+    [contact, { code, status, at }],
+  )
+}
+
+/** The owner opened this campaign's message for a contact: stamps `last_campaign_at` and tracks the offer code. */
+export function markCampaignRecipientOpened(contact, campaign) {
+  return runOwnerCall(
+    'markCampaignRecipientOpened',
+    () => {
+      const base = contactBase(contact)
+      const stamp = new Date().toISOString()
+      const code = cleanCode(campaign?.offer_code)
+      const fields = { last_campaign_at: stamp }
+      if (code) {
+        const offers = contactOffers(base.record)
+        if (!offers.some((item) => item.code === code)) {
+          offers.push({ code, status: 'offered', at: stamp })
+          fields.offers_json = JSON.stringify(offers.slice(-50))
+        }
+      }
+      return saveContactFields(contact, fields)
+    },
+    [contact, campaign],
+  )
 }

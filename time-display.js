@@ -135,3 +135,61 @@ export function formatDateClock(value, locale = 'en', timeZone = 'UTC', dateStyl
   const date = new Date(value).toLocaleDateString(locale, { dateStyle, timeZone: zone })
   return `${date} · ${formatClock(value, locale, zone)}`
 }
+
+const clockModeFormatters = new Map()
+/** Clock with an explicit 12h/24h choice (the guest's toggle). mode: '12h' | '24h'. */
+export function formatClockMode(value, locale = 'en', timeZone = 'UTC', mode = '12h') {
+  const zone = displayTimeZone(timeZone)
+  const cacheKey = `${locale}|${zone}|${mode}`
+  let formatter = clockModeFormatters.get(cacheKey)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
+      timeZone: zone,
+      minute: '2-digit',
+      ...(mode === '24h' ? { hour: '2-digit', hourCycle: 'h23' } : { hour: 'numeric', hour12: true }),
+    })
+    clockModeFormatters.set(cacheKey, formatter)
+  }
+  return formatter.format(new Date(value))
+}
+
+/** Locale default for the 12h/24h toggle (French is 24h, everything else 12h). */
+export function defaultClockMode(locale = 'en') {
+  return String(locale).toLowerCase().startsWith('fr') ? '24h' : '12h'
+}
+
+const FALLBACK_ZONES = ['Africa/Lagos', 'Africa/Accra', 'Africa/Nairobi', 'Africa/Johannesburg', 'Africa/Cairo', 'Africa/Casablanca', 'Africa/Abidjan', 'Europe/London', 'Europe/Paris', 'America/New_York']
+let zoneCache
+/** Every IANA zone the runtime knows (UTC first), cached. */
+export function allTimeZones() {
+  if (!zoneCache) {
+    let zones
+    try { zones = Intl.supportedValuesOf('timeZone') } catch { zones = FALLBACK_ZONES }
+    zoneCache = ['UTC', ...zones.filter(zone => zone !== 'UTC')]
+  }
+  return zoneCache
+}
+
+const plain = value => String(value ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[_/]+/g, ' ').trim()
+let abbreviations
+/** Short names ("WAT", "GMT+1") for abbreviation search; built lazily because it creates one formatter per zone. */
+function zoneAbbreviation(zone) {
+  abbreviations ??= new Map()
+  if (!abbreviations.has(zone)) abbreviations.set(zone, zoneDisplayLabel(zone, 'en').toLowerCase())
+  return abbreviations.get(zone)
+}
+
+/**
+ * Searchable time-zone list: `pinned` zones (current, device, host) first, then every match of all the
+ * query words against the zone id ("lagos", "africa lagos", "new york"), falling back to the short name
+ * ("wat", "gmt+1") when the id matches nothing.
+ */
+export function searchTimeZones(query, { pinned = [], limit = 80 } = {}) {
+  const words = plain(query).split(/\s+/).filter(Boolean)
+  const pool = allTimeZones()
+  const ordered = [...new Set([...pinned.filter(Boolean), ...pool])]
+  if (!words.length) return ordered.slice(0, limit)
+  let hits = ordered.filter(zone => words.every(word => plain(zone).includes(word)))
+  if (!hits.length) hits = ordered.filter(zone => words.every(word => zoneAbbreviation(zone).includes(word)))
+  return hits.slice(0, limit)
+}

@@ -12,13 +12,16 @@ import {
   openingOverlapsBusy,
   submitGuestBooking,
 } from '../booking.js'
+import { filterGroups, LAYOUTS, parseBio, readPageParams, slugify, teamRows } from '../guest-page.js'
+import { groupServices, presentService } from '../service-meta.js'
 import {
   buildBookingIcs,
   detectGuestTimeZone,
   displayTimeZone,
-  formatClock,
-  formatDateClock,
+  defaultClockMode,
+  formatClockMode,
   googleCalendarUrl,
+  searchTimeZones,
   zonedDateKey,
   zoneDisplayLabel,
 } from '../time-display.js'
@@ -29,18 +32,26 @@ initLocale()
 const MAX_RANGE_DAYS = 31
 const RESULT_CAP = 100 // smallest per-call cap across hosted (200), local and demo engines
 const SEARCH_AHEAD_DAYS = 366
+const COLUMN_DAYS = 5
+const SESSION_TTL = 5 * 60_000
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const PHONE_PATTERN = /^[+()\-.\s\d]{6,40}$/
+
+// Display options and prefill from the link: ?name=&email=&phone=&layout=month|week|column&theme=light|dark&service=
+const params = readPageParams(typeof window === 'undefined' ? '' : window.location.search)
+const theme = params.theme || 'light'
+const layoutPref = ref(params.layout || 'month')
 
 const loading = ref(true)
 const pageError = ref(null) // { kind, retry }
 const page = ref(null)
 const selectedService = ref(null)
 const selectedSlot = ref(null)
+const pendingSlot = ref(null) // small screens: a tapped time waits for the sticky Continue bar
 const submitting = ref(false)
 const confirmation = ref(null)
 const notes = ref('')
-const contact = reactive({ name: '', email: '', phone: '' })
+const contact = reactive({ name: params.name, email: params.email, phone: params.phone })
 const touched = reactive({ name: false, email: false, phone: false })
 const serverFieldErrors = reactive({ name: '', email: '', phone: '' })
 const submitAttempted = ref(false)
@@ -50,11 +61,26 @@ const stepHeading = ref(null)
 const confirmHeading = ref(null)
 const photoFailed = ref(false)
 
+// Responsive: at <= 820px the date picker becomes a slots-first week strip with a month bottom sheet.
+const mobileQuery = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(max-width: 820px)') : null
+const isMobile = ref(Boolean(mobileQuery?.matches))
+const onMobileChange = event => { isMobile.value = event.matches }
+const reducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+
 // Availability state
 const guestTz = detectGuestTimeZone()
-const tzMode = ref('guest')
+const TZ_KEY = 'bookins.guest.tz'
+function storedZone() {
+  try {
+    const value = globalThis.localStorage?.getItem(TZ_KEY)
+    return value && displayTimeZone(value) === value ? value : ''
+  } catch { return '' }
+}
+const zoneChoice = ref(storedZone() || guestTz)
 const openingStore = shallowRef(new Map())
-const covered = new Set()
+let covered = new Set()
+// Per-service session cache of loaded openings (5 min), so returning to a service is instant.
+const sessionCache = new Map()
 // Convenience filter only: hides openings that overlap the owner's Google Calendar busy times.
 // It is not checked when the booking is created, and silently stops after the first failure.
 let calendarBusyOff = props.demoPreview
@@ -66,6 +92,8 @@ let pageRetried = false
 const nextHint = ref({ state: 'idle', key: '' })
 const selectedDate = ref('')
 const viewMonth = reactive({ year: 0, month: 0 })
+const windowStart = ref('')
+const sheetOpen = ref(false)
 
 // Idempotency: one key per booking attempt (service + slot + contact + notes).
 let attemptKey = null
@@ -79,8 +107,7 @@ const ownerTz = computed(() => {
   const first = openingStore.value.values().next().value
   return displayTimeZone(first?.timezone || page.value?.profile?.timezone)
 })
-const displayedTimezone = computed(() => (tzMode.value === 'owner' ? ownerTz.value : guestTz))
-const zonesDiffer = computed(() => ownerTz.value !== guestTz)
+const displayedTimezone = computed(() => zoneChoice.value)
 const todayKey = computed(() => zonedDateKey(new Date(), displayedTimezone.value))
 const step = computed(() => (selectedSlot.value ? 3 : selectedService.value ? 2 : 1))
 const api = () => (props.demoPreview ? demoGuestApi.loadGuestOpenings : loadGuestOpenings)
@@ -97,6 +124,8 @@ const safePhotoUrl = computed(() => {
 })
 const showPhoto = computed(() => safePhotoUrl.value && !photoFailed.value)
 const hostInitial = computed(() => (Array.from(String(page.value?.profile?.displayName || '').trim())[0] || '•').toUpperCase())
+// A `[[wa:+234...]]` marker in the host bio is a hidden WhatsApp contact: never shown, used only on the confirmation.
+const bio = computed(() => parseBio(page.value?.profile?.bio))
 
 // ---- date helpers (calendar keys are plain YYYY-MM-DD strings, UTC arithmetic) ----
 const pad = value => String(value).padStart(2, '0')
@@ -108,6 +137,7 @@ function addDays(key, count) {
 function daysBetween(from, to) {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000)
 }
+const weekdayOf = key => new Date(`${key}T00:00:00Z`).getUTCDay()
 const monthKey = (year, month) => `${year}-${pad(month + 1)}`
 const monthFirst = (year, month) => `${monthKey(year, month)}-01`
 const monthLast = (year, month) => `${monthKey(year, month)}-${pad(new Date(Date.UTC(year, month + 1, 0)).getUTCDate())}`
@@ -120,6 +150,23 @@ function dayLabel(key, options = { weekday: 'long', month: 'short', day: 'numeri
 }
 const zoneLabel = (zone, at = new Date()) => zoneDisplayLabel(zone, intlLocale(), at)
 const displayedZoneLabel = computed(() => zoneLabel(displayedTimezone.value))
+
+// ---- date view: month (default), week, column; small screens always use the slots-first strip ----
+const dateView = computed(() => (isMobile.value ? 'strip' : layoutPref.value))
+const windowLen = computed(() => (dateView.value === 'column' ? COLUMN_DAYS : 7))
+const windowDays = computed(() => (windowStart.value ? Array.from({ length: windowLen.value }, (_, index) => addDays(windowStart.value, index)) : []))
+const windowMin = computed(() => (dateView.value === 'week' ? addDays(todayKey.value, -weekdayOf(todayKey.value)) : todayKey.value))
+const canWindowPrev = computed(() => windowStart.value > windowMin.value)
+const canWindowNext = computed(() => addDays(windowStart.value, windowLen.value) <= addDays(todayKey.value, 365))
+const windowTitle = computed(() => {
+  if (!windowDays.value.length) return ''
+  const short = { month: 'short', day: 'numeric' }
+  return `${dayLabel(windowDays.value[0], short)} – ${dayLabel(windowDays.value.at(-1), { ...short, year: 'numeric' })}`
+})
+function alignWindow(key) {
+  const from = key < todayKey.value ? todayKey.value : key
+  windowStart.value = dateView.value === 'week' ? addDays(from, -weekdayOf(from)) : from
+}
 
 // ---- availability ----
 const availableDays = computed(() => {
@@ -155,21 +202,66 @@ const calendarCells = computed(() => {
     const count = availableDays.value.get(key)?.length || 0
     cells.push({ key, day, count, past: key < todayKey.value })
   }
+  // Always six rows so the card never changes height between months.
+  while (cells.length < 42) cells.push({ key: `tail-${cells.length}`, blank: true })
   return cells
 })
 const monthHasOpenings = computed(() => calendarCells.value.some(cell => cell.count > 0))
 const canGoPrev = computed(() => monthKey(viewMonth.year, viewMonth.month) > todayKey.value.slice(0, 7))
 const canGoNext = computed(() => monthKey(viewMonth.year, viewMonth.month) < addDays(todayKey.value, 365).slice(0, 7))
 const slotsForSelectedDay = computed(() => availableDays.value.get(selectedDate.value) || [])
+const columns = computed(() =>
+  windowDays.value.map(key => ({ key, past: key < todayKey.value, slots: availableDays.value.get(key) || [] })),
+)
+const windowHasOpenings = computed(() => columns.value.some(column => column.slots.length))
+const viewHasOpenings = computed(() => (dateView.value === 'month' ? monthHasOpenings.value : windowHasOpenings.value))
+
+function firstDayAfter(key) {
+  for (const day of availableDays.value.keys()) if (day > key) return day
+  return ''
+}
+/** The day the "Next available" chip jumps to, or '' when there is nothing to offer. */
+const nextTarget = computed(() => {
+  if (dateView.value === 'strip') {
+    if (!selectedDate.value || slotsForSelectedDay.value.length) return ''
+    return firstDayAfter(selectedDate.value) || (nextHint.value.state === 'found' ? nextHint.value.key : '')
+  }
+  return !viewHasOpenings.value && nextHint.value.state === 'found' ? nextHint.value.key : ''
+})
+const nextWhen = computed(() => {
+  const key = nextTarget.value
+  const first = key ? availableDays.value.get(key)?.[0] : null
+  if (!key) return ''
+  const date = dayLabel(key, { weekday: 'short', day: 'numeric', month: 'short' })
+  return first ? `${date}, ${clockText(first.startsAt)}` : date
+})
 
 function resetAvailability() {
   requestSeq += 1
   openingStore.value = new Map()
-  covered.clear()
+  covered = new Set()
   rangeLoading.value = false
   rangeError.value = ''
   nextHint.value = { state: 'idle', key: '' }
   selectedDate.value = ''
+  pendingSlot.value = null
+  sheetOpen.value = false
+}
+
+function rememberAvailability() {
+  const id = selectedService.value?.id
+  if (!id) return
+  const entry = sessionCache.get(id)
+  sessionCache.set(id, { store: openingStore.value, covered, at: entry?.at ?? Date.now() })
+}
+function restoreAvailability(id) {
+  const entry = sessionCache.get(id)
+  if (!entry || Date.now() - entry.at > SESSION_TTL) {
+    sessionCache.delete(id)
+    return
+  }
+  openingStore.value = entry.store
+  covered = entry.covered
 }
 
 async function fetchSpan(serviceId, from, to) {
@@ -221,6 +313,7 @@ async function ensureRange(from, through, seq) {
     for (const opening of list) next.set(opening.startsAt, opening)
     openingStore.value = next
     for (let offset = 0; offset < length; offset += 1) covered.add(addDays(chunkStart, offset))
+    rememberAvailability()
     index += length
   }
   return true
@@ -245,6 +338,13 @@ async function findNextAvailable(fromKey, seq) {
   return ''
 }
 
+async function searchNext(fromKey, seq = requestSeq) {
+  nextHint.value = { state: 'searching', key: '' }
+  const found = await findNextAvailable(fromKey, seq)
+  if (found === null || seq !== requestSeq) return
+  nextHint.value = { state: found ? 'found' : 'none', key: found }
+}
+
 function errorKeyFor(reason, fallback) {
   const code = errorCode(reason)
   if (code === 'BOOKING_SERVICE_NOT_FOUND') return 'err.serviceGone'
@@ -253,21 +353,36 @@ function errorKeyFor(reason, fallback) {
   return fallback
 }
 
-async function loadMonth() {
+function spanFor(mode) {
+  return mode === 'month'
+    ? [monthFirst(viewMonth.year, viewMonth.month), monthLast(viewMonth.year, viewMonth.month)]
+    : [windowStart.value, addDays(windowStart.value, windowLen.value - 1)]
+}
+
+/** Loads what the current view shows: the visible month (mode 'month') or the week/column/strip window. */
+async function loadView(mode = dateView.value === 'month' ? 'month' : 'window') {
   const seq = ++requestSeq
   rangeLoading.value = true
   rangeError.value = ''
   nextHint.value = { state: 'idle', key: '' }
   try {
-    const ok = await ensureRange(addDays(monthFirst(viewMonth.year, viewMonth.month), -1), addDays(monthLast(viewMonth.year, viewMonth.month), 1), seq)
+    const [from, to] = spanFor(mode)
+    const ok = await ensureRange(addDays(from, -1), addDays(to, 1), seq)
     if (!ok || seq !== requestSeq) return
-    if (selectedDate.value && !availableDays.value.has(selectedDate.value)) selectedDate.value = ''
-    if (!monthHasOpenings.value) {
-      nextHint.value = { state: 'searching', key: '' }
-      const fromKey = monthFirst(viewMonth.year, viewMonth.month) < todayKey.value ? todayKey.value : addDays(monthLast(viewMonth.year, viewMonth.month), 1)
-      const found = await findNextAvailable(fromKey, seq)
-      if (found === null || seq !== requestSeq) return
-      nextHint.value = { state: found ? 'found' : 'none', key: found }
+    prefetchNext(seq, mode)
+    let has = true
+    if (dateView.value === 'month') {
+      if (selectedDate.value && !availableDays.value.has(selectedDate.value)) selectedDate.value = ''
+      has = monthHasOpenings.value
+    } else if (mode === 'window') {
+      // Slots first: land on the first day of the window that has times.
+      if (dateView.value === 'strip' && !windowDays.value.includes(selectedDate.value)) {
+        selectedDate.value = windowDays.value.find(day => availableDays.value.has(day)) || windowDays.value[0] || ''
+      }
+      has = windowHasOpenings.value
+    }
+    if (!has && (dateView.value === 'month' || mode === 'window')) {
+      await searchNext(from < todayKey.value ? todayKey.value : addDays(to, 1), seq)
     }
   } catch (reason) {
     if (seq !== requestSeq) return
@@ -277,18 +392,41 @@ async function loadMonth() {
   }
 }
 
+const whenIdle = callback =>
+  typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(callback, { timeout: 2500 }) : setTimeout(callback, 250)
+
+/** Quietly warms the next month / window once the browser is idle. Failures are ignored; the normal load retries. */
+function prefetchNext(seq, mode) {
+  let from
+  let to
+  if (mode === 'month') {
+    const next = new Date(Date.UTC(viewMonth.year, viewMonth.month + 1, 1))
+    from = monthFirst(next.getUTCFullYear(), next.getUTCMonth())
+    to = monthLast(next.getUTCFullYear(), next.getUTCMonth())
+  } else {
+    from = addDays(windowStart.value, windowLen.value)
+    to = addDays(from, windowLen.value - 1)
+  }
+  if (from > addDays(todayKey.value, 365)) return
+  whenIdle(() => {
+    if (seq === requestSeq) ensureRange(addDays(from, -1), addDays(to, 1), seq).catch(() => {})
+  })
+}
+
 async function initialJump() {
   const seq = ++requestSeq
   rangeLoading.value = true
   rangeError.value = ''
   setViewFromKey(todayKey.value)
+  alignWindow(todayKey.value)
   try {
     const found = await findNextAvailable(todayKey.value, seq)
     if (found === null || seq !== requestSeq) return
     if (found) {
       selectedDate.value = found
       setViewFromKey(found)
-      await loadMonth()
+      alignWindow(found)
+      await loadView()
     } else {
       nextHint.value = { state: 'none', key: '' }
       rangeLoading.value = false
@@ -302,7 +440,7 @@ async function initialJump() {
 
 function retryAvailability() {
   rangeError.value = ''
-  if (selectedDate.value || monthHasOpenings.value || openingStore.value.size) loadMonth()
+  if (selectedDate.value || viewHasOpenings.value || openingStore.value.size) loadView()
   else initialJump()
 }
 
@@ -310,59 +448,231 @@ function shiftMonth(delta) {
   const value = new Date(Date.UTC(viewMonth.year, viewMonth.month + delta, 1))
   viewMonth.year = value.getUTCFullYear()
   viewMonth.month = value.getUTCMonth()
+  if (dateView.value === 'month') selectedDate.value = ''
+  loadView('month')
+}
+
+function shiftWindow(direction) {
+  const step = dateView.value === 'column' ? COLUMN_DAYS : 7
+  const next = addDays(windowStart.value, direction * step)
+  windowStart.value = next < windowMin.value ? windowMin.value : next
   selectedDate.value = ''
-  loadMonth()
+  loadView()
+}
+
+function currentAnchor() {
+  if (selectedDate.value) return selectedDate.value
+  if (dateView.value === 'month') {
+    const first = monthFirst(viewMonth.year, viewMonth.month)
+    return first < todayKey.value ? todayKey.value : first
+  }
+  return windowStart.value || todayKey.value
+}
+
+function switchLayout(next) {
+  if (next === layoutPref.value) return
+  const anchor = currentAnchor()
+  layoutPref.value = next
+  setViewFromKey(anchor)
+  alignWindow(anchor)
+  loadView()
 }
 
 async function jumpToNext() {
-  const key = nextHint.value.key
+  const key = nextTarget.value
   if (!key) return
   selectedDate.value = key
   setViewFromKey(key)
-  await loadMonth()
+  alignWindow(key)
+  await loadView()
   selectedDate.value = key
 }
 
 function pickDay(cell) {
-  if (!cell.count) return
-  selectedDate.value = cell.key
+  if (cell.count) selectedDate.value = cell.key
 }
 
-// Re-bucket days when the display zone changes.
+function pickStripDay(key) {
+  selectedDate.value = key
+  if (!availableDays.value.get(key)?.length && !firstDayAfter(key)) searchNext(addDays(key, 1)).catch(() => {})
+}
+
+// ---- month bottom sheet (small screens) ----
+const sheetEl = ref(null)
+const sheetTrigger = ref(null)
+function openSheet() {
+  setViewFromKey(selectedDate.value || windowStart.value || todayKey.value)
+  sheetOpen.value = true
+  loadView('month')
+  nextTick(() => sheetEl.value?.querySelector('button:not(:disabled)')?.focus())
+}
+function closeSheet() {
+  sheetOpen.value = false
+  nextTick(() => sheetTrigger.value?.focus())
+}
+function pickFromSheet(cell) {
+  if (!cell.count) return
+  selectedDate.value = cell.key
+  if (!windowDays.value.includes(cell.key)) alignWindow(cell.key)
+  closeSheet()
+  loadView('window')
+}
+function onSheetKey(event) {
+  if (event.key === 'Escape') {
+    event.stopPropagation()
+    return closeSheet()
+  }
+  if (event.key !== 'Tab') return
+  const items = [...sheetEl.value.querySelectorAll('button:not(:disabled)')]
+  if (!items.length) return
+  const first = items[0]
+  const last = items.at(-1)
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+}
+watch(sheetOpen, open => { document.body.style.overflow = open ? 'hidden' : '' })
+
+// ---- week / column keyboard navigation (one tab stop, arrow keys move between times) ----
+const roving = ref('')
+const rovingStart = computed(() => {
+  const all = columns.value.flatMap(column => column.slots)
+  return all.some(slot => slot.startsAt === roving.value) ? roving.value : all[0]?.startsAt || ''
+})
+function columnKeydown(event) {
+  const target = event.target.closest?.('[data-col]')
+  if (!target) return
+  const col = Number(target.dataset.col)
+  const row = Number(target.dataset.row)
+  const lengths = columns.value.map(column => column.slots.length)
+  let nextCol = col
+  let nextRow = row
+  if (event.key === 'ArrowDown') nextRow = Math.min(row + 1, lengths[col] - 1)
+  else if (event.key === 'ArrowUp') nextRow = Math.max(row - 1, 0)
+  else if (event.key === 'Home') nextRow = 0
+  else if (event.key === 'End') nextRow = lengths[col] - 1
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    const dir = event.key === 'ArrowRight' ? 1 : -1
+    let probe = col + dir
+    while (probe >= 0 && probe < lengths.length && !lengths[probe]) probe += dir
+    if (probe < 0 || probe >= lengths.length) return event.preventDefault()
+    nextCol = probe
+    nextRow = Math.min(row, lengths[probe] - 1)
+  } else return
+  event.preventDefault()
+  event.currentTarget.querySelector(`[data-col="${nextCol}"][data-row="${nextRow}"]`)?.focus()
+}
+
+// Re-bucket days when the display zone changes; a chosen time keeps pointing at the same instant.
 watch(displayedTimezone, () => {
   if (!selectedService.value) return
-  if (selectedSlot.value) {
-    const key = zonedDateKey(selectedSlot.value.startsAt, displayedTimezone.value)
+  const keep = selectedSlot.value || pendingSlot.value
+  if (keep) {
+    const key = zonedDateKey(keep.startsAt, displayedTimezone.value)
     selectedDate.value = key
     setViewFromKey(key)
+    alignWindow(key)
+    loadView()
   } else {
     selectedDate.value = ''
-    setViewFromKey(todayKey.value)
     initialJump()
   }
 })
+watch(isMobile, () => {
+  if (!selectedService.value) return
+  const anchor = selectedDate.value || todayKey.value
+  sheetOpen.value = false
+  setViewFromKey(anchor)
+  alignWindow(anchor)
+  loadView()
+})
+
+// ---- time zone picker (searchable, remembered) ----
+const tzOpen = ref(false)
+const tzQuery = ref('')
+const tzActive = ref(0)
+const tzBox = ref(null)
+const tzInput = ref(null)
+const tzButton = ref(null)
+const tzResults = computed(() => (tzOpen.value ? searchTimeZones(tzQuery.value, { pinned: [zoneChoice.value, guestTz, ownerTz.value] }) : []))
+const tzTag = zone => (zone === guestTz ? t('tz.device') : zone === ownerTz.value ? t('tz.host') : '')
+watch(tzQuery, () => { tzActive.value = 0 })
+function openTz() {
+  tzQuery.value = ''
+  tzActive.value = 0
+  tzOpen.value = true
+  nextTick(() => tzInput.value?.focus())
+}
+function closeTz(refocus = true) {
+  tzOpen.value = false
+  if (refocus) nextTick(() => tzButton.value?.focus())
+}
+function chooseZone(zone) {
+  zoneChoice.value = zone
+  try {
+    if (zone === guestTz) globalThis.localStorage?.removeItem(TZ_KEY)
+    else globalThis.localStorage?.setItem(TZ_KEY, zone)
+  } catch { /* the choice just is not remembered */ }
+  closeTz()
+}
+function onTzKey(event) {
+  const last = tzResults.value.length - 1
+  if (event.key === 'ArrowDown') tzActive.value = Math.min(tzActive.value + 1, last)
+  else if (event.key === 'ArrowUp') tzActive.value = Math.max(tzActive.value - 1, 0)
+  else if (event.key === 'Enter') {
+    if (tzResults.value[tzActive.value]) chooseZone(tzResults.value[tzActive.value])
+  } else if (event.key === 'Escape') {
+    event.stopPropagation()
+    return closeTz()
+  } else if (event.key === 'Tab') return closeTz(false)
+  else return
+  event.preventDefault()
+  nextTick(() => tzBox.value?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }))
+}
+function onDocumentPointer(event) {
+  if (tzOpen.value && !tzBox.value?.contains(event.target)) closeTz(false)
+}
 
 // ---- formatting ----
 function priceLabel(service) {
   if (!Number(service.price)) return t('svc.free')
+  let text
   try {
-    return new Intl.NumberFormat(intlLocale(), {
+    text = new Intl.NumberFormat(intlLocale(), {
       style: 'currency',
       currency: service.currency || 'NGN',
       maximumFractionDigits: 0,
     }).format(service.price)
   } catch {
-    return `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
+    text = `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
   }
+  return service.priceVaries ? t('svc.from', { price: text }) : text
 }
-// One clock formatter (formatClock) feeds slot buttons, summaries and the confirmation.
-const slotTime = slot => formatClock(slot.startsAt, intlLocale(), displayedTimezone.value)
-const longDateTime = (value, zone = displayedTimezone.value) => formatDateClock(value, intlLocale(), zone, 'full')
+// One clock formatter (formatClockMode, driven by the 12h/24h toggle) feeds slots, summaries and the confirmation.
+const CLOCK_KEY = 'bookins.guest.clock'
+function storedClock() {
+  try {
+    const value = globalThis.localStorage?.getItem(CLOCK_KEY)
+    return value === '12h' || value === '24h' ? value : ''
+  } catch { return '' }
+}
+const clockChoice = ref(storedClock()) // empty = follow the language default
+const clockMode = computed(() => clockChoice.value || defaultClockMode(locale.value))
+function setClock(mode) {
+  clockChoice.value = mode
+  try { globalThis.localStorage?.setItem(CLOCK_KEY, mode) } catch { /* choice just is not remembered */ }
+}
+const clockText = (value, zone = displayedTimezone.value) => formatClockMode(value, intlLocale(), zone, clockMode.value)
+const slotTime = slot => clockText(slot.startsAt)
+const dateText = (value, zone, dateStyle) => new Date(value).toLocaleDateString(intlLocale(), { dateStyle, timeZone: zone })
+const longDateTime = (value, zone = displayedTimezone.value) => `${dateText(value, zone, 'full')} · ${clockText(value, zone)}`
 const selectedSlotLabel = computed(() =>
-  selectedSlot.value ? formatDateClock(selectedSlot.value.startsAt, intlLocale(), displayedTimezone.value, 'medium') : '',
+  selectedSlot.value ? `${dateText(selectedSlot.value.startsAt, displayedTimezone.value, 'full')} · ${clockText(selectedSlot.value.startsAt)}` : '',
 )
-const stepKeys = ['steps.service', 'steps.time', 'steps.details', 'steps.done']
-const shownStep = computed(() => (confirmation.value ? 4 : step.value))
+const pendingLabel = computed(() =>
+  pendingSlot.value
+    ? `${dayLabel(zonedDateKey(pendingSlot.value.startsAt, displayedTimezone.value), { weekday: 'short', day: 'numeric', month: 'short' })} · ${clockText(pendingSlot.value.startsAt)}`
+    : '',
+)
 const slotPlaceholders = [0, 1, 2, 3, 4, 5]
 const refCopied = ref(false)
 async function copyReference() {
@@ -414,10 +724,18 @@ const pageErrors = {
 }
 
 // ---- navigation ----
-function selectSlot(slot) {
+function commitSlot(slot) {
   interacted = true
   selectedSlot.value = slot
+  selectedDate.value = zonedDateKey(slot.startsAt, displayedTimezone.value)
+  pendingSlot.value = null
   banner.value = null
+}
+function selectSlot(slot) {
+  interacted = true
+  // Small screens: tapping a time only highlights it; the sticky Continue bar moves on.
+  if (isMobile.value) pendingSlot.value = slot
+  else commitSlot(slot)
 }
 
 function back() {
@@ -429,6 +747,8 @@ function back() {
     return
   }
   selectedService.value = null
+  query.value = ''
+  openTeam.value = ''
   resetAvailability()
 }
 
@@ -437,7 +757,45 @@ async function choose(service) {
   selectedSlot.value = null
   banner.value = null
   resetAvailability()
+  restoreAvailability(service.id)
   await initialJump()
+}
+
+// ---- service list: categories, search, team choice ----
+const query = ref('')
+const openTeam = ref('')
+const serviceGroups = computed(() =>
+  groupServices(page.value?.services || []).map(group => ({ name: group.name, rows: teamRows(group.items, { hostName: page.value?.profile?.displayName || '' }) })),
+)
+const serviceCount = computed(() => serviceGroups.value.reduce((total, group) => total + group.rows.length, 0))
+const hasCategories = computed(() => serviceGroups.value.some(group => group.name))
+const showHeadings = computed(() => serviceGroups.value.length > 1)
+const showSearch = computed(() => hasCategories.value && serviceCount.value > 6)
+const visibleGroups = computed(() => filterGroups(serviceGroups.value, showSearch.value ? query.value : ''))
+const visibleCount = computed(() => visibleGroups.value.reduce((total, group) => total + group.rows.length, 0))
+const optionLabel = (option, index) => {
+  if (option.owner) {
+    const host = page.value?.profile?.displayName
+    return host ? t('sum.with', { host }) : t('team.host')
+  }
+  return t('sum.with', { host: option.copy.staffName || t('team.option', { n: index + 1 }) })
+}
+const initialOf = text => (Array.from(String(text || '').trim())[0] || '•').toUpperCase()
+
+function openFromParam() {
+  const want = params.service
+  if (!want || selectedService.value) return
+  const slug = slugify(want)
+  const rows = serviceGroups.value.flatMap(group => group.rows)
+  for (const row of rows) {
+    for (const copy of row.copies) {
+      if (copy.id === want || copy.slug === want || (copy.slug && slugify(copy.slug) === slug)) return choose(copy)
+    }
+  }
+  const row = rows.find(item => slugify(item.name) === slug)
+  if (!row) return
+  if (row.team) openTeam.value = row.key
+  else return choose(row.options[0].copy)
 }
 
 async function start() {
@@ -452,7 +810,8 @@ async function start() {
     const result = await (props.demoPreview ? demoGuestApi.loadGuestPage() : loadGuestPage())
     page.value = { ...result, services: Array.isArray(result?.services) ? result.services : [], profile: result?.profile || {} }
     // A service-subject link returns exactly one service (including private ones): skip straight to times.
-    if (page.value.services.length === 1) await choose(page.value.services[0])
+    if (page.value.services.length === 1) await choose(presentService(page.value.services[0]))
+    else await openFromParam()
   } catch (reason) {
     pageError.value = classifyPageError(reason)
   } finally {
@@ -505,11 +864,13 @@ async function refreshAfterSlotTaken() {
   const keepDate = selectedDate.value
   requestSeq += 1
   openingStore.value = new Map()
-  covered.clear()
+  covered = new Set()
+  sessionCache.clear()
   selectedSlot.value = null
+  pendingSlot.value = null
   resetAttempt()
   showBanner('slot', 'banner.slotTaken')
-  await loadMonth()
+  await loadView()
   if (keepDate && availableDays.value.has(keepDate)) selectedDate.value = keepDate
 }
 
@@ -535,6 +896,7 @@ async function handleSubmitError(reason, key) {
     selectedSlot.value = null
     selectedService.value = null
     resetAvailability()
+    sessionCache.clear()
     resetAttempt()
     showBanner('unavailable', 'banner.serviceGone')
     try {
@@ -574,6 +936,7 @@ async function submit() {
   banner.value = null
   try {
     confirmation.value = await submitGuestBooking(payload, key)
+    sessionCache.clear() // the booked time must not come back from the cache
     resetAttempt()
   } catch (reason) {
     await handleSubmitError(reason, key)
@@ -608,6 +971,31 @@ const googleUrl = computed(() =>
 const confirmationDuration = computed(() =>
   confirmation.value ? Math.round((Date.parse(confirmationEnd.value) - Date.parse(confirmation.value.startsAt)) / 60_000) : 0,
 )
+// The guest's own share/copy of the booking details. Nothing is sent by Bookins.
+const detailsText = computed(() => {
+  const value = confirmation.value
+  if (!value) return ''
+  return t('share.text', {
+    service: value.serviceName,
+    host: page.value?.profile?.displayName || t('host.fallback'),
+    when: `${longDateTime(value.startsAt)}, ${displayedZoneLabel.value}`,
+    reference: value.reference,
+  })
+})
+const shareUrl = computed(() => `https://wa.me/?text=${encodeURIComponent(detailsText.value)}`)
+const changeUrl = computed(() =>
+  bio.value.whatsapp && confirmation.value
+    ? `https://wa.me/${bio.value.whatsapp}?text=${encodeURIComponent(t('share.changeText', { reference: confirmation.value.reference }))}`
+    : '',
+)
+const detailsCopied = ref(false)
+async function copyDetails() {
+  try {
+    await navigator.clipboard.writeText(detailsText.value)
+    detailsCopied.value = true
+    setTimeout(() => { detailsCopied.value = false }, 2000)
+  } catch { /* clipboard unavailable: the details are on screen */ }
+}
 
 async function bookAnother() {
   confirmation.value = null
@@ -618,9 +1006,11 @@ async function bookAnother() {
   resetAttempt()
   interacted = true
   window.scrollTo({ top: 0 })
-  if (singleService.value) await choose(page.value.services[0])
+  if (singleService.value) await choose(presentService(page.value.services[0]))
   else {
     selectedService.value = null
+    query.value = ''
+    openTeam.value = ''
     resetAvailability()
   }
 }
@@ -646,7 +1036,7 @@ watch(step, async () => {
 })
 watch(confirmation, async value => {
   if (!value) return
-  window.scrollTo({ top: 0, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' })
+  window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' })
   await nextTick()
   confirmHeading.value?.focus()
 })
@@ -654,6 +1044,9 @@ watch(confirmation, async value => {
 function chooseService(service) {
   interacted = true
   choose(service)
+}
+function toggleTeam(key) {
+  openTeam.value = openTeam.value === key ? '' : key
 }
 
 // Connectivity: when the connection returns, retry a failed page/openings load once. Form state lives
@@ -677,1151 +1070,953 @@ const retryRange = () => {
 }
 const singleService = computed(() => (page.value?.services?.length || 0) === 1)
 const showBack = computed(() => step.value > 2 || (step.value === 2 && !singleService.value))
+const view = computed(() => (step.value === 1 ? 'profile' : 'book'))
+const stage = computed(() => (selectedSlot.value ? 'details' : 'schedule'))
 
+const rootBackground = { light: '', dark: '#0e0f11' }
 onMounted(() => {
   window.addEventListener('online', onOnline)
+  document.addEventListener('pointerdown', onDocumentPointer)
+  mobileQuery?.addEventListener?.('change', onMobileChange)
+  document.documentElement.style.backgroundColor = rootBackground[theme]
   start()
 })
 onBeforeUnmount(() => {
   requestSeq += 1
   window.removeEventListener('online', onOnline)
+  document.removeEventListener('pointerdown', onDocumentPointer)
+  mobileQuery?.removeEventListener?.('change', onMobileChange)
+  document.documentElement.style.backgroundColor = ''
+  document.body.style.overflow = ''
 })
 </script>
 
 <template>
-  <div class="public-shell" :data-demo-guest-ready="demoPreview && !loading && !pageError ? 'true' : undefined">
-    <header class="public-header">
-      <a href="/" aria-label="Bookins"><BookinsLogo /></a>
-      <div class="header-end">
-        <span class="secure-note"><AppIcon name="lock" :size="14" />{{ demoPreview ? t('header.demo') : t('header.secure') }}</span>
-        <div class="lang-toggle" role="group" :aria-label="t('lang.label')">
+  <div class="bk" :data-theme="theme" :data-demo-guest-ready="demoPreview && !loading && !pageError ? 'true' : undefined">
+    <header class="bk-header">
+      <a href="/" aria-label="Bookins"><BookinsLogo :inverse="theme === 'dark'" /></a>
+      <div class="bk-header-end">
+        <span class="bk-secure"><AppIcon name="lock" :size="14" />{{ demoPreview ? t('header.demo') : t('header.secure') }}</span>
+        <div class="bk-lang" role="group" :aria-label="t('lang.label')">
           <button type="button" lang="en" :aria-pressed="locale === 'en'" :class="{ active: locale === 'en' }" @click="setLocale('en')">EN</button>
-          <span aria-hidden="true">|</span>
           <button type="button" lang="fr" :aria-pressed="locale === 'fr'" :class="{ active: locale === 'fr' }" @click="setLocale('fr')">FR</button>
         </div>
       </div>
     </header>
-    <div v-if="demoPreview" class="demo-preview-banner" role="status">
+    <div v-if="demoPreview" class="bk-demo" role="status">
       <strong>{{ t('demo.title') }}</strong>
       <span>{{ t('demo.text') }}</span>
     </div>
-    <main>
-      <div v-if="loading" class="public-state" role="status" aria-live="polite">
-        <span class="public-spinner" />
-        <h1>{{ t('loading.title') }}</h1>
-        <p>{{ t('loading.text') }}</p>
+
+    <main class="bk-main">
+      <div v-if="loading" class="bk-loading" role="status" aria-live="polite">
+        <h1 class="bk-sr">{{ t('loading.title') }}</h1>
+        <p class="bk-sr">{{ t('loading.text') }}</p>
+        <div class="bk-card bk-skel-card" aria-hidden="true">
+          <span class="bk-skel bk-skel-avatar" />
+          <span class="bk-skel bk-skel-line wide" />
+          <span class="bk-skel bk-skel-line" />
+        </div>
+        <div class="bk-card bk-skel-card" aria-hidden="true">
+          <span class="bk-skel bk-skel-line wide" />
+          <span class="bk-skel bk-skel-line" />
+          <span class="bk-skel bk-skel-line short" />
+        </div>
       </div>
-      <div v-else-if="pageError" class="public-state error-state" role="alert">
-        <span class="state-symbol" aria-hidden="true">!</span>
+
+      <div v-else-if="pageError" class="bk-state" role="alert">
+        <span class="bk-state-symbol" aria-hidden="true">!</span>
         <h1>{{ t(`err.${pageError.kind}.title`) }}</h1>
         <p>{{ t(`err.${pageError.kind}.text`) }}</p>
-        <button v-if="pageError.retry" class="secondary" type="button" @click="retryPage">{{ t('retry') }}</button>
+        <button v-if="pageError.retry" class="bk-btn" type="button" @click="retryPage">{{ t('retry') }}</button>
       </div>
 
-      <div v-else-if="confirmation" class="confirmation-wrap">
-        <ol class="stepper" :aria-label="t('steps.aria')">
-          <li
-            v-for="(key, index) in stepKeys"
-            :key="key"
-            :class="{ active: shownStep === index + 1, done: shownStep > index + 1 }"
-            :aria-current="shownStep === index + 1 ? 'step' : undefined"
-          ><i aria-hidden="true"><AppIcon v-if="shownStep > index + 1" name="check" :size="12" :stroke-width="3" /><template v-else>{{ index + 1 }}</template></i><span>{{ t(key) }}</span></li>
-        </ol>
-        <article class="confirmation-card">
-          <span class="confirmation-check"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></span>
-          <p class="eyebrow">{{ t('confirm.eyebrow') }}</p>
-          <h1 ref="confirmHeading" tabindex="-1">{{ t('confirm.title') }}</h1>
-          <p class="confirmation-copy">{{ t('confirm.copy', { host: page.profile.displayName }) }}</p>
-          <div class="confirmation-event">
-            <span><AppIcon name="calendar" :size="22" /></span>
-            <div>
-              <strong>{{ confirmation.serviceName }}</strong>
-              <small>{{ longDateTime(confirmation.startsAt) }}</small>
-              <small>{{ displayedZoneLabel }}</small>
-              <small v-if="confirmationOwnerTz !== displayedTimezone">
-                {{ t('confirm.hostTime', { time: longDateTime(confirmation.startsAt, confirmationOwnerTz), zone: zoneLabel(confirmationOwnerTz) }) }}
-              </small>
-            </div>
-          </div>
-          <div class="reference-box">
-            <div>
-              <span>{{ t('confirm.reference') }}</span>
-              <code>{{ confirmation.reference }}</code>
-            </div>
-            <button type="button" class="secondary small-button" :aria-label="t('confirm.copyAria')" @click="copyReference">
-              {{ refCopied ? t('confirm.copied') : t('confirm.copyRef') }}
-            </button>
-            <p class="visually-hidden" role="status">{{ refCopied ? t('confirm.copied') : '' }}</p>
-          </div>
-          <dl>
-            <div><dt>{{ t('confirm.duration') }}</dt><dd>{{ t('confirm.minutes', { count: confirmationDuration }) }}</dd></div>
-          </dl>
-          <div class="calendar-actions">
-            <button class="secondary" type="button" @click="downloadIcs">
-              <AppIcon name="calendar" :size="15" />{{ t('confirm.ics') }}
-            </button>
-            <a class="secondary calendar-link" :href="googleUrl" target="_blank" rel="noopener noreferrer">
-              {{ t('confirm.google') }}
-            </a>
-          </div>
-          <button class="primary another-button" type="button" @click="bookAnother">{{ t('confirm.another') }}</button>
-          <p class="truth-note">
-            {{ t('confirm.note') }}
-          </p>
-        </article>
-      </div>
-
-      <template v-else>
-        <section class="host-card" :class="{ compact: step > 1 }">
-          <img
-            v-if="showPhoto"
-            :src="safePhotoUrl"
-            alt=""
-            referrerpolicy="no-referrer"
-            loading="lazy"
-            @error="photoFailed = true"
-          />
-          <span v-else class="host-avatar" aria-hidden="true">{{ hostInitial }}</span>
+      <article v-else-if="confirmation" class="bk-card bk-confirm">
+        <span class="bk-confirm-check"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></span>
+        <h1 ref="confirmHeading" tabindex="-1">{{ t('confirm.title') }}</h1>
+        <p class="bk-muted">{{ t('confirm.copy', { host: page.profile.displayName }) }}</p>
+        <dl class="bk-facts">
+          <div><dt>{{ t('confirm.what') }}</dt><dd>{{ confirmation.serviceName }} · {{ t('confirm.minutes', { count: confirmationDuration }) }}</dd></div>
           <div>
-            <p class="eyebrow">{{ t('host.eyebrow') }}</p>
+            <dt>{{ t('confirm.when') }}</dt>
+            <dd>
+              {{ longDateTime(confirmation.startsAt) }}
+              <small>{{ displayedZoneLabel }}</small>
+              <small v-if="confirmationOwnerTz !== displayedTimezone">{{ t('confirm.hostTime', { time: longDateTime(confirmation.startsAt, confirmationOwnerTz), zone: zoneLabel(confirmationOwnerTz) }) }}</small>
+            </dd>
+          </div>
+          <div><dt>{{ t('confirm.who') }}</dt><dd>{{ selectedService?.staffName ? `${page.profile.displayName} · ${selectedService.staffName}` : page.profile.displayName }}</dd></div>
+          <div>
+            <dt>{{ t('confirm.reference') }}</dt>
+            <dd class="bk-ref">
+              <code>{{ confirmation.reference }}</code>
+              <button type="button" class="bk-btn small" :aria-label="t('confirm.copyAria')" @click="copyReference">{{ refCopied ? t('confirm.copied') : t('confirm.copyRef') }}</button>
+              <span class="bk-sr" role="status">{{ refCopied ? t('confirm.copied') : '' }}</span>
+            </dd>
+          </div>
+        </dl>
+        <div class="bk-confirm-actions">
+          <button class="bk-btn" type="button" @click="downloadIcs"><AppIcon name="calendar" :size="15" />{{ t('confirm.ics') }}</button>
+          <a class="bk-btn" :href="googleUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.google') }}</a>
+          <a class="bk-btn" :href="shareUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.shareWa') }}</a>
+          <button class="bk-btn" type="button" @click="copyDetails"><AppIcon name="copy" :size="15" />{{ detailsCopied ? t('confirm.detailsCopied') : t('confirm.copyDetails') }}</button>
+          <span class="bk-sr" role="status">{{ detailsCopied ? t('confirm.detailsCopied') : '' }}</span>
+        </div>
+        <p v-if="changeUrl" class="bk-change">
+          {{ t('confirm.change', { host: page.profile.displayName }) }}
+          <a class="bk-btn small" :href="changeUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.changeCta', { host: page.profile.displayName }) }}</a>
+        </p>
+        <button class="bk-btn primary wide" type="button" @click="bookAnother">{{ t('confirm.another') }}</button>
+        <p class="bk-fine">{{ t('confirm.note') }}</p>
+      </article>
+
+      <Transition v-else name="bk-view" mode="out-in">
+        <!-- Profile: host header and service list -->
+        <section v-if="view === 'profile'" key="profile" class="bk-profile">
+          <div class="bk-card bk-host">
+            <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+            <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
             <h1>{{ page.profile.displayName }}</h1>
-            <p v-if="page.profile.bio && step === 1" class="host-bio">{{ page.profile.bio }}</p>
-            <span class="tz-line">
-              <AppIcon name="clock" :size="14" />
-              <label v-if="zonesDiffer" for="booking-tz-mode">{{ t('tz.shownIn') }}</label>
-              <span v-else>{{ t('tz.shownInZone', { zone: displayedZoneLabel }) }}</span>
-              <select v-if="zonesDiffer" id="booking-tz-mode" v-model="tzMode" :disabled="submitting">
-                <option value="guest">{{ t('tz.guest', { zone: zoneLabel(guestTz) }) }}</option>
-                <option value="owner">{{ t('tz.owner', { zone: zoneLabel(ownerTz) }) }}</option>
-              </select>
-            </span>
+            <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
+          </div>
+          <div v-if="page.services.length" class="bk-card bk-services">
+            <h2 ref="stepHeading" tabindex="-1" class="bk-services-title">{{ t('svc.title') }}</h2>
+            <div v-if="showSearch" class="bk-search">
+              <AppIcon name="search" :size="15" />
+              <input v-model="query" type="search" class="bk-input" :aria-label="t('svc.search')" :placeholder="t('svc.searchHint')" autocomplete="off" />
+            </div>
+            <p class="bk-sr" role="status" aria-live="polite">{{ showSearch && query.trim() ? t('svc.count', { count: visibleCount }) : '' }}</p>
+            <p v-if="!visibleGroups.length" class="bk-nomatch">{{ t('svc.noMatch', { query: query.trim() }) }}</p>
+            <template v-for="group in visibleGroups" :key="group.name || 'other'">
+              <h3 v-if="showHeadings" class="bk-group">{{ group.name || t('svc.other') }}</h3>
+              <ul>
+                <li v-for="row in group.rows" :key="row.key">
+                  <button
+                    type="button"
+                    class="bk-service"
+                    :aria-expanded="row.team ? openTeam === row.key : undefined"
+                    :aria-controls="row.team ? `team-${row.key}` : undefined"
+                    @click="row.team ? toggleTeam(row.key) : chooseService(row.options[0].copy)"
+                  >
+                    <span class="bk-service-name">{{ row.name }}</span>
+                    <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
+                    <span v-if="row.prepNotes" class="bk-service-prep">{{ t('svc.prep', { notes: row.prepNotes }) }}</span>
+                    <span class="bk-chips">
+                      <span class="bk-chip"><AppIcon name="clock" :size="12" />{{ t('svc.min', { count: row.durationMinutes }) }}</span>
+                      <span class="bk-chip">{{ priceLabel(row) }}</span>
+                      <span v-if="row.team" class="bk-chip team"><AppIcon name="user" :size="12" />{{ t('svc.team', { count: row.options.length }) }}</span>
+                    </span>
+                  </button>
+                  <div v-if="row.team && openTeam === row.key" :id="`team-${row.key}`" class="bk-team" role="group" :aria-label="t('svc.pickWho')">
+                    <button v-for="(option, index) in row.options" :key="option.copy.id" type="button" class="bk-pro" @click="chooseService(option.copy)">
+                      <span class="bk-avatar" aria-hidden="true">{{ initialOf(option.owner ? page.profile.displayName : option.copy.staffName || t('team.option', { n: index + 1 })) }}</span>
+                      <span>{{ optionLabel(option, index) }}</span>
+                      <span class="bk-pro-price">{{ priceLabel(option.copy) }}</span>
+                    </button>
+                  </div>
+                </li>
+              </ul>
+            </template>
+          </div>
+          <div v-else class="bk-card bk-empty">
+            <AppIcon name="calendar" :size="24" />
+            <h2>{{ t('svc.emptyTitle') }}</h2>
+            <p>{{ t('svc.emptyText', { host: page.profile.displayName }) }}</p>
           </div>
         </section>
 
-        <ol class="stepper" :aria-label="t('steps.aria')">
-          <li
-            v-for="(key, index) in stepKeys"
-            :key="key"
-            :class="{ active: shownStep === index + 1, done: shownStep > index + 1 }"
-            :aria-current="shownStep === index + 1 ? 'step' : undefined"
-          ><i aria-hidden="true"><AppIcon v-if="shownStep > index + 1" name="check" :size="12" :stroke-width="3" /><template v-else>{{ index + 1 }}</template></i><span>{{ t(key) }}</span></li>
-        </ol>
-
-        <div class="booking-card">
-          <section class="booking-content">
-            <div v-if="banner" ref="bannerPanel" tabindex="-1" role="alert" class="public-inline-error" :class="`banner-${banner.kind}`">
-              <p>{{ t(banner.key) }}</p>
-            </div>
-            <button v-if="showBack" class="back-button" :disabled="submitting" type="button" @click="back">
-              <AppIcon name="arrow-left" :size="16" />{{ t('back') }}
-            </button>
-
-            <template v-if="step === 1">
-              <div class="booking-heading">
-                <p class="eyebrow">{{ t('steps.of', { n: 1 }) }}</p>
-                <h2 ref="stepHeading" tabindex="-1">{{ t('svc.title') }}</h2>
-                <p>{{ t('svc.text') }}</p>
+        <!-- Scheduler: info | dates + times, then info | details -->
+        <section v-else key="book" class="bk-book">
+          <div v-if="banner" ref="bannerPanel" tabindex="-1" role="alert" class="bk-banner" :class="`banner-${banner.kind}`">
+            <p>{{ t(banner.key) }}</p>
+          </div>
+          <div class="bk-card bk-grid" :class="`stage-${stage}`">
+            <aside class="bk-info">
+              <button v-if="showBack" class="bk-back" :disabled="submitting" type="button" @click="back">
+                <AppIcon name="arrow-left" :size="15" />{{ t('back') }}
+              </button>
+              <div class="bk-host-line">
+                <img v-if="showPhoto" class="bk-avatar" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+                <span v-else class="bk-avatar" aria-hidden="true">{{ hostInitial }}</span>
+                <span>{{ page.profile.displayName }}</span>
               </div>
-              <div v-if="page.services.length" class="service-options">
-                <button v-for="service in page.services" :key="service.id" class="service-option" type="button" @click="chooseService(service)">
-                  <span class="service-option-icon"><AppIcon name="sparkle" :size="19" /></span>
-                  <span class="service-option-copy">
-                    <strong>{{ service.name }}</strong>
-                    <small>{{ service.description }}</small>
-                    <span>
-                      <b><AppIcon name="clock" :size="13" />{{ t('svc.min', { count: service.durationMinutes }) }}</b>
-                      <b>{{ priceLabel(service) }}</b>
-                    </span>
-                  </span>
-                  <AppIcon name="chevron" :size="18" />
+              <h1 class="bk-title">{{ selectedService.name }}</h1>
+              <p v-if="selectedService.description" class="bk-desc">{{ selectedService.description }}</p>
+              <ul class="bk-meta">
+                <li v-if="selectedSlot" class="bk-meta-when">
+                  <AppIcon name="calendar" :size="15" />
+                  <span>{{ selectedSlotLabel }}<small>{{ displayedZoneLabel }}</small></span>
+                </li>
+                <li v-if="selectedService.staffName"><AppIcon name="user" :size="15" /><span>{{ t('sum.with', { host: selectedService.staffName }) }}</span></li>
+                <li><AppIcon name="clock" :size="15" /><span>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</span></li>
+                <li><AppIcon name="wallet" :size="15" /><span>{{ priceLabel(selectedService) }}</span></li>
+                <li v-if="selectedService.price" class="bk-meta-note"><span>{{ t('sum.payment') }}</span></li>
+                <li v-if="selectedService.prepNotes" class="bk-meta-note prep"><span>{{ t('svc.prep', { notes: selectedService.prepNotes }) }}</span></li>
+              </ul>
+              <div ref="tzBox" class="bk-tz">
+                <button
+                  ref="tzButton"
+                  type="button"
+                  class="bk-tz-btn"
+                  aria-haspopup="listbox"
+                  :aria-expanded="tzOpen"
+                  :aria-label="t('tz.change', { zone: displayedZoneLabel })"
+                  :disabled="submitting"
+                  @click="tzOpen ? closeTz() : openTz()"
+                >
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.6 2.4 4 5.5 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.5-4-9s1.4-6.6 4-9z" /></svg>
+                  <span>{{ displayedZoneLabel }}</span>
+                  <svg class="bk-tz-caret" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
                 </button>
-              </div>
-              <div v-else class="public-empty">
-                <AppIcon name="calendar" :size="24" />
-                <h2>{{ t('svc.emptyTitle') }}</h2>
-                <p>{{ t('svc.emptyText', { host: page.profile.displayName }) }}</p>
-              </div>
-            </template>
-
-            <template v-else-if="step === 2">
-              <div class="booking-heading">
-                <p class="eyebrow">{{ t('steps.of', { n: 2 }) }}</p>
-                <h2 ref="stepHeading" tabindex="-1">{{ t('time.title') }}</h2>
-                <p>{{ t('time.sub', { service: selectedService.name, count: selectedService.durationMinutes }) }}</p>
-              </div>
-
-              <div class="calendar" role="group" :aria-label="t('cal.aria')">
-                <div class="calendar-head">
-                  <button type="button" class="cal-nav" :disabled="!canGoPrev || rangeLoading" :aria-label="t('cal.prev')" @click="shiftMonth(-1)">
-                    <AppIcon name="arrow-left" :size="16" />
-                  </button>
-                  <h3 aria-live="polite">{{ monthLabel }}</h3>
-                  <button type="button" class="cal-nav" :disabled="!canGoNext || rangeLoading" :aria-label="t('cal.next')" @click="shiftMonth(1)">
-                    <AppIcon name="chevron" :size="16" />
-                  </button>
+                <div v-if="tzOpen" class="bk-tz-pop">
+                  <input
+                    ref="tzInput"
+                    v-model="tzQuery"
+                    class="bk-input"
+                    type="text"
+                    role="combobox"
+                    aria-expanded="true"
+                    aria-controls="booking-tz-list"
+                    :aria-activedescendant="tzResults.length ? `tz-opt-${tzActive}` : undefined"
+                    aria-autocomplete="list"
+                    autocomplete="off"
+                    :aria-label="t('tz.search')"
+                    :placeholder="t('tz.search')"
+                    @keydown="onTzKey"
+                  />
+                  <ul id="booking-tz-list" role="listbox" :aria-label="t('tz.label')">
+                    <li
+                      v-for="(zone, index) in tzResults"
+                      :id="`tz-opt-${index}`"
+                      :key="zone"
+                      role="option"
+                      :aria-selected="index === tzActive"
+                      :class="{ active: index === tzActive, current: zone === zoneChoice }"
+                      @pointerdown.prevent="chooseZone(zone)"
+                      @pointermove="tzActive = index"
+                    >
+                      <span>{{ zoneLabel(zone) }}</span>
+                      <small v-if="tzTag(zone)">{{ tzTag(zone) }}</small>
+                    </li>
+                    <li v-if="!tzResults.length" class="bk-tz-none" role="presentation">{{ t('tz.noMatch') }}</li>
+                  </ul>
                 </div>
-                <div class="calendar-grid weekdays" aria-hidden="true">
-                  <span v-for="label in weekdayLabels" :key="label">{{ label }}</span>
-                </div>
-                <div class="calendar-grid" :class="{ busy: rangeLoading }">
-                  <template v-for="cell in calendarCells" :key="cell.key">
-                    <span v-if="cell.blank" />
-                    <button
-                      v-else
-                      type="button"
-                      class="cal-day"
-                      :class="{ selected: cell.key === selectedDate, today: cell.key === todayKey, open: cell.count > 0 }"
-                      :disabled="!cell.count"
-                      :aria-pressed="cell.key === selectedDate"
-                      :aria-label="cell.count ? t('cal.dayTimes', { day: dayLabel(cell.key), count: cell.count }) : t('cal.dayNone', { day: dayLabel(cell.key) })"
-                      @click="pickDay(cell)"
-                    >{{ cell.day }}</button>
-                  </template>
-                </div>
-                <p class="calendar-zone">{{ t('cal.zone', { zone: displayedZoneLabel }) }}</p>
-                <p class="calendar-zone calendar-legend">{{ t('cal.legend') }}</p>
               </div>
+            </aside>
 
-              <div v-if="rangeLoading" class="slots-loading" role="status" aria-live="polite">
-                <p class="visually-hidden">{{ t('slots.loading') }}</p>
-                <div class="slot-grid" aria-hidden="true"><span v-for="n in slotPlaceholders" :key="n" class="slot-skeleton" /></div>
-              </div>
-              <div v-else-if="rangeError" class="public-inline-error" role="alert">
-                <p>{{ t(rangeError) }}</p>
-                <button class="secondary small-button" type="button" @click="retryRange">{{ t('retry') }}</button>
-              </div>
-              <template v-else>
-                <section v-if="selectedDate && slotsForSelectedDay.length" class="slot-day" :aria-label="t('slots.on', { day: dayLabel(selectedDate) })">
-                  <h3>{{ t('slots.heading', { day: dayLabel(selectedDate), count: slotsForSelectedDay.length }) }}</h3>
-                  <div class="slot-grid">
-                    <button v-for="slot in slotsForSelectedDay" :key="slot.startsAt" type="button" @click="selectSlot(slot)">{{ slotTime(slot) }}</button>
+            <Transition name="bk-pane" mode="out-in">
+              <div v-if="stage === 'schedule'" key="schedule" class="bk-schedule" :class="`dv-${dateView}`">
+                <h2 ref="stepHeading" tabindex="-1" class="bk-sr">{{ t('time.title') }}</h2>
+                <div class="bk-viewbar">
+                  <div class="bk-range">
+                    <h3 aria-live="polite">
+                      <template v-if="dateView === 'month'"><strong>{{ monthLabel.replace(/\s*\d{4}$/, '') }}</strong> <span>{{ viewMonth.year }}</span></template>
+                      <template v-else>{{ windowTitle }}</template>
+                    </h3>
+                    <div class="bk-cal-nav">
+                      <template v-if="dateView === 'month'">
+                        <button type="button" :disabled="!canGoPrev || rangeLoading" :aria-label="t('cal.prev')" @click="shiftMonth(-1)"><AppIcon name="arrow-left" :size="16" /></button>
+                        <button type="button" :disabled="!canGoNext || rangeLoading" :aria-label="t('cal.next')" @click="shiftMonth(1)"><AppIcon name="chevron" :size="16" /></button>
+                      </template>
+                      <template v-else>
+                        <button type="button" :disabled="!canWindowPrev || rangeLoading" :aria-label="t('cal.prevRange')" @click="shiftWindow(-1)"><AppIcon name="arrow-left" :size="16" /></button>
+                        <button type="button" :disabled="!canWindowNext || rangeLoading" :aria-label="t('cal.nextRange')" @click="shiftWindow(1)"><AppIcon name="chevron" :size="16" /></button>
+                      </template>
+                    </div>
                   </div>
-                </section>
-                <div v-else-if="monthHasOpenings" class="public-empty compact">
-                  <h2>{{ t('slots.pickDayTitle') }}</h2>
-                  <p>{{ t('slots.pickDayText') }}</p>
+                  <div v-if="!isMobile" class="bk-switch" role="group" :aria-label="t('view.aria')">
+                    <button v-for="mode in LAYOUTS" :key="mode" type="button" :aria-pressed="layoutPref === mode" :class="{ active: layoutPref === mode }" @click="switchLayout(mode)">{{ t(`view.${mode}`) }}</button>
+                  </div>
+                  <button v-else ref="sheetTrigger" type="button" class="bk-btn small" :aria-label="t('cal.pickDateAria')" aria-haspopup="dialog" @click="openSheet"><AppIcon name="calendar" :size="14" />{{ t('cal.pickDate') }}</button>
                 </div>
-                <div v-else class="public-empty compact">
-                  <AppIcon name="clock" :size="24" />
-                  <template v-if="nextHint.state === 'searching'">
-                    <h2>{{ t('slots.searching') }}</h2>
-                  </template>
-                  <template v-else-if="nextHint.state === 'found'">
-                    <h2>{{ t('slots.noneInMonth', { month: monthLabel }) }}</h2>
-                    <p>{{ t('slots.nextDay', { date: dayLabel(nextHint.key, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) }) }}</p>
-                    <button class="secondary small-button" type="button" @click="jumpToNext">{{ t('slots.goNext') }}</button>
-                  </template>
-                  <template v-else>
-                    <h2>{{ t('slots.noneTitle') }}</h2>
-                    <p>{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
-                  </template>
-                </div>
-              </template>
-            </template>
 
-            <template v-else>
-              <div class="booking-heading">
-                <p class="eyebrow">{{ t('steps.of', { n: 3 }) }}</p>
-                <h2 ref="stepHeading" tabindex="-1">{{ demoPreview ? t('form.titleDemo') : t('form.title') }}</h2>
-                <p>{{ demoPreview ? t('form.textDemo') : t('form.text') }}</p>
-              </div>
-              <div class="mobile-selection">
-                <small>{{ t('sum.with', { host: page.profile.displayName }) }}</small>
-                <strong>{{ selectedService.name }}</strong>
-                <span>{{ selectedSlotLabel }}</span>
-                <small>{{ displayedZoneLabel }} · {{ t('svc.min', { count: selectedService.durationMinutes }) }} · {{ priceLabel(selectedService) }}</small>
-              </div>
-              <form class="guest-form" novalidate @submit.prevent="submit">
-                <div class="field">
-                  <label for="booking-guest-name">{{ t('form.name') }}</label>
-                  <input
-                    id="booking-guest-name"
-                    v-model="contact.name"
-                    :disabled="submitting"
-                    :aria-invalid="shownError('name') ? 'true' : undefined"
-                    :aria-describedby="shownError('name') ? 'booking-guest-name-error' : undefined"
-                    autocomplete="name"
-                    required
-                    maxlength="160"
-                    :placeholder="t('form.namePh')"
-                    @blur="touched.name = true"
-                  />
-                  <p v-if="shownError('name')" id="booking-guest-name-error" class="field-error">{{ shownError('name') }}</p>
+                <!-- Month grid: the desktop month view, or the bottom sheet on small screens -->
+                <div v-if="sheetOpen && dateView !== 'month'" class="bk-backdrop" @click="closeSheet" />
+                <div
+                  v-if="dateView === 'month' || sheetOpen"
+                  ref="sheetEl"
+                  class="bk-calendar"
+                  :class="{ 'is-sheet': dateView !== 'month' }"
+                  :role="dateView === 'month' ? 'group' : 'dialog'"
+                  :aria-modal="dateView === 'month' ? undefined : 'true'"
+                  :aria-label="t('cal.aria')"
+                  @keydown="dateView === 'month' ? null : onSheetKey($event)"
+                >
+                  <div v-if="dateView !== 'month'" class="bk-sheet-bar">
+                    <h3 aria-live="polite"><strong>{{ monthLabel.replace(/\s*\d{4}$/, '') }}</strong> <span>{{ viewMonth.year }}</span></h3>
+                    <div class="bk-cal-nav">
+                      <button type="button" :disabled="!canGoPrev || rangeLoading" :aria-label="t('cal.prev')" @click="shiftMonth(-1)"><AppIcon name="arrow-left" :size="16" /></button>
+                      <button type="button" :disabled="!canGoNext || rangeLoading" :aria-label="t('cal.next')" @click="shiftMonth(1)"><AppIcon name="chevron" :size="16" /></button>
+                      <button type="button" :aria-label="t('cal.close')" @click="closeSheet"><AppIcon name="close" :size="16" /></button>
+                    </div>
+                  </div>
+                  <div class="bk-days bk-weekdays" aria-hidden="true">
+                    <span v-for="label in weekdayLabels" :key="label">{{ label }}</span>
+                  </div>
+                  <div class="bk-days" :class="{ loading: rangeLoading }">
+                    <template v-for="cell in calendarCells" :key="cell.key">
+                      <span v-if="cell.blank" />
+                      <button
+                        v-else
+                        type="button"
+                        class="bk-day"
+                        :class="{ selected: cell.key === selectedDate, today: cell.key === todayKey, open: cell.count > 0 }"
+                        :disabled="!cell.count"
+                        :aria-pressed="cell.key === selectedDate"
+                        :aria-current="cell.key === todayKey ? 'date' : undefined"
+                        :title="cell.count ? undefined : t('cal.noTimes')"
+                        :aria-label="cell.count ? t('cal.dayTimes', { day: dayLabel(cell.key), count: cell.count }) : `${t('cal.dayNone', { day: dayLabel(cell.key) })}. ${t('cal.noTimes')}`"
+                        @click="dateView === 'month' ? pickDay(cell) : pickFromSheet(cell)"
+                      >{{ cell.day }}</button>
+                    </template>
+                  </div>
                 </div>
-                <div class="field">
-                  <label for="booking-guest-email">{{ t('form.email') }}</label>
-                  <input
-                    id="booking-guest-email"
-                    v-model="contact.email"
-                    :disabled="submitting"
-                    :aria-invalid="shownError('email') ? 'true' : undefined"
-                    :aria-describedby="shownError('email') ? 'booking-guest-email-error' : undefined"
-                    type="email"
-                    inputmode="email"
-                    autocomplete="email"
-                    required
-                    pattern="[^\s@]+@[^\s@]+\.[^\s@]{2,}"
-                    maxlength="254"
-                    :placeholder="t('form.emailPh')"
-                    @blur="touched.email = true"
-                  />
-                  <p v-if="shownError('email')" id="booking-guest-email-error" class="field-error">{{ shownError('email') }}</p>
-                </div>
-                <div class="field field-wide">
-                  <label for="booking-guest-phone">{{ t('form.phone') }} <span>{{ t('form.optional') }}</span></label>
-                  <input
-                    id="booking-guest-phone"
-                    v-model="contact.phone"
-                    :disabled="submitting"
-                    :aria-invalid="shownError('phone') ? 'true' : undefined"
-                    :aria-describedby="shownError('phone') ? 'booking-guest-phone-error' : 'booking-guest-phone-hint'"
-                    type="tel"
-                    inputmode="tel"
-                    autocomplete="tel"
-                    maxlength="40"
-                    :placeholder="t('form.phonePh')"
-                    @blur="touched.phone = true"
-                  />
-                  <p v-if="shownError('phone')" id="booking-guest-phone-error" class="field-error">{{ shownError('phone') }}</p>
-                  <p v-else id="booking-guest-phone-hint" class="phone-hint">{{ t('form.phoneHint', { host: page.profile.displayName }) }}</p>
-                </div>
-                <div class="field field-wide">
-                  <label for="booking-guest-notes">{{ t('form.notes') }} <span>{{ t('form.optional') }}</span></label>
-                  <textarea
-                    id="booking-guest-notes"
-                    v-model="notes"
-                    :disabled="submitting"
-                    maxlength="2000"
-                    aria-describedby="booking-guest-notes-count"
-                    :placeholder="t('form.notesPh')"
-                  ></textarea>
-                  <p id="booking-guest-notes-count" class="field-count">{{ notes.length }}/2000</p>
-                </div>
-                <div class="confirm-bar">
-                  <button class="primary confirm-button" :disabled="submitting || demoPreview">
-                    {{ demoPreview ? t('form.submitDemo') : submitting ? t('form.submitting') : t('form.submit') }}
-                    <AppIcon v-if="!submitting && !demoPreview" name="chevron" :size="16" />
+
+                <!-- Slots-first week strip (small screens) -->
+                <div v-if="dateView === 'strip'" class="bk-strip" role="group" :aria-label="t('cal.rangeAria')">
+                  <button
+                    v-for="key in windowDays"
+                    :key="key"
+                    type="button"
+                    class="bk-sd"
+                    :class="{ selected: key === selectedDate, has: availableDays.has(key) }"
+                    :aria-pressed="key === selectedDate"
+                    :aria-label="availableDays.get(key)?.length ? t('cal.dayTimes', { day: dayLabel(key), count: availableDays.get(key).length }) : t('cal.dayNone', { day: dayLabel(key) })"
+                    @click="pickStripDay(key)"
+                  >
+                    <small>{{ dayLabel(key, { weekday: 'short' }) }}</small>
+                    <strong>{{ Number(key.slice(8)) }}</strong>
+                    <i aria-hidden="true" />
                   </button>
                 </div>
-                <p class="fine-print">
-                  {{ demoPreview ? t('form.fineDemo') : t('form.fine') }}
-                </p>
-              </form>
-            </template>
-          </section>
 
-          <aside v-if="selectedService" class="booking-summary">
-            <p class="eyebrow">{{ t('sum.eyebrow') }}</p>
-            <p class="summary-host">{{ t('sum.with', { host: page.profile.displayName }) }}</p>
-            <h2>{{ selectedService.name }}</h2>
-            <p>{{ selectedService.description }}</p>
-            <dl>
-              <div><dt><AppIcon name="clock" :size="15" />{{ t('sum.duration') }}</dt><dd>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</dd></div>
-              <div><dt><AppIcon name="wallet" :size="15" />{{ t('sum.price') }}</dt><dd>{{ priceLabel(selectedService) }}</dd></div>
-              <div v-if="selectedSlot"><dt><AppIcon name="calendar" :size="15" />{{ t('sum.time') }}</dt><dd>{{ selectedSlotLabel }}<br /><small>{{ displayedZoneLabel }}</small></dd></div>
-            </dl>
-            <p v-if="selectedService.price" class="payment-note">{{ t('sum.payment') }}</p>
-          </aside>
-        </div>
-      </template>
+                <!-- Week / column view -->
+                <div v-if="dateView === 'week' || dateView === 'column'" class="bk-cols" role="group" :aria-label="t('cal.rangeAria')" :aria-busy="rangeLoading" :style="{ '--cols': windowLen }" @keydown="columnKeydown">
+                  <div class="bk-cols-scroll">
+                    <div v-for="(column, columnIndex) in columns" :key="column.key" class="bk-col" :class="{ past: column.past }">
+                      <div class="bk-col-head">
+                        <small>{{ dayLabel(column.key, { weekday: 'short' }) }}</small>
+                        <strong>{{ Number(column.key.slice(8)) }}</strong>
+                      </div>
+                      <template v-if="rangeLoading">
+                        <span v-for="n in 5" :key="n" class="bk-skel bk-skel-slot compact" aria-hidden="true" />
+                      </template>
+                      <template v-else>
+                        <button
+                          v-for="(slot, rowIndex) in column.slots"
+                          :key="slot.startsAt"
+                          type="button"
+                          class="bk-slot compact"
+                          :class="{ picked: pendingSlot?.startsAt === slot.startsAt }"
+                          :data-col="columnIndex"
+                          :data-row="rowIndex"
+                          :tabindex="slot.startsAt === rovingStart ? 0 : -1"
+                          :aria-label="t('cols.slotAria', { day: dayLabel(column.key), time: slotTime(slot) })"
+                          @focus="roving = slot.startsAt"
+                          @click="selectSlot(slot)"
+                        >{{ slotTime(slot) }}</button>
+                        <span v-if="!column.slots.length && !column.past" class="bk-col-none">{{ t('cols.none') }}</span>
+                      </template>
+                    </div>
+                  </div>
+                  <p v-if="rangeLoading" class="bk-sr" role="status">{{ t('slots.loading') }}</p>
+                  <div v-else-if="rangeError" class="bk-note error" role="alert">
+                    <p>{{ t(rangeError) }}</p>
+                    <button class="bk-btn small" type="button" @click="retryRange">{{ t('retry') }}</button>
+                  </div>
+                  <div v-else-if="!windowHasOpenings" class="bk-note bk-cols-note">
+                    <button v-if="nextTarget" class="bk-next" type="button" @click="jumpToNext"><AppIcon name="calendar" :size="14" />{{ t('slots.nextChip', { when: nextWhen }) }}</button>
+                    <strong v-else-if="nextHint.state === 'searching'">{{ t('slots.searching') }}</strong>
+                    <template v-else>
+                      <strong>{{ t('slots.noneTitle') }}</strong>
+                      <p>{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                    </template>
+                  </div>
+                </div>
+
+                <div v-if="dateView === 'month' || dateView === 'strip'" class="bk-slots">
+                  <div class="bk-slots-inner">
+                    <template v-if="rangeLoading">
+                      <p class="bk-sr" role="status">{{ t('slots.loading') }}</p>
+                      <div class="bk-slots-head" aria-hidden="true"><span class="bk-skel bk-skel-line short" /></div>
+                      <div class="bk-slot-list" aria-hidden="true"><span v-for="n in slotPlaceholders" :key="n" class="bk-skel bk-skel-slot" /></div>
+                    </template>
+                    <div v-else-if="rangeError" class="bk-note error" role="alert">
+                      <p>{{ t(rangeError) }}</p>
+                      <button class="bk-btn small" type="button" @click="retryRange">{{ t('retry') }}</button>
+                    </div>
+                    <template v-else-if="selectedDate && slotsForSelectedDay.length">
+                      <div class="bk-slots-head">
+                        <h3 :aria-label="t('slots.on', { day: dayLabel(selectedDate) })"><strong>{{ dayLabel(selectedDate, { weekday: 'short' }) }}</strong> {{ dayLabel(selectedDate, { day: 'numeric' }) }}</h3>
+                        <div class="bk-clock" role="group" :aria-label="t('clock.aria')">
+                          <button type="button" :aria-pressed="clockMode === '12h'" :class="{ active: clockMode === '12h' }" @click="setClock('12h')">12h</button>
+                          <button type="button" :aria-pressed="clockMode === '24h'" :class="{ active: clockMode === '24h' }" @click="setClock('24h')">24h</button>
+                        </div>
+                      </div>
+                      <p class="bk-sr" aria-live="polite">{{ t('slots.heading', { day: dayLabel(selectedDate), count: slotsForSelectedDay.length }) }}</p>
+                      <div :key="`${selectedDate}-${clockMode}`" class="bk-slot-list">
+                        <button
+                          v-for="slot in slotsForSelectedDay"
+                          :key="slot.startsAt"
+                          type="button"
+                          class="bk-slot"
+                          :class="{ picked: pendingSlot?.startsAt === slot.startsAt }"
+                          :aria-pressed="isMobile ? pendingSlot?.startsAt === slot.startsAt : undefined"
+                          @click="selectSlot(slot)"
+                        >{{ slotTime(slot) }}</button>
+                      </div>
+                    </template>
+                    <div v-else-if="dateView === 'strip' && selectedDate" class="bk-note">
+                      <strong>{{ t('slots.dayEmpty', { day: dayLabel(selectedDate) }) }}</strong>
+                      <button v-if="nextTarget" class="bk-next" type="button" @click="jumpToNext"><AppIcon name="calendar" :size="14" />{{ t('slots.nextChip', { when: nextWhen }) }}</button>
+                      <p v-else-if="nextHint.state === 'searching'" role="status">{{ t('slots.searching') }}</p>
+                      <p v-else-if="nextHint.state === 'none'">{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                    </div>
+                    <div v-else-if="monthHasOpenings" class="bk-note">
+                      <strong>{{ t('slots.pickDayTitle') }}</strong>
+                      <p>{{ t('slots.pickDayText') }}</p>
+                    </div>
+                    <div v-else class="bk-note">
+                      <strong v-if="nextHint.state === 'searching'">{{ t('slots.searching') }}</strong>
+                      <template v-else-if="nextTarget">
+                        <strong>{{ t('slots.noneInMonth', { month: monthLabel }) }}</strong>
+                        <button class="bk-next" type="button" @click="jumpToNext"><AppIcon name="calendar" :size="14" />{{ t('slots.nextChip', { when: nextWhen }) }}</button>
+                      </template>
+                      <template v-else>
+                        <strong>{{ t('slots.noneTitle') }}</strong>
+                        <p>{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+
+                <div v-if="isMobile && pendingSlot" class="bk-continue">
+                  <span>{{ t('slots.picked', { when: pendingLabel }) }}</span>
+                  <button class="bk-btn primary" type="button" @click="commitSlot(pendingSlot)">{{ t('slots.continue') }}</button>
+                </div>
+              </div>
+
+              <div v-else key="details" class="bk-details">
+                <h2 ref="stepHeading" tabindex="-1" class="bk-form-title">{{ demoPreview ? t('form.titleDemo') : t('form.title') }}</h2>
+                <p class="bk-muted">{{ demoPreview ? t('form.textDemo') : t('form.text') }}</p>
+                <form class="bk-form" novalidate @submit.prevent="submit">
+                  <div class="bk-field">
+                    <label for="booking-guest-name">{{ t('form.name') }}</label>
+                    <input
+                      id="booking-guest-name"
+                      v-model="contact.name"
+                      class="bk-input"
+                      :disabled="submitting"
+                      :aria-invalid="shownError('name') ? 'true' : undefined"
+                      :aria-describedby="shownError('name') ? 'booking-guest-name-error' : undefined"
+                      autocomplete="name"
+                      required
+                      maxlength="160"
+                      :placeholder="t('form.namePh')"
+                      @blur="touched.name = true"
+                    />
+                    <p v-if="shownError('name')" id="booking-guest-name-error" class="bk-error">{{ shownError('name') }}</p>
+                  </div>
+                  <div class="bk-field">
+                    <label for="booking-guest-email">{{ t('form.email') }}</label>
+                    <input
+                      id="booking-guest-email"
+                      v-model="contact.email"
+                      class="bk-input"
+                      :disabled="submitting"
+                      :aria-invalid="shownError('email') ? 'true' : undefined"
+                      :aria-describedby="shownError('email') ? 'booking-guest-email-error' : undefined"
+                      type="email"
+                      inputmode="email"
+                      autocomplete="email"
+                      required
+                      pattern="[^\s@]+@[^\s@]+\.[^\s@]{2,}"
+                      maxlength="254"
+                      :placeholder="t('form.emailPh')"
+                      @blur="touched.email = true"
+                    />
+                    <p v-if="shownError('email')" id="booking-guest-email-error" class="bk-error">{{ shownError('email') }}</p>
+                  </div>
+                  <div class="bk-field">
+                    <label for="booking-guest-phone">{{ t('form.phone') }} <span>{{ t('form.optional') }}</span></label>
+                    <input
+                      id="booking-guest-phone"
+                      v-model="contact.phone"
+                      class="bk-input"
+                      :disabled="submitting"
+                      :aria-invalid="shownError('phone') ? 'true' : undefined"
+                      :aria-describedby="shownError('phone') ? 'booking-guest-phone-error' : 'booking-guest-phone-hint'"
+                      type="tel"
+                      inputmode="tel"
+                      autocomplete="tel"
+                      maxlength="40"
+                      :placeholder="t('form.phonePh')"
+                      @blur="touched.phone = true"
+                    />
+                    <p v-if="shownError('phone')" id="booking-guest-phone-error" class="bk-error">{{ shownError('phone') }}</p>
+                    <p v-else id="booking-guest-phone-hint" class="bk-hint">{{ t('form.phoneHint', { host: page.profile.displayName }) }}</p>
+                  </div>
+                  <div class="bk-field">
+                    <label for="booking-guest-notes">{{ t('form.notes') }} <span>{{ t('form.optional') }}</span></label>
+                    <textarea
+                      id="booking-guest-notes"
+                      v-model="notes"
+                      class="bk-input"
+                      :disabled="submitting"
+                      maxlength="2000"
+                      rows="3"
+                      aria-describedby="booking-guest-notes-count"
+                      :placeholder="t('form.notesPh')"
+                    ></textarea>
+                    <p id="booking-guest-notes-count" class="bk-hint right">{{ notes.length }}/2000</p>
+                  </div>
+                  <div class="bk-actions">
+                    <button class="bk-btn" type="button" :disabled="submitting" @click="back">{{ t('back') }}</button>
+                    <button class="bk-btn primary" :disabled="submitting || demoPreview">
+                      {{ demoPreview ? t('form.submitDemo') : submitting ? t('form.submitting') : t('form.submit') }}
+                    </button>
+                  </div>
+                  <p class="bk-fine">{{ demoPreview ? t('form.fineDemo') : t('form.fine') }}</p>
+                </form>
+              </div>
+            </Transition>
+          </div>
+        </section>
+      </Transition>
     </main>
-    <footer><BookinsLogo compact /><span>{{ t('footer') }}</span></footer>
+    <footer class="bk-footer"><BookinsLogo compact /><span>{{ t('footer') }}</span></footer>
   </div>
 </template>
 
 <style scoped>
-.public-shell {
+.bk {
+  --ink: #111111;
+  --body: #374151;
+  --muted: #6b7280;
+  --soft: #74777d;
+  --line: #e5e7eb;
+  --line-soft: #f3f4f6;
+  --surface: #f5f5f5;
+  --bg: #fafafa;
+  --card: #ffffff;
+  --on-ink: #ffffff;
+  --ink-hover: #242424;
+  --hover: #fafafa;
+  --faint: #c4c7cd;
+  --input-line: #d1d5db;
+  --ring: rgba(17, 17, 17, 0.12);
+  --bar: rgba(255, 255, 255, 0.96);
+  --skel-a: #eceef1;
+  --skel-b: #f6f7f8;
+  --err: #b42318;
+  --err-bg: #fef3f2;
+  --err-bd: #fecdca;
+  --warn: #93370d;
+  --warn-bg: #fffaeb;
+  --warn-bd: #fedf89;
+  --ok: #027a48;
+  --ok-bg: #ecfdf3;
+  --demo-fg: #35217b;
+  --demo-bg: #f5f1ff;
+  --demo-bd: #d9cef9;
+  --shadow: rgba(17, 17, 17, 0.04);
+  --focus: #2336dc;
+  --display: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   min-height: 100vh;
-  color: #101928;
-  background:
-    radial-gradient(circle at 85% 8%, #e9edff 0, transparent 30%),
-    linear-gradient(180deg, #f8f9ff 0, #fff 38%);
-}
-.public-header {
-  height: 72px;
-  padding: 0 max(22px, calc((100vw - 1120px) / 2));
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid rgba(221, 225, 241, 0.9);
-  background: rgba(255, 255, 255, 0.84);
-  backdrop-filter: blur(14px);
-}
-.public-header > a {
-  display: flex;
-  text-decoration: none;
-}
-.header-end { display: flex; align-items: center; gap: 14px; }
-.lang-toggle { display: flex; align-items: center; gap: 2px; color: #b4bacb; font-size: 14px; }
-.lang-toggle button {
-  min-width: 44px;
-  min-height: 44px;
-  padding: 0 6px;
-  color: #4f5971;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
+  flex-direction: column;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
   font-size: 14px;
-  font-weight: 700;
-}
-.lang-toggle button.active { color: #2336dc; background: #eef1ff; }
-.lang-toggle button:focus-visible { outline: 3px solid #8c98ff; outline-offset: 1px; }
-.secure-note {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #697087;
-  font-size: 14px;
-}
-.demo-preview-banner {
-  max-width: 1120px;
-  margin: 14px auto 0;
-  padding: 11px 14px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px 12px;
-  color: #35217b;
-  border: 1px solid #d9cef9;
-  border-radius: 10px;
-  background: #f5f1ff;
-  font-size: 14px;
-  line-height: 1.45;
-}
-.demo-preview-banner strong { font-weight: 800; }
-.demo-preview-banner span { color: #5d5476; }
-.public-shell main {
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 42px 22px 70px;
-}
-.host-card {
-  margin-bottom: 26px;
-  display: flex;
-  align-items: center;
-  gap: 17px;
-}
-.host-avatar,
-.host-card img {
-  width: 70px;
-  height: 70px;
-  display: grid;
-  place-items: center;
-  object-fit: cover;
-  color: #fff;
-  border-radius: 20px;
-  background: linear-gradient(145deg, #4154ef, #2336dc);
-  font-size: 22px;
-  font-weight: 850;
-  box-shadow: 0 14px 28px rgba(35, 54, 220, 0.2);
-}
-.host-card h1 {
-  margin: 0 0 4px;
-  font-size: 31px;
-}
-.host-card p:not(.eyebrow) {
-  max-width: 65ch;
-  margin: 0 0 7px;
-  color: #697087;
-  font-size: 14px;
-}
-.host-card div > span {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: #4f5971;
-  font-size: 14px;
-}
-.booking-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(290px, 0.65fr);
-  overflow: hidden;
-  border: 1px solid #e2e5ef;
-  border-radius: 22px;
-  background: #fff;
-  box-shadow: 0 24px 70px rgba(31, 42, 86, 0.09);
-}
-.booking-content {
-  min-height: 530px;
-  padding: 30px;
-}
-.booking-summary {
-  padding: 30px;
-  border-left: 1px solid #e4e7ef;
-  background: #f8f9fc;
-}
-.booking-heading {
-  margin-bottom: 22px;
-}
-.booking-heading h2 {
-  margin-bottom: 5px;
-  font-size: 24px;
-}
-.booking-heading > p:last-child {
-  margin: 0;
-  color: #697087;
-  font-size: 14px;
-}
-.back-button {
-  min-height: 44px;
-  margin: 0 0 17px;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: #697087;
-  border: 0;
-  background: transparent;
-  font-size: 14px;
-  font-weight: 700;
-}
-.service-options {
-  display: grid;
-  gap: 10px;
-}
-.service-option {
-  width: 100%;
-  min-height: 112px;
-  padding: 16px;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  color: #101928;
-  border: 1px solid #e2e5ef;
-  border-radius: 14px;
-  background: #fff;
-  text-align: left;
-  transition:
-    transform 0.16s ease,
-    border-color 0.16s ease,
-    box-shadow 0.16s ease;
-}
-.service-option:hover {
-  transform: translateY(-1px);
-  border-color: #bfc7ff;
-  box-shadow: 0 10px 24px rgba(35, 54, 220, 0.08);
-}
-.service-option-icon {
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  color: #2336dc;
-  border-radius: 12px;
-  background: #eef1ff;
-}
-.service-option-copy {
-  min-width: 0;
-  display: grid;
-  gap: 5px;
-}
-.service-option-copy > strong {
-  font-size: 14px;
-}
-.service-option-copy > small {
-  overflow: hidden;
-  color: #697087;
-  font-size: 14px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.service-option-copy > span {
-  display: flex;
-  gap: 13px;
-}
-.service-option-copy b {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: #4b5670;
-  font-size: 14px;
-}
-.slots-loading {
-  min-height: 220px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  color: #697087;
-}
-.slots-loading p {
-  margin: 10px 0 0;
-  font-size: 14px;
-}
-.public-empty {
-  min-height: 230px;
-  display: grid;
-  place-items: center;
-  align-content: center;
-  color: #2336dc;
-  text-align: center;
-}
-.public-empty h2 {
-  margin: 13px 0 5px;
-  font-size: 17px;
-}
-.public-empty p {
-  max-width: 380px;
-  margin: 0;
-  color: #697087;
-  font-size: 14px;
-}
-.public-inline-error {
-  margin-bottom: 16px;
-  padding: 13px;
-  color: #b42318;
-  border: 1px solid #f0c8c4;
-  border-radius: 10px;
-  background: #fff1f0;
-}
-.public-inline-error p {
-  margin: 0;
-  font-size: 14px;
-}
-.public-inline-error button {
-  margin-top: 10px;
-}
-.guest-form {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-}
-.guest-form > :not(.field) { grid-column: 1 / -1; }
-.guest-form .field-wide { grid-column: 1 / -1; }
-.phone-hint { margin: 5px 0 0; color: #697087; font-size: 14px; }
-.host-card.compact { margin-bottom: 18px; }
-.host-card.compact .host-avatar, .host-card.compact img { width: 44px; height: 44px; border-radius: 13px; font-size: 16px; }
-.host-card.compact h1 { font-size: 20px; }
-.calendar-legend { margin-top: 4px; font-size: 14px; }
-.summary-host { margin: 0 0 4px; color: #2336dc; font-size: 14px; font-weight: 700; }
-.another-button { margin-top: 18px; }
-.guest-form .field {
-  margin-bottom: 14px;
-}
-.guest-form label span {
-  color: #8990a1;
-  font-weight: 500;
-}
-.confirm-button {
-  width: 100%;
-  margin-top: 3px;
-}
-.fine-print {
-  margin: 12px 0 0;
-  color: #7b8293;
-  font-size: 14px;
-  text-align: center;
-}
-.booking-summary h2 {
-  font-size: 20px;
-}
-.booking-summary > p:not(.eyebrow):not(.payment-note) {
-  color: #697087;
-  font-size: 14px;
-}
-.booking-summary dl {
-  margin: 22px 0 0;
-  display: grid;
-  gap: 13px;
-}
-.booking-summary dl div {
-  padding-bottom: 13px;
-  border-bottom: 1px solid #e3e6ee;
-}
-.booking-summary dt {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #7a8295;
-  font-size: 14px;
-  font-weight: 750;
-  text-transform: uppercase;
-}
-.booking-summary dd {
-  margin: 6px 0 0;
-  color: #344054;
-  font-size: 14px;
-  font-weight: 700;
-}
-.payment-note {
-  margin: 18px 0 0;
-  padding: 11px;
-  color: #8a6700;
-  border-radius: 9px;
-  background: #fff7e5;
-  font-size: 14px;
-}
-.public-state {
-  max-width: 600px;
-  margin: 120px auto;
-  text-align: center;
-}
-.public-state h1 {
-  margin-bottom: 7px;
-  font-size: 29px;
-}
-.public-state p {
-  color: #697087;
-  font-size: 14px;
-}
-.public-spinner {
-  width: 34px;
-  height: 34px;
-  margin: 0 auto 18px;
-  display: block;
-  border: 3px solid #dce1ff;
-  border-top-color: #2336dc;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-.public-spinner.small {
-  width: 26px;
-  height: 26px;
-  margin: 0;
-}
-.state-symbol {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 16px;
-  display: grid;
-  place-items: center;
-  color: #b42318;
-  border-radius: 50%;
-  background: #fff1f0;
-  font-size: 22px;
-  font-weight: 850;
-}
-.confirmation-wrap {
-  max-width: 640px;
-  margin: 40px auto;
-}
-.confirmation-card {
-  padding: 40px;
-  border: 1px solid #e2e5ef;
-  border-radius: 22px;
-  background: #fff;
-  box-shadow: 0 24px 70px rgba(31, 42, 86, 0.09);
-  text-align: center;
-}
-.confirmation-check {
-  width: 64px;
-  height: 64px;
-  margin: 0 auto 20px;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  border-radius: 50%;
-  background: #15915a;
-  box-shadow: 0 12px 28px rgba(21, 145, 90, 0.22);
-}
-.confirmation-card h1 {
-  margin-bottom: 7px;
-}
-.confirmation-copy {
-  color: #697087;
-  font-size: 14px;
-}
-.confirmation-event {
-  margin: 26px 0 14px;
-  padding: 16px;
-  display: grid;
-  grid-template-columns: 46px 1fr;
-  align-items: center;
-  gap: 12px;
-  border-radius: 13px;
-  background: #f5f7ff;
-  text-align: left;
-}
-.confirmation-event > span {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  color: #2336dc;
-  border-radius: 12px;
-  background: #e8ecff;
-}
-.confirmation-event div {
-  display: grid;
-  gap: 3px;
-}
-.confirmation-event strong {
-  font-size: 14px;
-}
-.confirmation-event small {
-  color: #697087;
-  font-size: 14px;
-}
-.confirmation-card dl {
-  margin: 0;
-  display: grid;
-  text-align: center;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 9px;
-}
-.confirmation-card dl div {
-  padding: 13px;
-  border: 1px solid #e2e5ef;
-  border-radius: 10px;
-}
-.confirmation-card dt {
-  color: #7b8293;
-  font-size: 14px;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-.confirmation-card dd {
-  margin: 5px 0 0;
-  font-size: 14px;
-  font-weight: 750;
-}
-.truth-note {
-  margin: 18px 0 0;
-  color: #7b8293;
-  font-size: 14px;
-}
-.public-shell footer {
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 0 22px 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: #7b8293;
-  font-size: 14px;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-@media (max-width: 820px) {
-  .public-header {
-    height: 64px;
-    padding: 0 16px;
-  }
-  .secure-note {
-    font-size: 14px;
-  }
-  .header-end { gap: 6px; }
-  .demo-preview-banner { margin-inline: 12px; }
-  .public-shell main {
-    padding: 28px 14px 50px;
-  }
-  .host-card {
-    align-items: flex-start;
-  }
-  .host-avatar,
-  .host-card img {
-    width: 56px;
-    height: 56px;
-    border-radius: 16px;
-  }
-  .host-card h1 {
-    font-size: 25px;
-  }
-  .booking-card {
-    grid-template-columns: 1fr;
-  }
-  .booking-content {
-    min-height: 500px;
-    padding: 21px;
-  }
-  .booking-summary {
-    grid-row: 1;
-    padding: 18px;
-    border-left: 0;
-    border-bottom: 1px solid #e4e7ef;
-  }
-  .booking-summary > p:not(.eyebrow),
-  .booking-summary dl,
-  .booking-summary .payment-note {
-    display: none;
-  }
-}
-@media (max-width: 480px) {
-  .service-option {
-    grid-template-columns: 40px minmax(0, 1fr);
-  }
-  .service-option > svg {
-    display: none;
-  }
-  .service-option-copy > small {
-    white-space: normal;
-  }
-  .confirmation-card {
-    padding: 26px 18px;
-  }
-  .confirmation-card dl {
-    grid-template-columns: 1fr;
-  }
-}
-.host-bio { white-space: pre-line; }
-.tz-line { flex-wrap: wrap; }
-.tz-line select {
-  min-height: 44px;
-  max-width: 100%;
-  padding: 0 8px;
-  color: #101928;
-  border: 1px solid #cfd4e2;
-  border-radius: 8px;
-  background: #fff;
-  font-size: 14px;
-}
-.calendar { margin-bottom: 20px; max-width: 420px; }
-.calendar-head { margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.calendar-head h3 { margin: 0; font-size: 14px; }
-.cal-nav {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  color: #344054;
-  border: 1px solid #e2e5ef;
-  border-radius: 10px;
-  background: #fff;
-}
-.cal-nav:disabled { opacity: 0.4; cursor: not-allowed; }
-.cal-nav:first-child svg { display: block; }
-.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.calendar-grid.weekdays span { padding: 4px 0; color: #697087; font-size: 14px; font-weight: 750; text-align: center; }
-.calendar-grid.busy { opacity: 0.55; }
-.cal-day {
-  min-height: 44px;
-  color: #98a1b3;
-  border: 1px solid transparent;
-  border-radius: 10px;
-  background: transparent;
-  font-size: 14px;
-}
-.cal-day.open { color: #2336dc; border-color: #cfd5ff; background: #f7f8ff; font-weight: 800; }
-.cal-day.open:hover { background: #e8ecff; }
-.cal-day.selected { color: #fff; border-color: #2336dc; background: #2336dc; }
-.cal-day.today:not(.selected) { box-shadow: inset 0 -3px 0 #cfd5ff; }
-.cal-day:disabled { cursor: default; }
-.cal-day:focus-visible, .cal-nav:focus-visible, .slot-grid button:focus-visible { outline: 3px solid #8c98ff; outline-offset: 2px; }
-.calendar-zone { margin: 8px 0 0; color: #697087; font-size: 14px; }
-.slot-day h3 { margin-bottom: 9px; color: #344054; font-size: 14px; letter-spacing: 0; }
-.slot-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
-.slot-grid button {
-  min-height: 44px;
-  color: #2336dc;
-  border: 1px solid #cfd5ff;
-  border-radius: 9px;
-  background: #fff;
-  font-size: 14px;
-  font-weight: 750;
-}
-.slot-grid button:hover { color: #fff; background: #2336dc; }
-.public-empty.compact { min-height: 140px; }
-.public-empty.compact button { margin-top: 12px; }
-.banner-slot, .banner-retry { color: #8a4b00; border-color: #f3d8a8; background: #fff8e8; }
-.field-error { margin: 5px 0 0; color: #b42318; font-size: 14px; }
-.field-count { margin: 4px 0 0; color: #7b8293; font-size: 14px; text-align: right; }
-.guest-form input[aria-invalid='true'] { border-color: #b42318; }
-.mobile-selection {
-  margin-bottom: 18px;
-  padding: 12px 14px;
-  display: none;
-  gap: 3px;
-  border: 1px solid #cfd5ff;
-  border-radius: 12px;
-  background: #f7f8ff;
-}
-.mobile-selection strong { font-size: 14px; }
-.mobile-selection span { font-size: 14px; font-weight: 700; color: #2336dc; }
-.mobile-selection small { color: #697087; font-size: 14px; }
-.booking-summary dd small { color: #697087; font-weight: 500; }
-.calendar-actions { margin-top: 18px; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; }
-.calendar-actions .secondary { display: inline-flex; align-items: center; gap: 6px; }
-.calendar-link { min-height: 44px; padding: 0 14px; text-decoration: none; align-items: center; }
-.booking-heading h2:focus, .confirmation-card h1:focus { outline: none; }
-.booking-heading h2:focus-visible, .confirmation-card h1:focus-visible { outline: 3px solid #8c98ff; outline-offset: 4px; }
-@media (max-width: 560px) {
-  .guest-form { grid-template-columns: minmax(0, 1fr); }
-}
-@media (max-width: 820px) {
-  .mobile-selection { display: grid; }
-  .calendar { max-width: none; }
-}
-@media (max-width: 480px) {
-  .slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+  line-height: 1.5;
+}
+.bk[data-theme='dark'] {
+  color-scheme: dark;
+  --ink: #f4f4f5;
+  --body: #d4d4d8;
+  --muted: #a1a1aa;
+  --soft: #9a9aa4;
+  --line: #2e2f35;
+  --line-soft: #25262b;
+  --surface: #26272c;
+  --bg: #0e0f11;
+  --card: #16171a;
+  --on-ink: #111113;
+  --ink-hover: #e4e4e7;
+  --hover: #1c1d21;
+  --faint: #4b4c54;
+  --input-line: #3b3c44;
+  --ring: rgba(244, 244, 245, 0.2);
+  --bar: rgba(22, 23, 26, 0.96);
+  --skel-a: #202126;
+  --skel-b: #2b2c32;
+  --err: #fda29b;
+  --err-bg: #2a1513;
+  --err-bd: #5c2620;
+  --warn: #fec84b;
+  --warn-bg: #2b2210;
+  --warn-bd: #5c4513;
+  --ok: #6ce9a6;
+  --ok-bg: #10281d;
+  --demo-fg: #d9ccff;
+  --demo-bg: #231a3d;
+  --demo-bd: #43347a;
+  --shadow: rgba(0, 0, 0, 0.4);
+  --focus: #9db0ff;
+}
+.bk :where(h1, h2, h3, p, ul, dl, dd) { margin: 0; padding: 0; }
+.bk :where(ul) { list-style: none; }
+.bk :where(a, button, select, input, textarea):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bk-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bk-muted { color: var(--muted); }
 
-/* ---- polish layer ---- */
-.public-shell { font-family: var(--font-ui, system-ui, sans-serif); }
-.public-shell :where(a, button, select, input, textarea, summary):focus-visible { outline: 3px solid #8c98ff; outline-offset: 2px; }
-.host-card h1 { letter-spacing: -0.02em; }
-.host-card div > span { font-size: 14px; }
-.stepper {
-  max-width: 640px;
-  margin: 0 0 18px;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  list-style: none;
-}
-.stepper li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.confirmation-wrap > .stepper { margin-inline: auto; }
-.stepper li {
-  min-height: 44px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: #697087;
-  border: 1px solid #e4e7ef;
-  border-radius: 12px;
-  background: #fff;
-  font-size: 14px;
-  font-weight: 700;
-}
-.stepper i {
-  width: 24px;
-  height: 24px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #eef0f5;
-  font-style: normal;
-  font-size: 13px;
-}
-.stepper li.active { color: #2336dc; border-color: #bfc7ff; background: #f7f8ff; }
-.stepper li.active i { color: #fff; background: #2336dc; }
-.stepper li.done { color: #147a4d; }
-.stepper li.done i { color: #fff; background: #15915a; }
-.booking-card { border-radius: 18px; }
-.service-option { min-height: 96px; }
-.service-option:hover { transform: translateY(-1px); }
-.service-option:active { transform: translateY(0); }
-.service-option-copy > strong { font-size: 16px; }
-.service-option-copy > small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
-.service-option-copy > span { flex-wrap: wrap; gap: 8px; }
-.service-option-copy b {
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: #eef1ff;
-  color: #2336dc;
-  font-weight: 700;
-}
-.service-option-copy b:last-child { color: #147a4d; background: #eaf8f1; }
-.calendar { max-width: 440px; }
-.calendar-head h3 { font-size: 16px; text-transform: capitalize; }
-.calendar-grid.weekdays span { font-size: 13px; }
-.cal-day {
-  position: relative;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-}
-.cal-day:disabled { color: #a0a7b8; }
-.cal-day:disabled:not(.open) { text-decoration: line-through; text-decoration-color: rgba(160, 167, 184, 0.6); }
-.cal-day.open::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  bottom: 5px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  transform: translateX(-50%);
-}
-.cal-day.selected { box-shadow: 0 6px 14px rgba(35, 54, 220, 0.28); }
-.cal-day.today:not(.selected) { border-color: #2336dc; box-shadow: none; }
-.cal-day.today:not(.selected):not(.open) { color: #2336dc; }
-.slot-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
-.slot-grid button {
-  min-height: 48px;
-  font-size: 15px;
-  font-variant-numeric: tabular-nums;
-  border-radius: 12px;
-}
-.slot-skeleton {
-  min-height: 48px;
-  display: block;
-  border-radius: 12px;
-  background: linear-gradient(100deg, #e9ebf2 30%, #f4f5fa 50%, #e9ebf2 70%);
-  background-size: 220% 100%;
-}
-.slots-loading { min-height: 0; display: block; }
-.slot-day h3 { font-size: 15px; }
-.public-state .state-symbol { font-size: 22px; }
-.reference-box {
-  margin: 0 0 12px;
-  padding: 14px 16px;
+/* ---- header / footer ---- */
+.bk-header {
+  height: 64px;
+  padding: 0 max(20px, calc((100vw - 960px) / 2));
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  border: 1px dashed #bfc7ff;
-  border-radius: 12px;
-  background: #fafbff;
-  text-align: left;
 }
-.reference-box > div { min-width: 0; display: grid; gap: 4px; }
-.reference-box span { color: #697087; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-.reference-box code {
-  overflow-wrap: anywhere;
-  color: #101928;
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 18px;
-  font-weight: 700;
-  user-select: all;
+.bk-header > a { display: flex; text-decoration: none; color: var(--ink); }
+.bk-header-end { display: flex; align-items: center; gap: 14px; }
+.bk-secure { display: flex; align-items: center; gap: 6px; color: var(--soft); font-size: 13px; }
+.bk-lang { display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.bk-lang button {
+  min-width: 44px; min-height: 32px; padding: 0 8px; color: var(--muted);
+  border: 0; border-radius: 6px; background: transparent; font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.confirmation-card dt { font-size: 13px; }
-.confirmation-card dd { font-size: 15px; }
-.confirmation-event strong { font-size: 17px; }
-.confirmation-check svg { stroke-dasharray: 28; stroke-dashoffset: 0; }
-.confirm-bar { margin-top: 3px; }
-.fine-print { font-size: 13px; }
-@media (max-width: 820px) {
-  .confirm-bar {
-    position: sticky;
-    bottom: 0;
-    z-index: 5;
-    margin: 0 -21px -21px;
-    padding: 12px 21px calc(12px + env(safe-area-inset-bottom));
-    border-top: 1px solid #e4e7ef;
-    background: rgba(255, 255, 255, 0.96);
-    backdrop-filter: blur(8px);
-  }
-  .booking-card { overflow: visible; }
-  .booking-summary { border-radius: 18px 18px 0 0; }
-  .booking-content { border-radius: 0 0 18px 18px; }
-  .booking-content { padding-bottom: 21px; }
-  .host-card h1 { font-size: 24px; }
+.bk-lang button.active { color: var(--on-ink); background: var(--ink); }
+.bk-demo {
+  max-width: 960px; margin: 4px auto 0; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 4px 12px;
+  color: var(--demo-fg); border: 1px solid var(--demo-bd); border-radius: 10px; background: var(--demo-bg);
 }
-@media (max-width: 480px) {
-  .stepper { gap: 4px; }
-  .stepper li { min-width: 0; padding: 0 6px; gap: 5px; justify-content: center; font-size: 13px; }
-  .stepper i { width: 22px; height: 22px; flex: none; }
-  /* Four labels do not fit a phone row: number-only steps, with the active step's label shown. */
-  .stepper { grid-template-columns: repeat(4, auto); justify-content: start; }
-  .stepper li > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .stepper li.active > span { position: static; width: auto; height: auto; clip-path: none; }
-  .secure-note { display: none; }
-  .reference-box { flex-wrap: wrap; }
-  .slot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.bk-main { width: 100%; max-width: 960px; margin: 0 auto; padding: 24px 20px 56px; flex: 1; }
+.bk-footer { padding: 0 20px 32px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--soft); font-size: 13px; }
+
+/* ---- shared ---- */
+.bk-card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.bk-avatar {
+  width: 24px; height: 24px; flex: none; display: grid; place-items: center; object-fit: cover;
+  color: var(--on-ink); border-radius: 50%; background: var(--ink); font-size: 13px; font-weight: 700;
 }
-@media (max-width: 360px) {
-  .stepper li > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-  .stepper li.active > span { position: static; width: auto; height: auto; clip-path: none; }
+.bk-avatar.big { width: 72px; height: 72px; font-size: 28px; }
+.bk-btn {
+  min-height: 40px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
 }
+.bk-btn:hover:not(:disabled) { background: var(--line-soft); }
+.bk-btn.primary { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
+.bk-btn.primary:hover:not(:disabled) { background: var(--ink-hover); }
+.bk-btn.wide { width: 100%; }
+.bk-btn.small { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.bk-btn:disabled { color: var(--soft); border-color: var(--line); background: var(--line); cursor: not-allowed; }
+.bk-skel {
+  display: block; border-radius: 6px; background: linear-gradient(100deg, var(--skel-a) 30%, var(--skel-b) 50%, var(--skel-a) 70%); background-size: 220% 100%;
+}
+.bk-skel-line { height: 14px; width: 60%; }
+.bk-skel-line.wide { width: 85%; }
+.bk-skel-line.short { width: 35%; }
+.bk-skel-avatar { width: 56px; height: 56px; border-radius: 50%; }
+.bk-skel-slot { height: 40px; border-radius: 8px; }
+.bk-skel-slot.compact { height: 36px; }
+.bk-skel-card { margin-bottom: 16px; padding: 24px; display: grid; gap: 12px; }
+.bk-loading { max-width: 640px; margin: 0 auto; }
+.bk-state { max-width: 520px; margin: 80px auto; text-align: center; display: grid; justify-items: center; gap: 10px; }
+.bk-state h1 { font-family: var(--display); font-size: 24px; font-weight: 650; letter-spacing: -0.03em; }
+.bk-state p { color: var(--muted); }
+.bk-state-symbol { width: 44px; height: 44px; display: grid; place-items: center; color: var(--err); border-radius: 50%; background: var(--err-bg); font-size: 20px; font-weight: 800; }
+.bk-banner { max-width: 640px; margin: 0 auto 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--err-bd); background: var(--err-bg); color: var(--err); }
+.bk-banner.banner-slot, .bk-banner.banner-retry { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
+.bk-banner:focus { outline: none; }
+.bk-banner:focus-visible { outline: 2px solid var(--focus); }
+
+/* ---- profile ---- */
+.bk-profile { max-width: 640px; margin: 0 auto; display: grid; gap: 16px; }
+.bk-host { padding: 28px; display: grid; justify-items: start; gap: 6px; }
+.bk-host .bk-avatar { margin-bottom: 8px; }
+.bk-host h1 { font-family: var(--display); font-size: 28px; font-weight: 650; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-bio { max-width: 60ch; color: var(--body); white-space: pre-line; }
+.bk-services-title { padding: 16px 24px 4px; color: var(--muted); font-size: 13px; font-weight: 600; }
+.bk-services-title:focus { outline: none; }
+.bk-search { position: relative; margin: 8px 16px 4px; }
+.bk-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.bk-search .bk-input { padding-left: 34px; }
+.bk-group { padding: 14px 24px 6px; color: var(--ink); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-top: 1px solid var(--line-soft); }
+.bk-services-title + .bk-group, .bk-search + .bk-group, .bk-search + p + .bk-group { border-top: 0; }
+.bk-nomatch { padding: 20px 24px; color: var(--muted); }
+.bk-service {
+  width: 100%; padding: 16px 24px; display: grid; gap: 6px; text-align: left; color: var(--ink);
+  border: 0; border-top: 1px solid var(--line-soft); background: transparent; font: inherit; cursor: pointer;
+}
+.bk-services li:first-child > .bk-service { border-top: 0; }
+.bk-services > ul:last-child li:last-child > .bk-service:last-child { border-radius: 0 0 12px 12px; }
+.bk-service:hover { background: var(--hover); }
+.bk-service-name { font-size: 15px; font-weight: 650; }
+.bk-service-desc {
+  max-width: 62ch; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bk-service-prep { max-width: 62ch; color: var(--body); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-chips { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 6px; }
+.bk-chip {
+  min-height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--body); border-radius: 6px; background: var(--surface); font-size: 13px; font-weight: 600;
+}
+.bk-team { padding: 4px 24px 14px; display: grid; gap: 6px; }
+.bk-pro {
+  min-height: 44px; padding: 0 12px; display: flex; align-items: center; gap: 10px; text-align: left; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-weight: 600; cursor: pointer;
+}
+.bk-pro:hover { border-color: var(--ink); }
+.bk-pro-price { margin-left: auto; color: var(--muted); font-weight: 500; }
+.bk-empty { padding: 40px 24px; display: grid; justify-items: center; gap: 6px; color: var(--muted); text-align: center; }
+.bk-empty h2 { color: var(--ink); font-size: 16px; }
+
+/* ---- scheduler ---- */
+.bk-book { max-width: 940px; margin: 0 auto; }
+.bk-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 468px; overflow: hidden; box-shadow: 0 1px 2px var(--shadow); }
+.bk-info { position: relative; z-index: 3; padding: 24px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bk-back {
+  align-self: flex-start; min-height: 32px; margin: -4px 0 6px -8px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); border: 0; border-radius: 6px; background: transparent; font: inherit; font-weight: 600; cursor: pointer;
+}
+.bk-back:hover:not(:disabled) { color: var(--ink); background: var(--line-soft); }
+.bk-host-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; }
+.bk-title { margin-top: 4px; font-family: var(--display); font-size: 22px; font-weight: 650; line-height: 1.2; letter-spacing: -0.035em; overflow-wrap: anywhere; }
+.bk-desc {
+  color: var(--muted); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bk-meta { margin-top: 14px; display: grid; gap: 10px; color: var(--body); font-weight: 600; }
+.bk-meta li { display: flex; align-items: flex-start; gap: 10px; }
+.bk-meta svg { flex: none; margin-top: 3px; color: var(--muted); }
+.bk-meta small { display: block; color: var(--muted); font-size: 13px; font-weight: 500; }
+.bk-meta-note { color: var(--muted); font-weight: 500; font-size: 13px; padding-left: 25px; }
+.bk-meta-when { color: var(--ink); }
+
+/* time zone picker */
+.bk-tz { position: relative; margin-top: auto; padding-top: 14px; }
+.bk-tz-btn {
+  max-width: 100%; min-height: 32px; margin-left: -6px; padding: 0 6px; display: inline-flex; align-items: center; gap: 8px; text-align: left;
+  color: var(--body); border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-weight: 600; cursor: pointer;
+}
+.bk-tz-btn:hover:not(:disabled), .bk-tz-btn[aria-expanded='true'] { background: var(--line-soft); }
+.bk-tz-btn > svg { flex: none; color: var(--muted); }
+.bk-tz-btn span { min-width: 0; overflow-wrap: anywhere; }
+.bk-tz-pop {
+  position: absolute; z-index: 20; left: 0; bottom: calc(100% - 8px); width: min(320px, calc(100vw - 48px)); padding: 8px; display: grid; gap: 6px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.bk-tz-pop ul { max-height: 220px; overflow-y: auto; scrollbar-width: thin; }
+.bk-tz-pop li { padding: 8px 10px; display: flex; justify-content: space-between; gap: 8px; border-radius: 8px; color: var(--body); font-weight: 500; cursor: pointer; }
+.bk-tz-pop li.active { background: var(--line-soft); color: var(--ink); }
+.bk-tz-pop li.current span { font-weight: 700; }
+.bk-tz-pop li small { flex: none; color: var(--muted); }
+.bk-tz-none { color: var(--muted); cursor: default !important; }
+
+/* view bar: range heading + nav on the left, view switcher on the right */
+.bk-schedule { display: grid; grid-template-columns: minmax(0, 1fr) 216px; grid-template-rows: auto 1fr; min-width: 0; }
+.bk-schedule.dv-week, .bk-schedule.dv-column { grid-template-columns: minmax(0, 1fr); }
+.bk-viewbar { grid-column: 1 / -1; padding: 16px 20px 0 24px; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bk-range { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.bk-range h3, .bk-sheet-bar h3 { font-size: 15px; text-transform: capitalize; }
+.bk-range h3 span, .bk-sheet-bar h3 span { color: var(--muted); font-weight: 500; }
+.bk-switch { display: flex; padding: 2px; border-radius: 8px; background: var(--surface); }
+.bk-switch button {
+  min-height: 30px; padding: 0 12px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.bk-switch button.active { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }
+.bk-calendar { grid-column: 1; padding: 12px 24px 24px; min-width: 0; }
+.bk-cal-nav { display: flex; gap: 4px; }
+.bk-cal-nav button {
+  width: 36px; height: 36px; display: grid; place-items: center; color: var(--ink); border: 0; border-radius: 8px; background: transparent; cursor: pointer;
+}
+.bk-cal-nav button:hover:not(:disabled) { background: var(--line-soft); }
+.bk-cal-nav button:disabled { color: var(--faint); cursor: not-allowed; }
+.bk-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; transition: opacity 0.15s ease; }
+.bk-days.loading { opacity: 0.5; pointer-events: none; }
+.bk-weekdays { margin-bottom: 6px; }
+.bk-weekdays span { color: var(--muted); font-size: 13px; font-weight: 600; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; }
+.bk-day {
+  position: relative; height: 44px; color: var(--soft); border: 0; border-radius: 8px; background: transparent;
+  font: inherit; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; cursor: default;
+}
+.bk-day.open { color: var(--ink); background: var(--surface); font-weight: 600; cursor: pointer; }
+.bk-day.open:hover { background: var(--line); }
+.bk-day.selected, .bk-day.selected:hover { color: var(--on-ink); background: var(--ink); }
+.bk-day.today::after {
+  content: ''; position: absolute; left: 50%; bottom: 5px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; transform: translateX(-50%);
+}
+.bk-day.today:not(.open) { color: var(--ink); }
+
+.bk-slots { grid-column: 2; position: relative; border-left: 1px solid var(--line); min-width: 0; }
+.bk-slots-inner { position: absolute; inset: 0; padding: 12px 20px 16px; overflow-y: auto; scrollbar-width: thin; }
+.bk-slots-head { margin-bottom: 14px; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bk-slots-head h3 { font-size: 15px; font-weight: 500; text-transform: capitalize; }
+.bk-slots-head h3 strong { font-weight: 650; }
+.bk-clock { display: flex; padding: 2px; border-radius: 8px; background: var(--surface); }
+.bk-clock button {
+  min-height: 28px; min-width: 36px; padding: 0 8px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.bk-clock button.active { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.bk-slot-list { display: grid; gap: 8px; }
+.bk-slot {
+  min-height: 42px; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.bk-slot:hover { border-color: var(--ink); }
+.bk-slot.picked, .bk-slot.picked:hover { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
+.bk-note { padding: 8px 0; display: grid; justify-items: start; gap: 6px; color: var(--muted); }
+.bk-note strong { color: var(--ink); font-size: 14px; }
+.bk-note.error { color: var(--err); }
+.bk-next {
+  min-height: 36px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; text-align: left; line-height: 1.3; color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; font-weight: 600; cursor: pointer;
+}
+.bk-next:hover { border-color: var(--ink); }
+
+/* week / column views */
+.bk-cols { grid-column: 1 / -1; padding: 8px 12px 16px 24px; min-width: 0; }
+.bk-cols-scroll {
+  height: 372px; padding-right: 12px; display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 8px;
+  align-content: start; overflow-y: auto; scrollbar-width: thin;
+}
+.bk-col { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.bk-col-head {
+  position: sticky; top: 0; z-index: 1; padding: 4px 0 8px; display: grid; justify-items: center; background: var(--card);
+}
+.bk-col-head small { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.bk-col-head strong { font-size: 18px; font-weight: 650; line-height: 1.2; }
+.bk-col.past .bk-col-head { opacity: 0.45; }
+.bk-slot.compact { min-height: 36px; padding: 0 4px; font-size: 13px; }
+.bk-col-none { padding-top: 6px; color: var(--soft); font-size: 13px; text-align: center; }
+.bk-cols-note { padding-top: 12px; }
+
+/* ---- details ---- */
+.bk-details { padding: 24px 32px 28px; max-width: 600px; }
+.bk-form-title { font-family: var(--display); font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
+.bk-form-title:focus { outline: none; }
+.bk-form-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.bk-form { margin-top: 18px; display: grid; gap: 16px; }
+.bk-field { display: grid; gap: 6px; }
+.bk-field label { color: var(--ink); font-weight: 600; }
+.bk-field label span { color: var(--soft); font-weight: 500; }
+.bk-input {
+  width: 100%; min-height: 40px; padding: 8px 12px; color: var(--ink); border: 1px solid var(--input-line); border-radius: 8px; background: var(--card); font: inherit; box-shadow: none;
+}
+textarea.bk-input { resize: vertical; min-height: 84px; }
+.bk-input::placeholder { color: var(--soft); }
+.bk-input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 2px var(--ring); }
+.bk-input[aria-invalid='true'] { border-color: var(--err); }
+.bk-error { color: var(--err); font-size: 13px; }
+.bk-hint { color: var(--muted); font-size: 13px; }
+.bk-hint.right { text-align: right; }
+.bk-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.bk-fine { color: var(--soft); font-size: 13px; }
+
+/* ---- confirmation ---- */
+.bk-confirm { max-width: 560px; margin: 24px auto 0; padding: 36px 32px 28px; display: grid; justify-items: center; gap: 8px; text-align: center; }
+.bk-confirm h1 { font-family: var(--display); font-size: 24px; font-weight: 650; letter-spacing: -0.035em; }
+.bk-confirm h1:focus { outline: none; }
+.bk-confirm h1:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.bk-confirm-check { width: 52px; height: 52px; margin-bottom: 8px; display: grid; place-items: center; color: var(--ok); border-radius: 50%; background: var(--ok-bg); }
+.bk-facts { width: 100%; margin: 20px 0 8px; padding-top: 16px; display: grid; gap: 14px; border-top: 1px solid var(--line); text-align: left; }
+.bk-facts > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; }
+.bk-facts dt { color: var(--muted); font-weight: 600; }
+.bk-facts dd { font-weight: 600; overflow-wrap: anywhere; }
+.bk-facts dd small { display: block; color: var(--muted); font-weight: 500; }
+.bk-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bk-ref code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 15px; user-select: all; }
+.bk-confirm-actions { width: 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 4px 0 4px; }
+.bk-change { display: grid; justify-items: center; gap: 8px; color: var(--body); }
+.bk-confirm .bk-fine { margin-top: 8px; }
+.bk-confirm-check svg { stroke-dasharray: 28; stroke-dashoffset: 0; }
+
+/* ---- transitions (reduced-motion aware) ---- */
 @media (prefers-reduced-motion: no-preference) {
-  .slot-skeleton { animation: shimmer 1.45s ease-in-out infinite; }
-  .confirmation-check svg { stroke-dashoffset: 28; animation: draw-check 0.4s 0.15s ease-out forwards; }
-  .confirmation-check { animation: pop-in 0.3s ease-out; }
-  .slot-grid button, .cal-day { transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease; }
-  .slot-grid button:active, .cal-day:active { transform: scale(0.97); }
+  .bk-view-enter-active, .bk-pane-enter-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+  .bk-view-leave-active, .bk-pane-leave-active { transition: opacity 0.12s ease; }
+  .bk-view-enter-from, .bk-pane-enter-from { opacity: 0; transform: translateY(6px); }
+  .bk-view-leave-to, .bk-pane-leave-to { opacity: 0; }
+  .bk-slot-list { animation: bk-fade 0.18s ease; }
+  .bk-confirm { animation: bk-fade 0.25s ease; }
+  .bk-skel { animation: bk-shimmer 1.4s ease-in-out infinite; }
+  .bk-day, .bk-slot, .bk-btn, .bk-service, .bk-sd, .bk-next { transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease; }
+  .bk-confirm-check svg { stroke-dashoffset: 28; animation: bk-draw 0.4s 0.15s ease-out forwards; }
+  .bk-confirm-check { animation: bk-pop 0.3s ease-out; }
+  .bk-calendar.is-sheet { animation: bk-sheet 0.22s ease-out; }
+  .bk-backdrop { animation: bk-fade-in 0.2s ease; }
 }
-@keyframes draw-check { to { stroke-dashoffset: 0; } }
-@keyframes pop-in { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-@media (prefers-reduced-motion: reduce) {
-  .public-spinner { animation-duration: 2.4s; }
-  .service-option { transition: none; }
-  .service-option:hover { transform: none; }
+@keyframes bk-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes bk-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes bk-sheet { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes bk-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+@keyframes bk-draw { to { stroke-dashoffset: 0; } }
+@keyframes bk-pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* ---- tablet / mobile: info -> slots-first strip -> times; month in a bottom sheet ---- */
+@media (max-width: 820px) {
+  .bk-header { padding: 0 16px; height: 56px; }
+  .bk-secure { display: none; }
+  .bk-lang button { min-height: 40px; }
+  .bk-back { min-height: 40px; }
+  .bk-tz-btn { min-height: 40px; }
+  .bk-clock button { min-height: 40px; min-width: 44px; }
+  .bk-main { padding: 12px 12px 40px; }
+  .bk-grid { grid-template-columns: 1fr; min-height: 0; overflow: visible; }
+  .bk-info { padding: 16px 16px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .bk-desc { -webkit-line-clamp: 3; line-clamp: 3; }
+  .bk-meta { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .bk-meta li { min-width: 0; }
+  .bk-meta .bk-meta-when, .bk-meta .bk-meta-note { flex: 1 1 100%; }
+  .bk-meta-note { padding-left: 0; }
+  .bk-tz { margin-top: 6px; padding-top: 0; }
+  .bk-tz-pop { bottom: auto; top: calc(100% - 2px); }
+  .bk-grid.stage-details .bk-desc { display: none; }
+  .bk-schedule { grid-template-columns: 1fr; grid-template-rows: none; }
+  .bk-viewbar { padding: 12px 12px 4px 16px; min-height: 52px; }
+  .bk-strip { padding: 4px 12px 12px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .bk-sd {
+    min-height: 66px; padding: 6px 0; display: grid; justify-items: center; align-content: center; gap: 1px; color: var(--soft);
+    border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; cursor: pointer;
+  }
+  .bk-sd small { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .bk-sd strong { font-size: 16px; font-weight: 650; }
+  .bk-sd i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; visibility: hidden; }
+  .bk-sd.has { color: var(--ink); background: var(--surface); }
+  .bk-sd.has i { visibility: visible; }
+  .bk-sd.selected { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
+  .bk-slots { grid-column: 1; border-left: 0; border-top: 1px solid var(--line); }
+  .bk-slots-inner { position: static; padding: 16px 16px 24px; overflow: visible; min-height: 220px; }
+  .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-slot { min-height: 46px; }
+  .bk-continue {
+    position: sticky; bottom: 0; z-index: 6; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px;
+    border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(8px);
+  }
+  .bk-continue span { min-width: 0; flex: 1; font-weight: 600; }
+  .bk-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.45); }
+  .bk-calendar.is-sheet {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-height: 90vh; padding: 12px 16px calc(20px + env(safe-area-inset-bottom)); overflow-y: auto;
+    border-radius: 16px 16px 0 0; background: var(--card); box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.25);
+  }
+  .bk-sheet-bar { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
+  .bk-details { max-width: none; padding: 18px 16px 0; }
+  .bk-actions {
+    position: sticky; bottom: 0; z-index: 5; margin: 4px -16px 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(8px);
+  }
+  .bk-actions .bk-btn.primary { flex: 1; }
+  .bk-input { min-height: 44px; font-size: 16px; }
+  .bk-host { padding: 20px; }
+  .bk-services-title, .bk-service, .bk-group, .bk-team { padding-left: 16px; padding-right: 16px; }
+  .bk-confirm { padding: 28px 18px 22px; margin-top: 8px; }
+  .bk-facts > div { grid-template-columns: 1fr; gap: 2px; }
+}
+@media (max-width: 380px) {
+  .bk-slot-list { grid-template-columns: 1fr; }
 }
 </style>

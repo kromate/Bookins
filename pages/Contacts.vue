@@ -3,10 +3,12 @@ import { formatDay } from '../format-date.js'
 import { csvCell } from '../csv.js'
 import { computed, inject, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
-import { contactTags, hasRealEmail, isTimeOff, saveContact } from '../booking.js'
+import { contactTags, hasRealEmail, isTimeOff, recordOffer, saveContact, setMarketingOptOut } from '../booking.js'
+import { contactOffers, isOptedOut } from '../records.js'
 import { composeMessage } from '../messaging.js'
 import { isDemo } from '../runtime.js'
 import { displayTimeZone } from '../time-display.js'
@@ -17,6 +19,7 @@ const toast = inject('toast', null)
 const setup = useSetupState()
 const query = ref('')
 const tagFilter = ref('')
+const optFilter = ref(false)
 const now = Date.now()
 const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
 const records = computed(() => state.contacts || [])
@@ -38,6 +41,10 @@ const contacts = computed(() => {
     record: null,
     tags: [],
     notes: '',
+    optedOut: false,
+    optedOutAt: '',
+    lastCampaignAt: '',
+    offers: [],
   })
   const bookings = state.bookings
     .filter((item) => !isTimeOff(item))
@@ -68,6 +75,10 @@ const contacts = computed(() => {
     current.record = record
     current.tags = contactTags(record)
     current.notes = record.notes || ''
+    current.optedOut = isOptedOut(record)
+    current.optedOutAt = record.marketing_opt_out_at || ''
+    current.lastCampaignAt = record.last_campaign_at || ''
+    current.offers = contactOffers(record)
     if (!current.bookingCount) {
       current.name = record.name || current.name
       current.phone = record.phone || current.phone
@@ -77,6 +88,7 @@ const contacts = computed(() => {
   const search = query.value.trim().toLowerCase()
   return [...byEmail.values()]
     .filter((contact) => !tagFilter.value || contact.tags.includes(tagFilter.value))
+    .filter((contact) => !optFilter.value || contact.optedOut)
     .filter(
       (contact) =>
         !search ||
@@ -91,6 +103,7 @@ const contacts = computed(() => {
     })
 })
 
+const optedOutCount = computed(() => records.value.filter(isOptedOut).length)
 const allTags = computed(() => {
   const set = new Set()
   for (const record of records.value) for (const tag of contactTags(record)) set.add(tag)
@@ -209,6 +222,49 @@ async function saveEdit(contact) {
   }
 }
 
+// Marketing opt-out and offers. Opted-out contacts are never included in any campaign queue, email batch or CSV.
+const marketingBusy = ref('')
+const demoReason = 'Demo is read-only. Exit Demo to change this.'
+async function toggleOptOut(contact) {
+  if (isDemo.value || marketingBusy.value) return
+  const next = !contact.optedOut
+  marketingBusy.value = contact.email
+  try {
+    await setMarketingOptOut(contact, next)
+    await refresh({ silent: true })
+    toast?.success(next ? `${contact.name} is opted out. They will not appear in any campaign.` : `${contact.name} is no longer marked as opted out.`)
+  } catch (reason) {
+    toast?.error(reason?.message || 'Could not update marketing preference.')
+  } finally {
+    marketingBusy.value = ''
+  }
+}
+const offerBusy = ref('')
+async function markRedeemed(contact, offer) {
+  if (isDemo.value || offerBusy.value) return
+  offerBusy.value = `${contact.email}|${offer.code}`
+  try {
+    await recordOffer(contact, { code: offer.code, status: 'redeemed' })
+    await refresh({ silent: true })
+    toast?.success(`${offer.code} marked as redeemed for ${contact.name}.`)
+  } catch (reason) {
+    toast?.error(reason?.message || 'Could not update the offer.')
+  } finally {
+    offerBusy.value = ''
+  }
+}
+// "Add to campaign" opens Campaigns with a group like this client's: their first tag, else their last service.
+function campaignQuery(contact) {
+  if (contact.tags.length) return { tag: contact.tags[0] }
+  const service = contact.latest?.service_name
+  return service ? { service } : {}
+}
+function campaignHint(contact) {
+  if (contact.tags.length) return `Starts a campaign for clients tagged "${contact.tags[0]}".`
+  if (contact.latest?.service_name) return `Starts a campaign for clients who had ${contact.latest.service_name}.`
+  return 'Opens Campaigns to build a group.'
+}
+
 async function copyBookingLink() {
   const url = state.profile?.public_link_url || ''
   try {
@@ -226,9 +282,9 @@ function exportCsv() {
       ? ''
       : new Intl.DateTimeFormat('en-CA', { timeZone: zone.value, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
   }
-  const rows = [['Name', 'Email', 'Phone', 'Total bookings', 'Confirmed', 'Completed', 'Cancelled', 'No-shows', 'Tags', 'Notes', 'Last booking', 'Next booking', 'Dates timezone']]
+  const rows = [['Name', 'Email', 'Phone', 'Total bookings', 'Confirmed', 'Completed', 'Cancelled', 'No-shows', 'Tags', 'Notes', 'Last booking', 'Next booking', 'Dates timezone', 'Opted out']]
   for (const contact of contacts.value)
-    rows.push([contact.name, hasRealEmail(contact.email) ? contact.email : '', contact.phone, contact.bookingCount, contact.confirmedCount, contact.completedCount, contact.cancelledCount, contact.noShowCount, contact.tags.join('; '), contact.notes, day(contact.lastAt), day(contact.nextAt), zone.value])
+    rows.push([contact.name, hasRealEmail(contact.email) ? contact.email : '', contact.phone, contact.bookingCount, contact.confirmedCount, contact.completedCount, contact.cancelledCount, contact.noShowCount, contact.tags.join('; '), contact.notes, day(contact.lastAt), day(contact.nextAt), zone.value, contact.optedOut ? 'Yes' : 'No'])
   const body = rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
   const url = URL.createObjectURL(new Blob(['\ufeff' + body + '\r\n'], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
@@ -282,8 +338,8 @@ function exportCsv() {
       >
     </div>
 
-    <div v-if="allTags.length" class="tag-filter" role="group" aria-label="Filter by tag">
-      <button class="chip-button" type="button" :class="{ on: !tagFilter }" :aria-pressed="!tagFilter" @click="tagFilter = ''">All</button>
+    <div v-if="allTags.length || optedOutCount" class="tag-filter" role="group" aria-label="Filter contacts">
+      <button class="chip-button" type="button" :class="{ on: !tagFilter && !optFilter }" :aria-pressed="!tagFilter && !optFilter" @click="tagFilter = ''; optFilter = false">All</button>
       <button
         v-for="tag in allTags"
         :key="tag"
@@ -294,6 +350,8 @@ function exportCsv() {
         @click="tagFilter = tagFilter === tag ? '' : tag"
         >{{ tag }}</button
       >
+      <button v-if="optedOutCount" class="chip-button opt" type="button" :class="{ on: optFilter }" :aria-pressed="optFilter" @click="optFilter = !optFilter">Opted out ({{ optedOutCount }})</button>
+      <GmHint v-if="optedOutCount" text="Contacts who asked to stop hearing from you. They are never included in a campaign, email batch or export." label="About opted-out contacts" />
     </div>
 
     <div data-tour="tour-contacts-list">
@@ -305,6 +363,7 @@ function exportCsv() {
         v-for="contact in contacts"
         :key="contact.email"
         class="card contact-row"
+        :class="{ 'is-opted-out': contact.optedOut }"
       >
         <div class="contact-main">
           <span class="avatar" :style="avatarStyle(contact.name)" aria-hidden="true">{{ initials(contact.name) }}</span>
@@ -315,7 +374,8 @@ function exportCsv() {
               <span v-else class="no-email">No email</span>
               <span class="contact-phone"><AppIcon name="phone" :size="14" />{{ contact.phone || 'No phone supplied' }}</span>
             </p>
-            <div v-if="contact.tags.length || contact.noShowCount" class="tag-row">
+            <div v-if="contact.tags.length || contact.noShowCount || contact.optedOut" class="tag-row">
+              <span v-if="contact.optedOut" class="chip warning">Opted out of marketing</span>
               <span v-if="contact.noShowCount" class="chip danger">{{ contact.noShowCount }} no-show{{ contact.noShowCount === 1 ? '' : 's' }}</span>
               <GmHint v-if="contact.noShowCount" text="A no-show is a booking you marked 'No-show' in Bookings after the client did not turn up. Cancelled bookings are not counted." label="What a no-show count means" />
               <span v-for="tag in contact.tags" :key="tag" class="chip accent">{{ tag }}</span>
@@ -325,10 +385,38 @@ function exportCsv() {
             <span class="chip neutral tnum">{{ contact.bookingCount }} {{ contact.bookingCount === 1 ? 'booking' : 'bookings' }}</span>
             <span class="stat-line">Last: {{ dateLabel(contact.lastAt) }}</span>
             <span class="stat-line">Next: {{ dateLabel(contact.nextAt) }}</span>
+            <span v-if="contact.lastCampaignAt" class="stat-line">Last campaign: {{ dateLabel(contact.lastCampaignAt) }}</span>
           </div>
         </div>
         <p class="outcomes tnum">{{ contact.confirmedCount }} confirmed · {{ contact.completedCount }} completed · {{ contact.noShowCount }} no-show · {{ contact.cancelledCount }} cancelled</p>
         <p v-if="contact.notes && editingEmail !== contact.email" class="notes-preview"><strong>Private notes</strong>{{ contact.notes }}</p>
+
+        <div class="marketing">
+          <div class="marketing-row">
+            <GmHint wrap :text="isDemo ? demoReason : ''" :disabled="!isDemo" v-slot="{ describedby }">
+              <label class="switch" :class="{ off: isDemo || marketingBusy === contact.email }">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  :checked="contact.optedOut"
+                  :disabled="isDemo || marketingBusy === contact.email"
+                  :aria-describedby="isDemo ? describedby : undefined"
+                  :aria-label="`${contact.name} opted out of campaign messages`"
+                  @change="toggleOptOut(contact)"
+                />
+                <span>Opted out of campaign messages</span>
+              </label>
+            </GmHint>
+            <GmHint text="Bookins does not record consent. Who you message is your decision. Turn this on when a client replies STOP or asks not to hear from you: they are then left out of every campaign list, email batch and CSV export. Normal booking messages, like a reminder for their own appointment, are not affected." label="About marketing opt-out" />
+          </div>
+          <ul v-if="contact.offers.length" class="offers" :aria-label="`Offers for ${contact.name}`">
+            <li v-for="offer in contact.offers" :key="offer.code">
+              <span class="chip mono" :class="offer.status === 'redeemed' ? 'info' : 'accent'">{{ offer.code }}</span>
+              <span class="offer-status">{{ offer.status === 'redeemed' ? 'Redeemed' : 'Offered' }}{{ offer.at ? ` ${dateLabel(offer.at)}` : '' }}</span>
+              <GmButton v-if="offer.status !== 'redeemed'" variant="secondary" size="sm" :disabled-reason="isDemo ? demoReason : ''" :pending="offerBusy === `${contact.email}|${offer.code}`" @click="markRedeemed(contact, offer)">Mark redeemed</GmButton>
+            </li>
+          </ul>
+        </div>
 
         <form v-if="editingEmail === contact.email" class="edit-panel" @submit.prevent="saveEdit(contact)">
           <div class="field">
@@ -383,6 +471,10 @@ function exportCsv() {
               <small>Opens a follow-up message in your own app. Bookins does not send it.</small>
             </div>
           </details>
+          <GmHint v-if="contact.optedOut" wrap text="Opted-out contacts are never added to a campaign. Turn off the opt-out switch first." v-slot="{ describedby }">
+            <button class="secondary small-button" type="button" aria-disabled="true" :aria-describedby="describedby"><AppIcon name="campaigns" :size="16" />Add to campaign</button>
+          </GmHint>
+          <RouterLink v-else class="secondary small-button add-campaign" :to="{ path: '/campaigns', query: campaignQuery(contact) }" :title="campaignHint(contact)" :aria-label="`Add ${contact.name} to a campaign. ${campaignHint(contact)}`"><AppIcon name="campaigns" :size="16" />Add to campaign</RouterLink>
           <RouterLink
             class="contact-action"
             :to="{ path: '/bookings', query: { email: contact.email } }"
@@ -399,17 +491,17 @@ function exportCsv() {
       class="empty"
     >
       <span class="empty-icon"><AppIcon name="contacts" /></span>
-      <h2>{{ query || tagFilter ? 'No contacts match your filters' : 'No contacts yet' }}</h2>
+      <h2>{{ query || tagFilter || optFilter ? 'No contacts match your filters' : 'No contacts yet' }}</h2>
       <p>{{
-        query || tagFilter
+        query || tagFilter || optFilter
           ? 'Try a different name, email, phone number, or tag.'
           : 'A client appears here automatically after their first booking, with their history, private notes and tags. Share your booking link to get your first one.'
       }}</p>
       <button
-        v-if="query || tagFilter"
+        v-if="query || tagFilter || optFilter"
         class="secondary"
         type="button"
-        @click="query = ''; tagFilter = ''"
+        @click="query = ''; tagFilter = ''; optFilter = false"
         >Clear filters</button
       >
       <template v-else>
@@ -425,6 +517,19 @@ function exportCsv() {
 .tag-filter { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip-button { min-height: var(--control-h-sm); padding: 0 14px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .chip-button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.chip-button.opt { color: #8a4b00; }
+.chip-button.opt.on { color: #8a4b00; border-color: #c97a00; background: #fff4e0; }
+.contact-row.is-opted-out { background: #fafafc; }
+.marketing { display: grid; gap: var(--space-2); }
+.marketing-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.switch { min-height: var(--control-h-sm); display: inline-flex; align-items: center; gap: 10px; color: var(--ink-soft); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
+.switch.off { cursor: not-allowed; opacity: 0.7; }
+.switch input { width: 20px; height: 20px; accent-color: var(--accent); }
+.offers { margin: 0; padding: 0; display: grid; gap: 6px; list-style: none; }
+.offers li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+.offer-status { color: var(--muted); }
+a.add-campaign { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.card-actions [aria-disabled='true'],
 .header-tools [aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
 .contact-toolbar { margin-bottom: var(--space-3); }
 .contact-count { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }

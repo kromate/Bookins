@@ -168,7 +168,7 @@ function onClick(event) {
 }
 .gm-hint__trigger > span {
   display: grid; place-items: center; inline-size: 20px; block-size: 20px; border: 1.5px solid currentColor; border-radius: 50%;
-  font: 700 12px/1 var(--font-ui, system-ui); transition: color var(--dur-fast, 160ms), background var(--dur-fast, 160ms);
+  font: 700 13px/1 var(--font-ui, system-ui); transition: color var(--dur-fast, 160ms), background var(--dur-fast, 160ms);
 }
 .gm-hint__trigger:hover > span, .gm-hint__trigger[aria-expanded='true'] > span { color: var(--accent, #2336dc); background: var(--accent-soft, #eef0ff); }
 .gm-hint__trigger:focus-visible { outline: none; }

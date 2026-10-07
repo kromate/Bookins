@@ -5,7 +5,7 @@ import { createDemoBoundary } from './demo/boundary.js'
 const MODE_KEY = 'bookins:owner-mode:v1'
 const RETURN_ROUTE_KEY = 'bookins:live-return-route:v1'
 const DEFAULT_ROUTE = '/'
-const LOCAL_ROUTE = /^\/(?:services|availability|bookings|insights|contacts|settings)?(?:[?#].*)?$/
+const LOCAL_ROUTE = /^\/(?:services|availability|bookings|messages|insights|team|campaigns|contacts|settings)?(?:[?#].*)?$/
 
 let memoryMode = 'live'
 let memoryReturnRoute = DEFAULT_ROUTE

@@ -1,4 +1,4 @@
-import { createSampleHistory } from './history.js'
+import { createSampleHistory, createSampleTeam, sampleService } from './history.js'
 
 const clone = (value) => {
   if (typeof structuredClone === 'function') return structuredClone(value)
@@ -49,7 +49,7 @@ export const createDemoDataset = (now = new Date()) => {
       updated_at: iso(now),
     }],
     services: [
-      {
+      sampleService({
         id: 'demo-service-discovery',
         slug: 'discovery-call',
         name: 'Discovery call',
@@ -61,8 +61,8 @@ export const createDemoDataset = (now = new Date()) => {
         visibility: 'public',
         active: true,
         revision: 'demo-1',
-      },
-      {
+      }, { category: 'Consultations', sortOrder: 1, rebookAfterDays: 30 }),
+      sampleService({
         id: 'demo-service-consultation',
         slug: 'product-consultation',
         name: 'Product consultation',
@@ -74,7 +74,7 @@ export const createDemoDataset = (now = new Date()) => {
         visibility: 'public',
         active: true,
         revision: 'demo-1',
-      },
+      }, { category: 'Consultations', sortOrder: 2, rebookAfterDays: 45, prepNotes: 'Share your goals and any current designs before the session.' }),
     ],
     bookings: [
       {
@@ -122,6 +122,12 @@ export const createDemoDataset = (now = new Date()) => {
   })
   dataset.bookings.push(...history.bookings)
   dataset.contacts = history.contacts
+  const team = createSampleTeam({ now, timezone: 'UTC', idPrefix: 'demo', baseService: dataset.services[1] })
+  dataset.schedules.push(...team.schedules)
+  dataset.services.push(...team.services)
+  dataset.bookings.push(...team.bookings)
+  dataset.staff = team.staff
+  dataset.campaigns = team.campaigns
   return dataset
 }
 
