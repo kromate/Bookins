@@ -12,6 +12,8 @@ import { useSetupState } from '../setup.js'
 import {
   addBookingToCalendar,
   addBookingsToCalendar,
+  assignBookingStaff,
+  bulkAssignStaff,
   calendarMode,
   cancelBookingWithCalendar,
   connectGoogleCalendar,
@@ -20,13 +22,22 @@ import {
   findCalendarConflicts,
   getCalendarStatus,
   hasRealEmail,
+  hasTeam,
   isActiveTimeOff,
+  isOwnerMember,
+  isStaffActive,
+  isStaffCopy,
   isTimeOff,
   listCalendarEvents,
+  ownerStaff,
   rescheduleBooking,
   saveBookingNotes,
+  servicesForStaff,
   setBookingStatus,
+  staffForBooking,
+  teamMembers,
 } from '../booking.js'
+import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.js'
 import { composeMessage } from '../messaging.js'
 import { localFields, wallClockInstant } from '../scheduling.js'
 import { displayTimeZone } from '../time-display.js'
@@ -51,6 +62,14 @@ const info = (message) => (toast?.info ? toast.info(message) : toast?.(message))
 const isHidden = (booking) => isTimeOff(booking)
 const realBookings = computed(() => (state.bookings || []).filter((item) => !isHidden(item)))
 const timeOffBlocks = computed(() => (state.bookings || []).filter(isActiveTimeOff))
+// ---- team (everything below is inert, and no staff UI shows, until the first member is added) ----
+const team = computed(() => hasTeam(state))
+const members = computed(() => teamMembers(state, { includeInactive: true }))
+const activeMembers = computed(() => members.value.filter(isStaffActive))
+const memberFor = (booking) => staffForBooking(state, booking)
+const staffName = (booking) => memberName(memberFor(booking))
+const staffColor = (booking) => memberColor(memberFor(booking))
+const staffLabel = (member) => `${memberName(member)}${isStaffActive(member) ? '' : ' (inactive)'}`
 const refresh = inject('refreshBookings')
 const router = useRouter()
 const route = useRoute()
@@ -59,6 +78,7 @@ const view = ref('agenda')
 const query = ref('')
 const emailFilter = ref('')
 const serviceFilter = ref('')
+const staffFilter = ref('')
 const fromDate = ref('')
 const toDate = ref('')
 const weekOffset = ref(0)
@@ -125,11 +145,9 @@ async function connectCalendar() {
     await loadCalendarStatus()
     if (!calendarConnected.value) {
       calendarError.value = 'Google Calendar was not connected. Finish the Google sign-in window and try again.'
-      bad(calendarError.value)
     } else ok('Google Calendar connected')
   } catch (reason) {
     calendarError.value = reason?.message || 'Google Calendar could not be connected.'
-    bad(calendarError.value)
   } finally {
     calendarBusy.value = false
   }
@@ -181,13 +199,12 @@ async function addToCalendar(booking) {
     const result = await addBookingToCalendar(booking)
     await refresh()
     const text = result.alreadyOnCalendar ? 'Already on your calendar.' : 'Added to Google Calendar.'
-    ok(text)
+    // One visible message: inline inside the open dialog, otherwise a toast.
     if (selected.value) detailNotice.value = text
-    else flash(text)
+    else ok(text)
   } catch (reason) {
     const text = reason?.message || 'The booking could not be added to Google Calendar.'
-    bad(text)
-    // Show the failure where the user is looking: inside the dialog when it is open.
+    // One visible message, where the user is looking: inside the dialog when it is open, else beside the calendar panel.
     if (selected.value) error.value = text
     else calendarError.value = text
   } finally {
@@ -207,13 +224,11 @@ async function addAllToCalendar() {
     await refresh()
     const failed = bulkOutcomes.value.filter((item) => !item.ok).length
     const text = failed ? `Added ${bulkOutcomes.value.length - failed} of ${bulkOutcomes.value.length}. ${failed} failed.` : `Added ${bulkOutcomes.value.length} to Google Calendar.`
-    flash(text)
-    if (failed) bad(text)
+    if (failed) calendarError.value = text
     else ok(text)
   } catch (reason) {
     const text = reason?.message || 'The bookings could not be added to Google Calendar.'
     calendarError.value = text
-    bad(text)
   } finally {
     calendarBusy.value = false
   }
@@ -266,13 +281,14 @@ const isPast = (booking) => !isCancelled(booking) && endMs(booking) <= now.value
 const canCancel = (booking) => isUpcoming(booking)
 
 watch(
-  () => [route.query.q, route.query.email],
-  ([q, email]) => {
+  () => [route.query.q, route.query.email, route.query.staff],
+  ([q, email, staff]) => {
     const text = (value) => (Array.isArray(value) ? value[0] : value) || ''
     if (route.path !== '/bookings') return
     query.value = String(text(q))
     emailFilter.value = String(text(email)).trim().toLowerCase()
-    if (q || email) activeTab.value = 'all'
+    staffFilter.value = String(text(staff))
+    if (q || email || staff) activeTab.value = 'all'
   },
   { immediate: true },
 )
@@ -312,6 +328,7 @@ const baseFiltered = computed(() => {
   return realBookings.value.filter((item) => {
     if (emailFilter.value && String(item.guest_email || '').trim().toLowerCase() !== emailFilter.value) return false
     if (serviceFilter.value && (item.service_id || item.service_name) !== serviceFilter.value) return false
+    if (team.value && staffFilter.value && memberFor(item).id !== staffFilter.value) return false
     const day = dayKey(item)
     if (fromDate.value && day < fromDate.value) return false
     if (toDate.value && day > toDate.value) return false
@@ -385,7 +402,7 @@ const weekDays = computed(() => {
       weekday: date.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'short' }),
       label: date.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' }),
       items: pool.filter((item) => dayKey(item) === key).sort((a, b) => startMs(a) - startMs(b)),
-      off: showOff ? timeOffBlocks.value.filter((item) => dayKey(item) <= key && key <= dayKey(item, endMs(item) - 1)) : [],
+      off: showOff ? timeOffBlocks.value.filter((item) => (!team.value || !staffFilter.value || memberFor(item).id === staffFilter.value) && dayKey(item) <= key && key <= dayKey(item, endMs(item) - 1)) : [],
     }
   })
 })
@@ -398,14 +415,15 @@ const weekRange = computed(() => {
 })
 
 const hasFilters = computed(() =>
-  Boolean(query.value.trim() || emailFilter.value || serviceFilter.value || fromDate.value || toDate.value),
+  Boolean(query.value.trim() || emailFilter.value || serviceFilter.value || (team.value && staffFilter.value) || fromDate.value || toDate.value),
 )
 function clearFilters() {
   query.value = ''
   serviceFilter.value = ''
+  staffFilter.value = ''
   fromDate.value = ''
   toDate.value = ''
-  if (emailFilter.value || route.query.q || route.query.email) {
+  if (emailFilter.value || route.query.q || route.query.email || route.query.staff) {
     emailFilter.value = ''
     router.replace({ path: '/bookings' })
   }
@@ -457,13 +475,19 @@ function exportCsv() {
       return ''
     }
   }
+  // The Staff column only exists once there is a team, so single-owner exports are unchanged.
+  const withStaff = team.value
+  const staffText = (booking) => {
+    const member = memberFor(booking)
+    return member.implicit ? String(state.profile?.display_name || '').trim() || 'Owner' : member.name || booking.staff_name || ''
+  }
   const rows = [[
-    'Reference', 'Status', 'Service', 'Date', 'Start', 'End', 'Timezone', 'Starts at (UTC)',
+    'Reference', 'Status', 'Service', ...(withStaff ? ['Staff'] : []), 'Date', 'Start', 'End', 'Timezone', 'Starts at (UTC)',
     'Guest name', 'Guest email', 'Guest phone', 'Notes', 'Private owner notes', 'Source', 'Cancellation reason',
   ]]
   for (const booking of filtered.value) {
     rows.push([
-      booking.reference, booking.status, booking.service_name, dayKey(booking),
+      booking.reference, booking.status, booking.service_name, ...(withStaff ? [staffText(booking)] : []), dayKey(booking),
       fmt(booking, booking.starts_at), fmt(booking, booking.ends_at), zone(booking),
       booking.starts_at, booking.guest_name,
       hasRealEmail(booking.guest_email) ? booking.guest_email : '', booking.guest_phone,
@@ -552,7 +576,6 @@ async function changeStatus(booking, status) {
     ok(doneText, status === 'confirmed' ? undefined : { action: { label: 'Undo', onClick: () => changeStatus(booking, 'confirmed') }, duration: 6000 })
   } catch (reason) {
     error.value = describeError(reason, 'The status could not be changed.')
-    bad(error.value)
   } finally {
     actionBusy.value = false
   }
@@ -580,7 +603,6 @@ async function saveNotes() {
     ok('Private note saved')
   } catch (reason) {
     error.value = describeError(reason, 'The note could not be saved.')
-    bad(error.value)
   } finally {
     notesSaving.value = false
   }
@@ -613,6 +635,7 @@ const composed = computed(() => {
     profile: state.profile,
     service: serviceFor(booking),
     bookingLink: bookingLinkFor(booking),
+    staff: team.value ? memberFor(booking) : null,
   })
 })
 const phoneProblem = computed(() =>
@@ -629,10 +652,8 @@ async function copyMessage() {
     await copyText(composed.value.text)
     messageNotice.value = 'Message copied. Paste it into any app.'
     window.setTimeout(() => { messageNotice.value = '' }, 5000)
-    ok('Message copied. Paste it into any app.')
   } catch {
     messageNotice.value = 'The message could not be copied. Select the text above and copy it yourself.'
-    bad(messageNotice.value)
   }
 }
 const openedApp = (app) => info(`Opening ${app} with the message ready. Press send there; Bookins cannot tell if it was sent.`)
@@ -643,11 +664,36 @@ const newSaving = ref(false)
 const newError = ref('')
 const newResult = ref(null)
 const newDiscardOpen = ref(false)
-const blankForm = () => ({ serviceId: '', date: '', time: '', name: '', email: '', phone: '', notes: '', ownerNotes: '', repeatWeeks: 0 })
+const blankForm = () => ({ serviceId: '', staffId: '', date: '', time: '', name: '', email: '', phone: '', notes: '', ownerNotes: '', repeatWeeks: 0 })
 const form = ref(blankForm())
-const bookableServices = computed(() => (state.services || []).filter((item) => item.active !== false))
+// With a team, per-person service copies are folded into their base service: pick the service, then "With".
+const bookableServices = computed(() => (state.services || []).filter((item) => item.active !== false && !(team.value && isStaffCopy(item))))
 const formService = computed(() => (state.services || []).find((item) => item.id === form.value.serviceId))
-const formZone = computed(() => scheduleFor(formService.value)?.timezone || state.schedules?.[0]?.timezone || 'UTC')
+const eligibleMembers = computed(() => {
+  if (!team.value || !formService.value) return []
+  return activeMembers.value
+    .filter((item) => servicesForStaff(state, item).some((service) => service.id === formService.value.id))
+    .map((item) => ({ member: item, hasHours: Boolean(scheduleOf(state, item)) }))
+})
+const formMember = computed(() => eligibleMembers.value.find((item) => item.member.id === form.value.staffId)?.member || null)
+const formZone = computed(() =>
+  (team.value && formMember.value ? scheduleOf(state, formMember.value)?.timezone : '') || scheduleFor(formService.value)?.timezone || state.schedules?.[0]?.timezone || 'UTC',
+)
+// Default person: whoever was chosen if still valid, else the owner, else the first person who offers it and has hours.
+function pickDefaultMember() {
+  if (!team.value) { form.value.staffId = ''; return }
+  const usable = eligibleMembers.value.filter((item) => item.hasHours)
+  if (usable.some((item) => item.member.id === form.value.staffId)) return
+  const owner = usable.find((item) => isOwnerMember(item.member))
+  form.value.staffId = (owner || usable[0])?.member.id || ''
+}
+watch(() => [newOpen.value, form.value.serviceId, eligibleMembers.value.map((item) => item.member.id).join('|')], () => { if (newOpen.value) pickDefaultMember() })
+const newStaffReason = computed(() => {
+  if (!team.value || !formService.value) return ''
+  if (!eligibleMembers.value.length) return 'No active team member offers this service. Choose services for a person in Team.'
+  if (!form.value.staffId) return 'Nobody who offers this service has working hours yet. Set hours in Availability.'
+  return ''
+})
 const newBlocked = computed(() =>
   !setup.value.hasAvailability
     ? { text: 'Bookings need your weekly hours first, then a service. Set your hours, then add a service, and you can add bookings here.', label: 'Set your availability', to: '/availability' }
@@ -665,6 +711,7 @@ function openNew() {
   if (isDemo.value) return
   form.value = blankForm()
   form.value.serviceId = bookableServices.value[0]?.id || ''
+  pickDefaultMember()
   form.value.date = todayKey.value
   newError.value = ''
   newResult.value = null
@@ -683,7 +730,6 @@ function requestCloseNew() {
 }
 function newFail(message, field) {
   newError.value = message
-  bad(message)
   if (field) window.setTimeout(() => document.getElementById(field)?.focus(), 0)
 }
 async function submitNew() {
@@ -692,6 +738,7 @@ async function submitNew() {
   newError.value = ''
   const f = form.value
   if (!f.serviceId) return newFail('Choose a service for this booking.', 'new-service')
+  if (team.value && !f.staffId) return newFail(newStaffReason.value || 'Choose who this booking is with.', 'new-staff')
   if (!f.date) return newFail('Choose a date.', 'new-date')
   if (!f.time) return newFail('Choose a time.', 'new-time')
   if (!f.name.trim()) return newFail('Enter the client name.', 'new-name')
@@ -704,6 +751,8 @@ async function submitNew() {
   try {
     const result = await createOwnerBooking(state, {
       serviceId: f.serviceId,
+      // With a team the booking goes on the chosen person's own calendar; without one nothing changes.
+      ...(team.value ? { staffId: f.staffId } : {}),
       startsAt: when.at,
       contact: { name: f.name, email: f.email, phone: f.phone },
       notes: f.notes,
@@ -712,11 +761,9 @@ async function submitNew() {
     })
     await refresh()
     newResult.value = result
-    const count = result.created.length
-    ok(`Saved ${count} booking${count === 1 ? '' : 's'}. Nothing was sent to the client.`)
+    // The result panel inside the dialog is the one confirmation (no duplicate toast).
   } catch (reason) {
     newError.value = describeError(reason, 'The booking could not be saved.')
-    bad(newError.value)
   } finally {
     newSaving.value = false
   }
@@ -814,15 +861,128 @@ async function submitReschedule() {
     rescheduling.value = false
     messageKind.value = 'reschedule'
     detailNotice.value = `Booking moved. The old time is free again.${hadEvent ? ' Its Google Calendar event was not moved. Change or delete it in Google Calendar yourself.' : ''} Message the client below so they know. Bookins does not send it for you.`
-    ok('Booking moved')
     scrollDetailTop()
   } catch (reason) {
     rescheduleError.value = describeError(reason, 'The booking could not be moved.')
-    bad(rescheduleError.value)
   } finally {
     rescheduleSaving.value = false
   }
 }
+// ---- assign to a team member ----
+// Wording: you are "you"; "your calendar" / "Amaka's calendar".
+const toWho = (member) => (isOwnerMember(member) ? 'you' : memberFirstName(member))
+const whoseCalendar = (member) => (isOwnerMember(member) ? 'your calendar' : `${memberFirstName(member)}'s calendar`)
+const assignTo = ref('')
+const assignBusy = ref(false)
+watch(
+  () => [selected.value?.id, selected.value?.staff_id, selected.value?.schedule_id],
+  () => {
+    const current = selected.value ? memberFor(selected.value) : null
+    assignTo.value = current && members.value.some((item) => item.id === current.id) ? current.id : ''
+  },
+  { immediate: true },
+)
+const assignOptions = computed(() =>
+  members.value
+    .filter((item) => isStaffActive(item) || item.id === assignTo.value)
+    .map((item) => ({
+      id: item.id,
+      label: `${memberName(item)}${isOwnerMember(item) ? ' (owner)' : ''}${isStaffActive(item) ? '' : ' (inactive)'}${!scheduleOf(state, item) ? ' (no hours set)' : ''}`,
+      disabled: !isStaffActive(item) || (!scheduleOf(state, item) && selected.value?.status === 'confirmed'),
+    })),
+)
+const assignReason = computed(() => {
+  if (isDemo.value) return demoHint.value
+  if (!selected.value) return ''
+  if (!assignTo.value) return 'Choose who should take this booking.'
+  if (assignTo.value === memberFor(selected.value).id) return `Already with ${toWho(memberFor(selected.value))}. Choose someone else.`
+  return ''
+})
+async function assignSelected() {
+  if (isDemo.value || assignBusy.value || !selected.value || assignReason.value) return
+  clearBad()
+  assignBusy.value = true
+  error.value = ''
+  detailNotice.value = ''
+  const booking = selected.value
+  const member = members.value.find((item) => item.id === assignTo.value)
+  try {
+    await assignBookingStaff(state, booking, assignTo.value)
+    await refresh()
+    const text = booking.status === 'confirmed'
+      ? `Moved to ${whoseCalendar(member)}. The time is free again on the previous calendar.`
+      : `Now recorded as ${toWho(member)}'s. Finished and cancelled bookings keep their calendar; only the name changes.`
+    detailNotice.value = `${text} Nothing was sent to the client.`
+  } catch (reason) {
+    // Refusals (busy, time off, not active) come with the exact reason; show it where the owner is looking.
+    error.value = reason?.message || 'The booking could not be assigned.'
+  } finally {
+    assignBusy.value = false
+  }
+}
+
+// ---- bulk assign (selection mode) ----
+const selecting = ref(false)
+const picked = ref([])
+const bulkTo = ref('')
+const bulkBusy = ref(false)
+const bulkConfirmOpen = ref(false)
+const bulkResult = ref(null)
+const pickedBookings = computed(() => filtered.value.filter((item) => picked.value.includes(item.id)))
+const allPicked = computed(() => filtered.value.length > 0 && pickedBookings.value.length === filtered.value.length)
+const bulkMember = computed(() => members.value.find((item) => item.id === bulkTo.value) || null)
+const bulkReason = computed(() => {
+  if (isDemo.value) return demoHint.value
+  if (!pickedBookings.value.length) return 'Tick the bookings you want to move first.'
+  if (!bulkMember.value) return 'Choose who should take them.'
+  if (!isStaffActive(bulkMember.value)) return `${memberFirstName(bulkMember.value)} is inactive.`
+  return ''
+})
+function startSelecting() {
+  if (isDemo.value) return
+  selecting.value = true
+  bulkResult.value = null
+  if (!bulkTo.value) bulkTo.value = activeMembers.value.find((item) => !isOwnerMember(item))?.id || ownerStaff(state).id
+}
+function stopSelecting() {
+  selecting.value = false
+  picked.value = []
+  bulkConfirmOpen.value = false
+}
+function togglePick(id) {
+  picked.value = picked.value.includes(id) ? picked.value.filter((item) => item !== id) : [...picked.value, id]
+}
+const toggleAllPicked = () => { picked.value = allPicked.value ? [] : filtered.value.map((item) => item.id) }
+// A selection only means something for the rows on screen.
+watch([activeTab, view, query, emailFilter, serviceFilter, staffFilter, fromDate, toDate], () => { picked.value = []; bulkResult.value = null })
+watch(team, (value) => { if (!value) stopSelecting() })
+async function runBulk() {
+  if (isDemo.value || bulkBusy.value || bulkReason.value) return
+  clearBad()
+  bulkBusy.value = true
+  const member = bulkMember.value
+  try {
+    const result = await bulkAssignStaff(state, pickedBookings.value, member.id)
+    await refresh()
+    const moved = result.moved.length
+    const refused = result.refused
+    bulkResult.value = { member, moved, refused, total: moved + refused.length }
+    // Refused rows stay ticked so the owner can try another person.
+    picked.value = refused.map((item) => item.booking.id)
+    // Refusals are listed inline with their reasons; a clean run is a toast. Never both.
+    if (!refused.length) {
+      bulkResult.value = null
+      ok(`Moved ${moved} booking${moved === 1 ? '' : 's'} to ${whoseCalendar(member)}.`)
+    }
+  } catch (reason) {
+    bad(reason?.message || 'The bookings could not be assigned.')
+  } finally {
+    bulkBusy.value = false
+    bulkConfirmOpen.value = false
+  }
+}
+const refusedLabel = (item) => `${item.booking.guest_name}, ${when(item.booking)}`
+
 function scrollDetailTop() {
   window.setTimeout(() => document.querySelector('.booking-detail')?.scrollTo?.({ top: 0, behavior: 'smooth' }), 50)
 }
@@ -888,12 +1048,9 @@ async function cancel() {
             ? 'Booking cancelled and the slot reopened. Its Google Calendar event was not changed because Calendar is unavailable here; update it in Google Calendar.'
             : 'Booking cancelled and the slot reopened.'
     detailNotice.value += ' You can message the client below. Bookins does not send it for you.'
-    if (calendarState === 'failed') bad(`Booking cancelled, but the Google Calendar event was not updated (${outcome.calendar.message}).`)
-    else ok('Booking cancelled and the slot reopened')
     scrollDetailTop()
   } catch (reason) {
     error.value = reason?.message || 'The booking could not be cancelled.'
-    bad(error.value)
   } finally {
     cancelling.value = false
   }
@@ -975,6 +1132,13 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
           <option v-for="option in serviceOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
         </select>
       </div>
+      <div v-if="team" class="field">
+        <label for="filter-staff">Team member</label>
+        <select id="filter-staff" v-model="staffFilter" class="input">
+          <option value="">Everyone</option>
+          <option v-for="member in members" :key="member.id" :value="member.id">{{ staffLabel(member) }}</option>
+        </select>
+      </div>
       <div class="field">
         <label for="filter-from">From</label>
         <input id="filter-from" v-model="fromDate" class="input" type="date" :max="toDate || undefined" />
@@ -984,9 +1148,18 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
         <input id="filter-to" v-model="toDate" class="input" type="date" :min="fromDate || undefined" />
       </div>
       <button v-if="hasFilters" class="ghost small-button" type="button" @click="clearFilters">Clear filters</button>
-      <div class="segmented filter-view" role="group" aria-label="View">
-        <button type="button" :class="{ 'is-active': view === 'agenda' }" :aria-pressed="view === 'agenda'" @click="view = 'agenda'">Agenda</button>
-        <button type="button" :class="{ 'is-active': view === 'week' }" :aria-pressed="view === 'week'" @click="view = 'week'">Week</button>
+      <div class="filter-tail">
+        <GmButton
+          v-if="team && view === 'agenda' && !selecting"
+          variant="secondary"
+          size="sm"
+          :disabled-reason="isDemo ? demoHint : !groups.length ? 'No bookings in this view to select.' : ''"
+          @click="startSelecting"
+        >Select bookings</GmButton>
+        <div class="segmented filter-view" role="group" aria-label="View">
+          <button type="button" :class="{ 'is-active': view === 'agenda' }" :aria-pressed="view === 'agenda'" @click="view = 'agenda'">Agenda</button>
+          <button type="button" :class="{ 'is-active': view === 'week' }" :aria-pressed="view === 'week'" @click="view = 'week'">Week</button>
+        </div>
       </div>
     </div>
     <p v-if="emailFilter" class="email-filter">Showing history for <strong>{{ emailFilter }}</strong><button class="ghost small-button" type="button" @click="clearEmail">Show everyone</button></p>
@@ -1004,6 +1177,41 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
     </div>
     <p class="tab-help muted">{{ TAB_HELP[activeTab] }} <GmHint :text="STATUS_HELP" label="What the statuses mean" /></p>
 
+    <div v-if="team && selecting && view === 'agenda'" class="card bulk-bar" role="region" aria-label="Assign selected bookings">
+      <div class="bulk-top">
+        <strong class="tnum">{{ pickedBookings.length }} selected</strong>
+        <button class="ghost small-button" type="button" :disabled="!filtered.length" @click="toggleAllPicked">{{ allPicked ? 'Clear selection' : `Select all ${filtered.length} shown` }}</button>
+        <button class="ghost small-button bulk-done" type="button" :disabled="bulkBusy" @click="stopSelecting">Done</button>
+      </div>
+      <div class="bulk-controls">
+        <div class="field">
+          <label for="bulk-to">Assign to <GmHint text="Confirmed bookings move onto that person's own calendar, and each one is refused if they are busy or on time off then. Completed, no-show and cancelled bookings only change who is recorded. Clients are not messaged." label="About assigning" /></label>
+          <select id="bulk-to" v-model="bulkTo" class="input">
+            <option v-for="member in activeMembers" :key="member.id" :value="member.id">{{ memberName(member) }}{{ isOwnerMember(member) ? ' (owner)' : '' }}{{ scheduleOf(state, member) ? '' : ' (no hours set)' }}</option>
+          </select>
+        </div>
+        <GmConfirm
+          v-model:open="bulkConfirmOpen"
+          :title="`Assign ${pickedBookings.length} booking${pickedBookings.length === 1 ? '' : 's'} to ${bulkMember ? toWho(bulkMember) : 'them'}?`"
+          :message="`Confirmed bookings move onto ${bulkMember ? whoseCalendar(bulkMember) : 'their calendar'}. Any that clash with ${bulkMember && !isOwnerMember(bulkMember) ? memberFirstName(bulkMember) + '\'s' : 'your'} bookings or time off are refused one by one and left where they are. Nothing is sent to clients.`"
+          confirm-label="Assign"
+          cancel-label="Cancel"
+          :busy="bulkBusy"
+          @confirm="runBulk"
+        >
+          <GmButton variant="primary" :pending="bulkBusy" pending-label="Assigning…" :disabled-reason="bulkReason" @click="bulkConfirmOpen = true">Assign selected</GmButton>
+        </GmConfirm>
+      </div>
+      <div v-if="bulkResult" class="bulk-result" role="status">
+        <p><strong>{{ bulkResult.moved }} of {{ bulkResult.total }} moved</strong> to {{ whoseCalendar(bulkResult.member) }}<template v-if="bulkResult.refused.length">, {{ bulkResult.refused.length }} refused</template>.</p>
+        <ul v-if="bulkResult.refused.length" class="refused">
+          <li v-for="item in bulkResult.refused" :key="item.booking.id"><strong>{{ refusedLabel(item) }}</strong>: {{ item.reason }}</li>
+        </ul>
+        <p v-if="bulkResult.refused.length" class="muted">Refused bookings stay ticked and where they were. Choose someone else above, or move them one by one.</p>
+        <button class="ghost small-button" type="button" @click="bulkResult = null">Dismiss</button>
+      </div>
+    </div>
+
     <div v-if="view === 'week'" class="week">
       <div class="week-nav">
         <button class="secondary small-button" type="button" @click="weekOffset -= 1">Previous</button>
@@ -1012,6 +1220,10 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
         <button class="secondary small-button" type="button" :disabled="weekOffset === 0" @click="weekOffset = 0">This week</button>
         <button class="secondary small-button" type="button" @click="weekOffset += 1">Next</button>
       </div>
+      <ul v-if="team" class="week-legend" aria-label="Team colours">
+        <li v-for="member in members" :key="member.id"><i class="staff-dot" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ staffLabel(member) }}</li>
+        <li class="legend-off"><i class="legend-swatch" aria-hidden="true" />Time off</li>
+      </ul>
       <div class="week-grid">
         <div v-for="day in weekDays" :key="day.key" class="week-day" :class="{ today: day.today }">
           <header><small>{{ day.weekday }}</small><strong>{{ day.label }}</strong></header>
@@ -1021,16 +1233,17 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
             to="/availability"
             class="week-off"
             :title="`Time off${off.guest_name && off.guest_name !== 'Time off' ? ': ' + off.guest_name : ''}. Manage in Availability.`"
-          ><b>Time off</b><small>{{ off.guest_name && off.guest_name !== 'Time off' ? off.guest_name : 'Blocked' }}</small></RouterLink>
+          ><b>Time off</b><small>{{ off.guest_name && off.guest_name !== 'Time off' ? off.guest_name : 'Blocked' }}<template v-if="team"> · {{ memberFirstName(memberFor(off)) }}</template></small></RouterLink>
           <button
             v-for="booking in day.items"
             :key="booking.id"
             type="button"
             class="week-item"
-            :class="booking.status"
-            :title="`${booking.service_name} · ${booking.guest_name} · ${zoneLabel(booking)}`"
+            :class="[booking.status, { 'has-staff': team }]"
+            :style="team ? { '--staff': staffColor(booking) } : undefined"
+            :title="`${booking.service_name} · ${booking.guest_name}${team ? ' · with ' + staffName(booking) : ''} · ${zoneLabel(booking)}`"
             @click="openDetail(booking)"
-          ><b class="tnum">{{ time(booking) }}</b><span>{{ booking.service_name }}</span><small>{{ booking.guest_name }}<template v-if="isDone(booking)"> · {{ statusLabel(booking.status) }}</template></small></button>
+          ><b class="tnum">{{ time(booking) }}</b><span>{{ booking.service_name }}</span><small>{{ booking.guest_name }}<template v-if="isDone(booking)"> · {{ statusLabel(booking.status) }}</template></small><small v-if="team" class="week-staff">{{ memberFirstName(memberFor(booking)) }}</small></button>
           <p v-if="!day.items.length && !day.off.length" class="week-empty">—</p>
         </div>
       </div>
@@ -1039,12 +1252,17 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
     <div v-else-if="groups.length" class="booking-list">
       <section v-for="group in groups" :key="group.key" class="day-group">
         <h3 class="day-heading">{{ group.label }}<small>{{ group.items.length }}</small></h3>
-        <article v-for="booking in group.items" :key="booking.id" class="card booking-card" :class="{ 'is-cancelled': isCancelled(booking) }">
+        <div v-for="booking in group.items" :key="booking.id" class="booking-row" :class="{ selecting }">
+        <label v-if="selecting" class="pick-box" :title="`Select ${booking.guest_name}, ${when(booking)}`">
+          <input type="checkbox" :checked="picked.includes(booking.id)" :aria-label="`Select ${booking.guest_name}, ${booking.service_name}, ${when(booking)}`" @change="togglePick(booking.id)" />
+        </label>
+        <article class="card booking-card" :class="{ 'is-cancelled': isCancelled(booking), 'is-picked': picked.includes(booking.id) }">
           <div class="date-tile"><small>{{ dateParts(booking).weekday }}</small><strong>{{ dateParts(booking).day }}</strong><span>{{ dateParts(booking).month }}</span></div>
           <div class="booking-main">
             <div class="booking-title">
               <h2>{{ booking.service_name }}</h2>
               <span class="chip" :class="booking.status">{{ statusLabel(booking.status) }}</span>
+              <span v-if="team" class="chip staff-chip" :title="`With ${staffName(booking)}`"><i class="staff-dot" :style="{ background: staffColor(booking) }" aria-hidden="true" />{{ staffName(booking) }}</span>
               <span v-if="booking.source === 'owner'" class="chip accent">Added by you</span>
               <span v-if="isSeries(booking)" class="chip accent">Repeats weekly</span>
               <span v-if="onCalendar(booking) && !isCancelled(booking)" class="chip success">On calendar</span>
@@ -1080,6 +1298,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
             <button class="secondary small-button" type="button" @click="openDetail(booking)">View details<AppIcon name="chevron" :size="16" /></button>
           </div>
         </article>
+        </div>
       </section>
     </div>
 
@@ -1143,6 +1362,21 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
           </span>
         </div>
         <div v-if="detailNotice" class="notice success" role="status"><AppIcon name="check" :size="18" />{{ detailNotice }}</div>
+
+        <section v-if="team" class="panel-box staff-panel" aria-labelledby="staff-heading">
+          <h3 id="staff-heading">Team member <GmHint text="Who is doing this booking. Assigning a confirmed booking moves it onto that person's own calendar, so it is refused if they are busy or on time off at that time. Finished or cancelled bookings only change the name recorded." label="About assigning a booking" /></h3>
+          <p class="staff-now"><span class="chip staff-chip"><i class="staff-dot" :style="{ background: staffColor(selected) }" aria-hidden="true" />{{ staffName(selected) }}</span><small v-if="memberFor(selected).removed" class="muted">No longer on your team</small><small v-else-if="!isStaffActive(memberFor(selected))" class="muted">Inactive</small></p>
+          <div class="assign-row">
+            <div class="field">
+              <label for="assign-to">Assign to…</label>
+              <select id="assign-to" v-model="assignTo" :disabled="isDemo || assignBusy">
+                <option value="" disabled>Choose a person</option>
+                <option v-for="option in assignOptions" :key="option.id" :value="option.id" :disabled="option.disabled">{{ option.label }}</option>
+              </select>
+            </div>
+            <GmButton variant="secondary" size="sm" :pending="assignBusy" pending-label="Assigning…" :disabled-reason="assignReason" @click="assignSelected">Assign</GmButton>
+          </div>
+        </section>
 
         <section
           v-if="canMove(selected) && hasStarted(selected) && !rescheduling"
@@ -1355,8 +1589,15 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
           <div class="field">
             <label for="new-service">Service</label>
             <select id="new-service" v-model="form.serviceId" required>
-              <option v-for="item in bookableServices" :key="item.id" :value="item.id">{{ item.name }} · {{ item.duration_minutes }} min</option>
+              <option v-for="item in bookableServices" :key="item.id" :value="item.id">{{ displayName(item.name) }} · {{ item.duration_minutes }} min</option>
             </select>
+          </div>
+          <div v-if="team" class="field">
+            <label for="new-staff">With <GmHint text="The booking goes on this person's own calendar, so two people can be booked at the same time. Only people who offer this service are listed." label="About choosing who it is with" /></label>
+            <select id="new-staff" v-model="form.staffId" required :aria-describedby="newStaffReason ? 'new-staff-note' : undefined">
+              <option v-for="item in eligibleMembers" :key="item.member.id" :value="item.member.id" :disabled="!item.hasHours">{{ memberName(item.member) }}{{ isOwnerMember(item.member) ? ' (owner)' : '' }}{{ item.hasHours ? '' : ' (set hours first)' }}</option>
+            </select>
+            <span v-if="newStaffReason" id="new-staff-note" class="field-hint">{{ newStaffReason }}</span>
           </div>
           <div class="field-row">
             <div class="field">
@@ -1368,7 +1609,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
               <input id="new-time" v-model="form.time" type="time" required />
             </div>
           </div>
-          <p class="field-hint form-hint">Date and time are in {{ zoneName(formZone) }}, your schedule's timezone. You can book outside your weekly hours, but not on top of another booking or time off.</p>
+          <p class="field-hint form-hint">Date and time are in {{ zoneName(formZone) }}, {{ team && formMember && !isOwnerMember(formMember) ? memberFirstName(formMember) + "'s" : 'your' }} schedule timezone. You can book outside weekly hours, but not on top of {{ team && formMember && !isOwnerMember(formMember) ? 'their' : 'another' }} booking or time off.</p>
           <div class="field">
             <label for="new-name">Client name</label>
             <input id="new-name" v-model="form.name" maxlength="160" autocomplete="off" required />
@@ -1398,7 +1639,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
             <span v-if="form.repeatWeeks > 0" class="field-hint">Creates this booking plus {{ Math.min(12, Math.floor(form.repeatWeeks)) }} more at the same local time. Weeks that clash are skipped and listed afterwards.</span>
           </div>
           <div class="form-actions modal-footer">
-            <GmButton variant="primary" type="submit" :pending="newSaving" pending-label="Saving…" :disabled-reason="demoHint">Save booking</GmButton>
+            <GmButton variant="primary" type="submit" :pending="newSaving" pending-label="Saving…" :disabled-reason="demoHint || newStaffReason">Save booking</GmButton>
             <GmConfirm
               v-model:open="newDiscardOpen"
               title="Discard this booking?"
@@ -1420,7 +1661,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
 <style scoped>
 .filter-bar { align-items: flex-end; }
 .filter-bar .field { min-width: 150px; flex: 0 1 190px; }
-.filter-bar .filter-view { margin-left: auto; }
+.filter-bar .filter-tail { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .email-filter { margin: 0 0 var(--space-3); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
 .demo-note { margin: 0 0 var(--space-3); font-size: var(--text-sm); }
 .error-text { color: var(--danger); }
@@ -1467,6 +1708,29 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
 .booking-end > .ref { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
 .quick-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
 
+/* Team */
+.staff-chip { gap: 6px; }
+.staff-dot { width: 10px; height: 10px; flex: none; display: inline-block; border-radius: 50%; }
+.booking-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+.booking-row.selecting { grid-template-columns: 44px minmax(0, 1fr); align-items: center; }
+.pick-box { width: 44px; height: 44px; display: grid; place-items: center; cursor: pointer; }
+.pick-box input { width: 22px; height: 22px; min-height: 0; margin: 0; cursor: pointer; }
+.booking-card.is-picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.bulk-bar { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-3); box-shadow: none; border-color: var(--accent-line); background: var(--accent-faint); }
+.bulk-top { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); font-size: var(--text-sm); }
+.bulk-done { margin-left: auto; }
+.bulk-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-3); }
+.bulk-controls .field { margin: 0; min-width: 200px; flex: 0 1 280px; }
+.bulk-result { padding: var(--space-3); display: grid; justify-items: start; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; font-size: var(--text-sm); }
+.bulk-result p { margin: 0; }
+.refused { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.staff-panel .staff-now { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.assign-row { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-3); }
+.assign-row .field { margin: 0; flex: 1 1 220px; min-width: 0; }
+.week-legend { margin: 0 0 var(--space-3); padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
+.week-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.legend-swatch { width: 14px; height: 10px; display: inline-block; border: 1px dashed var(--line-strong); border-radius: 3px; background: repeating-linear-gradient(45deg, #f6f7fa, #f6f7fa 3px, #e4e7ee 3px, #e4e7ee 6px); }
+
 /* Week */
 .week-nav { margin-bottom: var(--space-3); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
 .week-nav .muted { margin-right: auto; font-size: var(--text-xs); }
@@ -1484,6 +1748,9 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
 .week-item span, .week-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .week-off { padding: 6px 8px; display: grid; gap: 1px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 8px; background: repeating-linear-gradient(45deg, #f6f7fa, #f6f7fa 6px, #eef0f5 6px, #eef0f5 12px); font-size: var(--text-xs); text-decoration: none; }
 .week-off b { font-size: var(--text-sm); }
+.week-item.has-staff { border-left: 4px solid var(--staff); }
+.week-item.has-staff:not(.cancelled):not(.completed):not(.no_show) { background: color-mix(in srgb, var(--staff) 11%, #fff); border-color: color-mix(in srgb, var(--staff) 38%, #fff); border-left-color: var(--staff); }
+.week-item .week-staff { color: var(--ink-soft, var(--muted)); font-weight: 650; }
 .week-empty { margin: auto; color: var(--line-strong); }
 
 /* Dialogs */
@@ -1537,9 +1804,12 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
 @media (max-width: 900px) {
   .week-grid { grid-template-columns: 1fr; }
   .week-day { min-height: 0; }
-  .filter-bar .filter-view { margin-left: 0; }
+  .filter-bar .filter-tail { margin-left: 0; }
 }
 @media (max-width: 700px) {
+  .booking-row.selecting { position: relative; grid-template-columns: minmax(0, 1fr); }
+  .booking-row.selecting .pick-box { position: absolute; top: 4px; right: 4px; z-index: 2; border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.92); }
+  .booking-row.selecting .booking-title { padding-right: 44px; }
   .filter-bar .field { flex: 1 1 140px; }
   .booking-card { grid-template-columns: 54px minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); }
   .booking-end { grid-column: 1/-1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }

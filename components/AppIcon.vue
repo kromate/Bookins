@@ -80,6 +80,19 @@ defineProps({
       />
       <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
     </template>
+    <template v-else-if="name === 'messages'">
+      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.6-.8L3 21l1.9-5.1A8.4 8.4 0 1 1 21 11.5Z" />
+    </template>
+    <template v-else-if="name === 'team'">
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M3 20a6 6 0 0 1 12 0" />
+      <circle cx="17.5" cy="9" r="2.4" />
+      <path d="M17 14.2a4.6 4.6 0 0 1 4.4 4.3" />
+    </template>
+    <template v-else-if="name === 'campaigns'">
+      <path d="M3 11v3a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" />
+      <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 6a9 9 0 0 1 0 12" />
+    </template>
     <template v-else-if="name === 'settings'">
       <circle
         cx="12"

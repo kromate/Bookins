@@ -59,7 +59,7 @@ onBeforeUnmount(() => {
 .gm-walkthrough:focus { outline: none; }
 .gm-walkthrough-progress { height: 4px; margin: -20px -20px 14px; border-radius: 12px 12px 0 0; background: var(--accent-soft, #eef0ff); overflow: hidden; }
 .gm-walkthrough-progress span { display: block; height: 100%; background: var(--gm-color-brand, #2336dc); transition: width var(--dur-panel, 200ms) var(--ease, ease); }
-.gm-walkthrough-label { margin: 0; color: var(--gm-color-brand, #2336dc); font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.gm-walkthrough-label { margin: 0; color: var(--gm-color-brand, #2336dc); font-size: 13px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .gm-walkthrough-note { padding: 8px 12px; border-radius: 10px; background: var(--warning-soft, #fff6e0); }
 .gm-walkthrough-notice { margin: 0; color: var(--muted, #5d6578); font-size: 13px; }
 .gm-walkthrough h2 { margin: 8px 0; font-size: 18px; }

@@ -208,3 +208,23 @@ test('removed time off stays excluded from clients and metrics but no longer blo
   assert.ok(!booking.isActiveTimeOff(removed))
   assert.ok(!booking.isActiveBooking(removed))
 })
+
+test('service meta trailer round-trips and never leaks into display text', async () => {
+  const { withMeta, splitDescription, groupServices } = await import('../service-meta.js')
+  const stored = withMeta('Silk press.', { c: 'Hair', o: 3, s: 'staff-1', p: 'Arrive with clean hair' })
+  assert.match(stored, /\[\[bk:/)
+  const { text, meta } = splitDescription(stored)
+  assert.equal(text, 'Silk press.')
+  assert.deepEqual(meta, { c: 'Hair', o: 3, s: 'staff-1', p: 'Arrive with clean hair' })
+  assert.equal(withMeta('Plain', {}), 'Plain')
+  assert.deepEqual(splitDescription('No trailer here').meta, {})
+  assert.deepEqual(splitDescription('Broken [[bk:{oops}]]').meta, {})
+  const groups = groupServices([
+    { id: '1', name: 'B', description: withMeta('x', { c: 'Nails', o: 2 }) },
+    { id: '2', name: 'A', description: withMeta('x', { c: 'Nails', o: 1 }) },
+    { id: '3', name: 'Z', description: 'x' },
+    { id: '4', name: 'C', description: withMeta('x', { c: 'Hair' }) },
+  ])
+  assert.deepEqual(groups.map((g) => g.name), ['Hair', 'Nails', ''])
+  assert.deepEqual(groups[1].items.map((s) => s.name), ['A', 'B'])
+})

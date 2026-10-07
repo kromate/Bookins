@@ -1,6 +1,7 @@
 // Single source of truth for first-run setup progress (profile -> availability -> service -> link).
 // Pages call `useSetupState()` (inside setup) or `computeSetupState(state)` (plain, e.g. tests).
 import { computed, inject, unref } from 'vue'
+import { hasTeam, teamMembers } from './team.js'
 
 function openWindowCount(schedule) {
   try {
@@ -75,6 +76,9 @@ export function computeSetupState(state, now = Date.now()) {
     total: steps.length,
     progress: Math.round((completed / steps.length) * 100),
     canCreateService: hasAvailability,
+    // Teams are optional and not a setup step: 1 means just the owner.
+    hasTeam: hasTeam(state),
+    teamSize: teamMembers(state || {}).length,
   }
 }
 

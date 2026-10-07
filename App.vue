@@ -76,6 +76,8 @@ function navigationKeydown(event) {
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
+const loadAttempted = ref(false)
+const syncFailed = ref(false) // a background refresh failed while older data is still shown
 const copied = ref(false)
 const accountLabel = ref('Goalmatic workspace')
 const userLabel = ref('')
@@ -116,11 +118,32 @@ const navItems = [
     section: 'WORKSPACE',
   },
   {
+    label: 'Messages',
+    shortLabel: 'Messages',
+    to: '/messages',
+    icon: 'messages',
+    section: 'WORKSPACE',
+  },
+  {
     label: 'Insights',
     shortLabel: 'Insights',
     to: '/insights',
     icon: 'sparkle',
     section: 'WORKSPACE',
+  },
+  {
+    label: 'Team',
+    shortLabel: 'Team',
+    to: '/team',
+    icon: 'team',
+    section: 'MANAGE',
+  },
+  {
+    label: 'Campaigns',
+    shortLabel: 'Campaigns',
+    to: '/campaigns',
+    icon: 'campaigns',
+    section: 'MANAGE',
   },
   {
     label: 'Contacts',
@@ -310,7 +333,10 @@ const pageIntros = {
   '/services': { eyebrow: 'Your offerings', title: 'Services', layout: 'cards' },
   '/availability': { eyebrow: 'Working hours', title: 'Availability', layout: 'split' },
   '/bookings': { eyebrow: 'Appointments', title: 'Bookings', layout: 'list' },
+  '/messages': { eyebrow: 'Client messages', title: 'Messages', layout: 'list' },
   '/insights': { eyebrow: 'Performance', title: 'Insights', layout: 'overview' },
+  '/team': { eyebrow: 'Your people', title: 'Team', layout: 'cards' },
+  '/campaigns': { eyebrow: 'Win clients back', title: 'Campaigns', layout: 'list' },
   '/contacts': { eyebrow: 'Clients', title: 'Contacts', layout: 'list' },
   '/settings': { eyebrow: 'Configuration', title: 'Settings', layout: 'split' },
 }
@@ -319,6 +345,7 @@ const pageIntro = computed(
 )
 
 async function loadWorkspace({ silent = false } = {}) {
+  loadAttempted.value = true
   if (!silent) {
     loading.value = true
     error.value = ''
@@ -339,10 +366,11 @@ async function loadWorkspace({ silent = false } = {}) {
     }
     Object.assign(state, workspace)
     loaded.value = true
+    syncFailed.value = false
     lastLoadedAt = Date.now()
     return true
   } catch (reason) {
-    if (silent && loaded.value) return false
+    if (silent && loaded.value) { syncFailed.value = true; return false }
     error.value = reason?.message || 'Bookins could not load this workspace.'
     return false
   } finally {
@@ -351,6 +379,16 @@ async function loadWorkspace({ silent = false } = {}) {
 }
 
 const workspaceBusy = computed(() => modeRequesting.value || loading.value)
+// Sidebar status follows the real load state, never a hard-coded "Connected".
+const workspaceFailed = computed(() => !loaded.value && !loading.value && loadAttempted.value && !isPublicRoute.value)
+const runtimeStatus = computed(() => {
+  if (workspaceFailed.value) return { text: 'Could not load workspace', tone: 'error', retry: true }
+  if (loading.value && !loaded.value) return { text: isDemo.value ? 'Loading demo…' : 'Connecting…', tone: 'pending', retry: false }
+  if (syncFailed.value && !isDemo.value) return { text: 'Could not refresh. Showing last data', tone: 'error', retry: true }
+  if (isDemo.value) return { text: 'Demo · read-only', tone: 'idle', retry: false }
+  if (localPreview) return { text: 'Local sample data', tone: 'idle', retry: false }
+  return { text: 'Connected to Goalmatic', tone: 'live', retry: false }
+})
 const removeModeCommitHandler = registerModeCommitHandler(() => {
   state.profile = null
   state.schedules = []
@@ -430,7 +468,11 @@ watch(
     moreOpen.value = false
     dropStaleToasts()
     // Returning from /book (or any page change) pulls in bookings made in the meantime.
-    if (previous !== undefined) backgroundRefresh({ force: true })
+    if (previous !== undefined) {
+      // Arriving from the public /book route (or after a failed load) with no workspace yet: load it now instead of showing an empty page.
+      if (!isPublicRoute.value && !loaded.value && !loading.value && !modeRequesting.value) void refresh()
+      else backgroundRefresh({ force: true })
+    }
   },
 )
 
@@ -591,54 +633,69 @@ onMounted(async () => {
       </nav>
 
       <div class="sidebar-spacer" />
-      <div
-        v-if="publicUrl"
-        class="share-card"
-      >
-        <div class="share-card-header"
-          ><AppIcon
-            name="link"
-            :size="15"
-          /><strong>Your booking link</strong></div
+      <div class="sidebar-footer">
+        <div
+          v-if="publicUrl"
+          class="share-card"
         >
-        <p>{{ publicUrl }}</p>
-        <div class="share-card-actions">
-          <button
-            type="button"
-            @click="copyPublicLink"
-            ><AppIcon
-              name="copy"
-              :size="13"
-            />{{ copied ? 'Copied' : 'Copy' }}</button
-          >
-          <a
-            :href="publicUrl"
-            target="_blank"
-            rel="noreferrer"
-            ><AppIcon
-              name="external"
-              :size="13"
-            />Open</a
-          >
+          <div class="share-card-header">
+            <AppIcon
+              name="link"
+              :size="15"
+            /><strong>Booking link</strong>
+            <div class="share-card-actions">
+              <button
+                type="button"
+                :aria-label="copied ? 'Booking link copied' : 'Copy booking link'"
+                :title="copied ? 'Copied' : 'Copy booking link'"
+                @click="copyPublicLink"
+                ><AppIcon
+                  :name="copied ? 'check' : 'copy'"
+                  :size="14"
+                /></button
+              >
+              <a
+                :href="publicUrl"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open booking page"
+                title="Open booking page"
+                ><AppIcon
+                  name="external"
+                  :size="14"
+                /></a
+              >
+            </div>
+          </div>
+          <p>{{ publicUrl }}</p>
+          <span class="visually-hidden" role="status">{{ copied ? 'Booking link copied' : '' }}</span>
         </div>
+        <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
+        <div class="sidebar-links">
+          <button
+            class="sidebar-link"
+            type="button"
+            data-tour="tour-help-button"
+            data-bookins-walkthrough-trigger
+            @click="startTour"
+          ><AppIcon name="help" :size="17" />Take a walkthrough</button>
+          <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="17" />Back to Apps</a>
+        </div>
+        <div class="runtime-label" :class="`is-${runtimeStatus.tone}`" role="status"
+          ><span
+            class="runtime-dot"
+            :class="runtimeStatus.tone"
+          /><span class="runtime-text">{{ runtimeStatus.text }}</span
+          ><button
+            v-if="runtimeStatus.retry"
+            type="button"
+            class="runtime-retry"
+            :disabled="loading"
+            @click="refresh"
+          >Retry</button
+        ></div
+        >
       </div>
-      <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
-      <div class="sidebar-links">
-        <button
-          class="sidebar-link"
-          type="button"
-          data-tour="tour-help-button"
-          data-bookins-walkthrough-trigger
-          @click="startTour"
-        ><AppIcon name="help" :size="17" />Take a walkthrough</button>
-        <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="17" />Back to Apps</a>
-      </div>
-      <div class="runtime-label"
-        ><span
-          class="runtime-dot"
-          :class="{ live: !localPreview }"
-        />{{ isDemo ? 'Demo · read-only' : localPreview ? 'Local sample data' : 'Connected to Goalmatic' }}</div
-      >
     </aside>
 
     <button
@@ -669,7 +726,7 @@ onMounted(async () => {
           ><strong>{{ currentPage.label }}</strong
           ><small
             >{{ profileName }} ·
-            <RouterLink v-if="!timezoneLabel" class="topbar-link" to="/settings">Set your timezone</RouterLink
+            <RouterLink v-if="loaded && !timezoneLabel" class="topbar-link" to="/settings">Set your timezone</RouterLink
             ><template v-else>{{ timezoneLabel }}</template></small
           ></div
         >
@@ -733,13 +790,13 @@ onMounted(async () => {
           <div v-else class="skeleton-cards" aria-hidden="true"><span v-for="index in 3" :key="index" class="skeleton-block" /></div>
         </div>
         <div
-          v-else-if="error && !loaded"
+          v-else-if="workspaceFailed && !transitioning"
           class="card state-card"
           role="alert"
         >
           <span class="empty-icon">!</span>
           <h1>Bookins could not load.</h1>
-          <p class="muted">{{ error }}</p>
+          <p class="muted">{{ error || 'Bookins could not load this workspace.' }}</p>
           <button
             class="primary"
             type="button"

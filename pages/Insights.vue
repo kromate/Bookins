@@ -3,7 +3,7 @@ import { computed, inject, onBeforeUnmount, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
-import { isActiveTimeOff, isTimeOff } from '../booking.js'
+import { hasTeam, isActiveTimeOff, isTimeOff, scheduleForStaff, segmentContacts, staffForBooking, teamMembers } from '../booking.js'
 import { localFields, parseWeeklyWindows, wallClockInstant } from '../scheduling.js'
 import { displayTimeZone } from '../time-display.js'
 
@@ -33,6 +33,7 @@ const clock = window.setInterval(() => { now.value = Date.now() }, 60_000)
 onBeforeUnmount(() => window.clearInterval(clock))
 
 const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
+const madeIn = computed(() => (period.value ? `in the ${periodLabel.value}` : 'over all time'))
 const periodLabel = computed(() => PERIODS.find(item => item.value === period.value)?.label.toLowerCase() || '')
 
 const all = computed(() =>
@@ -43,7 +44,7 @@ const all = computed(() =>
 )
 const timeOff = computed(() =>
   (state.bookings || []).filter(isActiveTimeOff)
-    .map(item => ({ start: Date.parse(item.starts_at), end: Date.parse(item.ends_at) }))
+    .map(item => ({ schedule: item.schedule_id || '', start: Date.parse(item.starts_at), end: Date.parse(item.ends_at) }))
     .filter(item => Number.isFinite(item.start) && Number.isFinite(item.end)),
 )
 
@@ -58,9 +59,11 @@ const active = list => list.filter(item => item.status !== 'cancelled')
 const isPastConfirmed = item => item.status === 'confirmed' && item.start <= now.value
 
 const count = computed(() => active(inPeriod.value).length)
+// Appointments still ahead of now are not "performance" yet; say so instead of silently dropping them.
+const upcomingCount = computed(() => active(all.value).filter(item => item.start > now.value).length)
 const previousCount = computed(() => active(inPrevious.value).length)
 const change = computed(() => {
-  if (!period.value) return 'Across all recorded bookings'
+  if (!period.value) return 'Completed or past appointments only'
   if (!previousCount.value && !count.value) return 'No bookings in either period'
   if (!previousCount.value) return `No bookings in the previous ${period.value} days`
   const diff = count.value - previousCount.value
@@ -87,35 +90,55 @@ function subtract(intervals, cuts) {
   }
   return result
 }
+// Open hours are summed over every active member's own weekly schedule (the owner alone when there is no team),
+// minus time off on that schedule; booked time is each member's confirmed bookings inside their open hours.
 const utilization = computed(() => {
-  const schedule = state.schedules?.[0]
-  if (!schedule) return null
-  let windows
-  try { windows = parseWeeklyWindows(schedule.weekly_windows_json) } catch { return null }
-  if (!windows.length) return { open: 0, booked: 0, pct: null }
   const from = now.value
   const to = now.value + 14 * DAY
-  const first = localFields(from, zone.value).date
-  let open = []
-  for (let offset = 0; offset < 15; offset += 1) {
-    const date = new Date(Date.parse(`${first}T12:00:00.000Z`) + offset * DAY).toISOString().slice(0, 10)
-    const weekday = new Date(`${date}T12:00:00.000Z`).getUTCDay()
-    for (const window of windows.filter(item => item.weekday === weekday)) {
-      const start = wallClockInstant(date, window.startMinute, zone.value)
-      if (!start) continue
-      const begin = Math.max(start.getTime(), from)
-      const end = Math.min(start.getTime() + (window.endMinute - window.startMinute) * 60_000, to)
-      if (end > begin) open.push({ start: begin, end })
-    }
+  const schedules = new Map()
+  for (const member of teamMembers(state)) {
+    const schedule = scheduleForStaff(state, member)
+    if (schedule && !schedules.has(schedule.id)) schedules.set(schedule.id, schedule)
   }
-  open = subtract(open, timeOff.value)
-  const booked = active(all.value).filter(item => item.status === 'confirmed' && item.end > from && item.start < to)
-  // Booked time inside open time = open minus what remains after removing bookings.
-  const free = subtract(open, booked.filter(item => Number.isFinite(item.end)).map(item => ({ start: item.start, end: item.end })))
+  if (!schedules.size) return null
+  const memberSchedule = item => {
+    const member = staffForBooking(state, item)
+    return scheduleForStaff(state, member)?.id || item.schedule_id || ''
+  }
+  const confirmed = active(all.value).filter(item => item.status === 'confirmed' && Number.isFinite(item.end) && item.end > from && item.start < to)
+  let openMinutes = 0
+  let freeMinutes = 0
+  let anyWindows = false
   const sum = list => list.reduce((total, item) => total + (item.end - item.start), 0) / 60_000
-  const openMinutes = Math.round(sum(open))
-  const bookedMinutes = Math.round(openMinutes - sum(free))
-  return { open: openMinutes, booked: bookedMinutes, pct: openMinutes ? Math.round((bookedMinutes / openMinutes) * 100) : null }
+  for (const schedule of schedules.values()) {
+    let windows
+    try { windows = parseWeeklyWindows(schedule.weekly_windows_json) } catch { continue }
+    if (!windows.length) continue
+    anyWindows = true
+    const tz = displayTimeZone(schedule.timezone)
+    const first = localFields(from, tz).date
+    let open = []
+    for (let offset = 0; offset < 15; offset += 1) {
+      const date = new Date(Date.parse(`${first}T12:00:00.000Z`) + offset * DAY).toISOString().slice(0, 10)
+      const weekday = new Date(`${date}T12:00:00.000Z`).getUTCDay()
+      for (const window of windows.filter(item => item.weekday === weekday)) {
+        const start = wallClockInstant(date, window.startMinute, tz)
+        if (!start) continue
+        const begin = Math.max(start.getTime(), from)
+        const end = Math.min(start.getTime() + (window.endMinute - window.startMinute) * 60_000, to)
+        if (end > begin) open.push({ start: begin, end })
+      }
+    }
+    open = subtract(open, timeOff.value.filter(item => item.schedule === schedule.id))
+    const mine = confirmed.filter(item => memberSchedule(item) === schedule.id).map(item => ({ start: item.start, end: item.end }))
+    // Booked time inside open time = open minus what remains after removing bookings.
+    openMinutes += sum(open)
+    freeMinutes += sum(subtract(open, mine))
+  }
+  if (!anyWindows) return { open: 0, booked: 0, pct: null }
+  const open = Math.round(openMinutes)
+  const booked = Math.round(openMinutes - freeMinutes)
+  return { open, booked, pct: open ? Math.round((booked / open) * 100) : null }
 })
 const hoursText = minutes => `${Math.round((minutes / 60) * 10) / 10} h`
 
@@ -142,6 +165,59 @@ function money(amount, currency) {
     return `${currency} ${Math.round(amount).toLocaleString()}`
   }
 }
+
+// ---- per team member (only once a team exists; each figure is a slice of the totals above) ----
+const teamOn = computed(() => hasTeam(state))
+const staffRows = computed(() => {
+  if (!teamOn.value) return []
+  const rows = new Map(teamMembers(state, { includeInactive: true }).map(member => [member.id, { id: member.id, name: member.name || 'Team member', inactive: member.active === false, count: 0, revenue: new Map(), noShow: 0, finished: 0 }]))
+  for (const item of inPeriod.value) {
+    const member = staffForBooking(state, item)
+    const row = rows.get(member.id) || { id: member.id, name: member.name || 'Former team member', inactive: true, count: 0, revenue: new Map(), noShow: 0, finished: 0 }
+    rows.set(member.id, row)
+    if (item.status !== 'cancelled') row.count += 1
+    if (earning(item)) {
+      const { amount, currency } = priceOf(item)
+      if (amount) row.revenue.set(currency, (row.revenue.get(currency) || 0) + amount)
+    }
+    if (item.status === 'completed' || item.status === 'no_show' || isPastConfirmed(item)) row.finished += 1
+    if (item.status === 'no_show') row.noShow += 1
+  }
+  return [...rows.values()]
+    .filter(row => row.count || !row.inactive)
+    .map(row => ({
+      ...row,
+      share: count.value ? Math.round((row.count / count.value) * 100) : null,
+      revenueList: [...row.revenue].map(([currency, amount]) => ({ currency, amount })),
+      revenueText: [...row.revenue].map(([currency, amount]) => money(amount, currency)).join(' + '),
+      rate: row.finished ? Math.round((row.noShow / row.finished) * 100) : null,
+    }))
+    .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name))
+})
+const staffTotals = computed(() => {
+  const revenue = new Map()
+  let bookings = 0
+  let noShow = 0
+  let finished = 0
+  for (const row of staffRows.value) {
+    bookings += row.count
+    noShow += row.noShow
+    finished += row.finished
+    for (const item of row.revenueList) revenue.set(item.currency, (revenue.get(item.currency) || 0) + item.amount)
+  }
+  return {
+    bookings,
+    revenueText: [...revenue].map(([currency, amount]) => money(amount, currency)).join(' + '),
+    rate: finished ? Math.round((noShow / finished) * 100) : null,
+  }
+})
+
+// ---- rebook opportunity: clients past their service's "rebook after" days (opted-out clients are never counted) ----
+const rebook = computed(() => {
+  const due = segmentContacts(state, { dueToRebook: true }, { now: now.value, timezone: zone.value })
+  const configured = (state.services || []).some(service => Number(service.rebook_after_days) > 0)
+  return { total: due.total, configured, sample: due.contacts.slice(0, 3).map(item => item.contact.name) }
+})
 
 // ---- rates ----
 const cancelledCount = computed(() => inPeriod.value.filter(item => item.status === 'cancelled').length)
@@ -225,9 +301,15 @@ const clients = computed(() => {
   return { total: keys.size, returning, fresh: keys.size - returning, repeatRate: keys.size ? Math.round((returning / keys.size) * 100) : null }
 })
 
-// ---- lead time and source ----
+// ---- lead time and source: bookings CREATED in the period (so today's online bookings count) ----
+const createdInPeriod = computed(() =>
+  active(all.value).filter(item => {
+    const created = Number.isFinite(item.created) ? item.created : item.start
+    return created > periodStart.value && created <= now.value
+  }),
+)
 const leadTime = computed(() => {
-  const gaps = active(inPeriod.value)
+  const gaps = createdInPeriod.value
     .filter(item => item.source !== 'owner' && Number.isFinite(item.created) && item.start > item.created)
     .map(item => item.start - item.created)
   if (!gaps.length) return null
@@ -235,10 +317,10 @@ const leadTime = computed(() => {
   return { text: average >= DAY ? `${Math.round((average / DAY) * 10) / 10} days` : `${Math.round(average / 3_600_000)} hours`, count: gaps.length }
 })
 const ownerShare = computed(() => {
-  const list = active(inPeriod.value)
+  const list = createdInPeriod.value
   if (!list.length) return null
   const owner = list.filter(item => item.source === 'owner').length
-  return { count: owner, pct: Math.round((owner / list.length) * 100) }
+  return { total: list.length, count: owner, pct: Math.round((owner / list.length) * 100) }
 })
 async function copyBookingLink() {
   try {
@@ -293,13 +375,14 @@ const percent = value => (value === null ? '—' : `${value}%`)
 
       <div class="stat-grid kpis" data-tour="tour-insights-summary">
         <div class="card stat-tile kpi">
-          <span class="label">Bookings <GmHint text="Appointments that started in this period and were not cancelled. Time off is never counted. The line below compares with the period just before." label="About bookings" /></span>
+          <span class="label">Bookings <GmHint text="Appointments that have already started in this period and were not cancelled; upcoming appointments are not counted until they start. Time off is never counted. The line below compares with the period just before." label="About bookings" /></span>
           <p class="metric tnum">{{ count }}</p>
           <p class="sub" :class="changeTone">{{ change }}</p>
-          <p class="sub">Not cancelled, {{ periodLabel }}</p>
+          <p v-if="period" class="sub">Past appointments, not cancelled, {{ periodLabel }}</p>
+          <p v-if="upcomingCount" class="sub">{{ upcomingCount }} upcoming not counted yet</p>
         </div>
         <div class="card stat-tile kpi">
-          <span class="label">Share of open hours booked, next 14 days <GmHint text="Utilization: of the hours you are open over the next 14 days (after time off), how many already have a confirmed booking. 100% means fully booked." label="About utilization" /></span>
+          <span class="label">Share of open hours booked, next 14 days <GmHint text="Utilization: of the hours you and your active team members are open over the next 14 days (after time off), how many already have a confirmed booking. 100% means fully booked." label="About utilization" /></span>
           <p class="metric tnum">{{ utilization ? percent(utilization.pct) : '—' }}</p>
           <p v-if="utilization && utilization.pct !== null" class="sub">{{ hoursText(utilization.booked) }} booked of {{ hoursText(utilization.open) }} open</p>
           <p v-else class="sub">Add weekly hours in Availability to measure this.</p>
@@ -325,6 +408,53 @@ const percent = value => (value === null ? '—' : `${value}%`)
         </ul>
         <p v-else class="muted">No priced appointments completed or past due in {{ periodLabel }}.</p>
         <p class="muted small">Counts completed and past confirmed appointments, using each service's current price.</p>
+      </article>
+
+      <article v-if="teamOn" class="card block" data-testid="staff-insights">
+        <h2>By team member <GmHint text="Each person's bookings, estimated revenue and no-show rate for this period. A booking counts for the person it is assigned to, and the rows add up to the totals above." label="About team figures" /></h2>
+        <p class="note">Estimated from display prices, {{ periodLabel }}. Bookins does not take payments.</p>
+        <div v-if="staffRows.length" class="table-wrap">
+          <table class="staff-table">
+            <caption class="sr">Bookings, estimated revenue and no-show rate per team member, {{ periodLabel }}</caption>
+            <thead><tr><th scope="col">Team member</th><th scope="col" class="num">Bookings</th><th scope="col" class="num">Share</th><th scope="col" class="num">Est. revenue</th><th scope="col" class="num">No-show rate</th></tr></thead>
+            <tbody>
+              <tr v-for="row in staffRows" :key="row.id">
+                <th scope="row" data-label="Team member">{{ row.name }}<span v-if="row.inactive" class="chip neutral">Inactive</span></th>
+                <td class="num" data-label="Bookings">{{ row.count }}</td>
+                <td class="num" data-label="Share">{{ percent(row.share) }}</td>
+                <td class="num" data-label="Est. revenue">{{ row.revenueText || '—' }}</td>
+                <td class="num" data-label="No-show rate"><span>{{ percent(row.rate) }}<span v-if="row.finished" class="sub-inline"> ({{ row.noShow }} of {{ row.finished }})</span></span></td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <th scope="row" data-label="Everyone">Everyone</th>
+                <td class="num" data-label="Bookings" data-testid="staff-total-bookings">{{ staffTotals.bookings }}</td>
+                <td class="num" data-label="Share">{{ count ? '100%' : '—' }}</td>
+                <td class="num" data-label="Est. revenue" data-testid="staff-total-revenue">{{ staffTotals.revenueText || '—' }}</td>
+                <td class="num" data-label="No-show rate" data-testid="staff-total-rate">{{ percent(staffTotals.rate) }}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p v-else class="muted">No team members to show yet.</p>
+      </article>
+
+      <article class="card block rebook" data-testid="rebook-card">
+        <div class="rebook-head">
+          <span class="icon-tile"><AppIcon name="campaigns" :size="20" /></span>
+          <div>
+            <h2>Rebook opportunity <GmHint text="Clients whose last visit was longer ago than the 'rebook after' days on that service, with nothing booked since. Opted-out clients are not counted." label="About rebook opportunity" /></h2>
+            <p v-if="rebook.total" class="rebook-count"><strong class="tnum">{{ rebook.total }}</strong> {{ rebook.total === 1 ? 'client is' : 'clients are' }} due to rebook<span v-if="rebook.sample.length" class="muted">, including {{ rebook.sample.join(', ') }}</span>.</p>
+            <p v-else-if="rebook.configured" class="muted">No one is due to rebook right now. Nice work keeping clients coming back.</p>
+            <p v-else class="muted">Set "rebook after" days on a service in Services and Bookins will show who is due.</p>
+          </div>
+        </div>
+        <div class="cluster">
+          <RouterLink v-if="rebook.total" class="primary" :to="{ path: '/campaigns', query: { preset: 'due-rebook' } }">Message them in Campaigns</RouterLink>
+          <RouterLink v-else-if="!rebook.configured" class="secondary" to="/services">Open Services</RouterLink>
+          <RouterLink v-else class="secondary" :to="{ path: '/campaigns', query: { preset: 'lapsed-90' } }">Find lapsed clients</RouterLink>
+        </div>
       </article>
 
       <div class="grid grid-2 pair">
@@ -395,14 +525,14 @@ const percent = value => (value === null ? '—' : `${value}%`)
         <article class="card block">
           <h2>Lead time <GmHint text="How far ahead clients book on average: the time from when they booked online to the appointment. Bookings you add yourself are excluded." label="About lead time" /></h2>
           <div v-if="leadTime" class="metric tnum">{{ leadTime.text }}</div>
-          <p v-if="leadTime" class="muted">Average time between a client booking online and the appointment, from {{ leadTime.count }} online bookings.</p>
-          <p v-else class="muted">No online bookings in {{ periodLabel }}.</p>
+          <p v-if="leadTime" class="muted">Average time between a client booking online and the appointment, from {{ leadTime.count }} online {{ leadTime.count === 1 ? 'booking' : 'bookings' }} made {{ madeIn }}.</p>
+          <p v-else class="muted">No online bookings were made {{ madeIn }}.</p>
         </article>
         <article class="card block">
           <h2>Added by you</h2>
           <div v-if="ownerShare" class="metric tnum">{{ ownerShare.pct }}%</div>
-          <p v-if="ownerShare" class="muted">{{ ownerShare.count }} of {{ count }} bookings in {{ periodLabel }} were added by you rather than booked online.</p>
-          <p v-else class="muted">No bookings in {{ periodLabel }}.</p>
+          <p v-if="ownerShare" class="muted">{{ ownerShare.count }} of {{ ownerShare.total }} bookings made {{ madeIn }} were added by you rather than booked online.</p>
+          <p v-else class="muted">No bookings were made {{ madeIn }}.</p>
         </article>
       </div>
     </template>
@@ -435,6 +565,16 @@ const percent = value => (value === null ? '—' : `${value}%`)
 .revenue strong { font-size: 26px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .revenue span { color: var(--muted); font-size: var(--text-xs); }
 .pair { align-items: start; }
+.staff-table tfoot th, .staff-table tfoot td { border-bottom: 0; border-top: 2px solid var(--line-strong); font-weight: 750; }
+.staff-table .chip { margin-left: var(--space-2); }
+.sub-inline { color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
+.rebook { gap: var(--space-3); }
+.rebook-head { display: flex; align-items: flex-start; gap: var(--space-3); }
+.rebook-head h2 { margin-bottom: 4px; }
+.rebook-head p { margin: 0; }
+.rebook-count { font-size: var(--text-md); }
+.rebook-count strong { font-size: var(--text-xl); }
+.rebook .cluster a { text-decoration: none; }
 .table-wrap { max-width: 100%; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 th, td { padding: 10px 6px; border-bottom: 1px solid var(--line); text-align: left; }
@@ -458,6 +598,13 @@ tbody th { font-weight: 650; }
 abbr { text-decoration: none; }
 @media (max-width: 700px) {
   .pair { grid-template-columns: 1fr; }
+  .staff-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .staff-table, .staff-table tbody, .staff-table tfoot, .staff-table tr, .staff-table th, .staff-table td { display: block; }
+  .staff-table tr { padding: var(--space-2) 0; border-bottom: 1px solid var(--line); }
+  .staff-table th, .staff-table td { padding: 2px 0; border: 0 !important; text-align: left; }
+  .staff-table td.num { display: flex; justify-content: space-between; gap: var(--space-3); }
+  .staff-table td::before { content: attr(data-label); color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
+  .staff-table tfoot tr { border-top: 2px solid var(--line-strong); border-bottom: 0; }
   .kpis { gap: var(--space-2); }
   .revenue strong { font-size: 22px; }
 }

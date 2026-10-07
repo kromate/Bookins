@@ -19,6 +19,20 @@ const LIVE_MUTATIONS = new Set([
   'revokeServiceLink',
   'saveMessageTemplates',
   'saveContact',
+  'saveStaff',
+  'deactivateStaff',
+  'reactivateStaff',
+  'createStaffServices',
+  'deleteStaffServiceCopies',
+  'assignBookingStaff',
+  'bulkAssignStaff',
+  'markMessageOpened',
+  'saveCampaign',
+  'deleteCampaign',
+  'touchCampaign',
+  'setMarketingOptOut',
+  'recordOffer',
+  'markCampaignRecipientOpened',
 ])
 
 const isExplicitRejection = (error) =>

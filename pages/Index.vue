@@ -5,10 +5,11 @@ import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
-import { copyText, isActiveBooking, isActiveTimeOff, setBookingStatus } from '../booking.js'
-import { composeMessage } from '../messaging.js'
+import { copyText, hasTeam, isActiveBooking, isStaffCopy, isActiveTimeOff, messageQueue, setBookingStatus, staffForBooking, teamMembers } from '../booking.js'
+import { SLOT_LABELS } from '../messaging.js'
 import { isDemo } from '../runtime.js'
 import { displayTimeZone, zonedDateKey } from '../time-display.js'
+import { displayName } from '../team-ui.js'
 
 const state = inject('bookingState')
 const refresh = inject('refreshBookings', async () => true)
@@ -27,9 +28,10 @@ onBeforeUnmount(() => {
 const copyError = ref('')
 const scheduleZone = computed(() => displayTimeZone(state.schedules[0]?.timezone))
 
+// Per-member copies are guest-page plumbing: count only the services the owner made (same as the Services page).
 const activeServices = computed(
   () =>
-    state.services.filter((item) => item.active !== false && item.visibility === 'public').length,
+    state.services.filter((item) => !isStaffCopy(item) && item.active !== false && item.visibility === 'public').length,
 )
 const upcomingBookings = computed(() =>
   state.bookings
@@ -91,11 +93,6 @@ const dayKey = (value) => zonedDateKey(value, scheduleZone.value)
 const todayBookings = computed(() =>
   state.bookings.filter((item) => isActiveBooking(item) && dayKey(item.starts_at) === todayKey.value).sort(byStart),
 )
-const tomorrowBookings = computed(() =>
-  state.bookings
-    .filter((item) => item.status === 'confirmed' && dayKey(item.starts_at) === tomorrowKey.value)
-    .sort(byStart),
-)
 const timeOffOn = (key) =>
   state.bookings.some(
     (item) => isActiveTimeOff(item) && dayKey(item.starts_at) <= key && key <= dayKey(item.ends_at || item.starts_at),
@@ -103,23 +100,27 @@ const timeOffOn = (key) =>
 const timeOffToday = computed(() => timeOffOn(todayKey.value))
 const timeOffTomorrow = computed(() => timeOffOn(tomorrowKey.value))
 
-// Reminders are opened in the owner's own WhatsApp, SMS, or mail app. "Reminded" is a per-session memory aid only.
-const reminded = ref(new Set())
-function toggleReminded(booking, checked) {
-  const next = new Set(reminded.value)
-  if (checked) next.add(booking.id)
-  else next.delete(booking.id)
-  reminded.value = next
-}
-function reminderFor(booking) {
-  const service = state.services.find((item) => item.id === booking.service_id)
-  return composeMessage('reminder', booking, {
-    profile: state.profile,
-    service,
-    bookingLink: state.profile?.public_link_url || '',
-  })
-}
-const reminders = computed(() => tomorrowBookings.value.map((booking) => ({ booking, message: reminderFor(booking) })))
+// Messages due now, computed live from bookings. The owner opens each one in their own app; nothing is sent by Bookins.
+const KIND_CHIP = { reminder24: '24h reminder', reminder2: '2h reminder', prep: 'Prep info', thanks: 'Thank-you', rebook: 'Rebook nudge' }
+const KIND_TONE = { reminder24: 'info', reminder2: 'warning', prep: 'neutral', thanks: 'success', rebook: 'accent' }
+const kindLabel = (kind) => KIND_CHIP[kind] || SLOT_LABELS[kind] || kind
+const dueMessages = computed(() =>
+  messageQueue(state, { now: now.value, timezone: scheduleZone.value }).due.filter((item) => item.message.enabled !== false),
+)
+const dueTop = computed(() => dueMessages.value.slice(0, 3))
+
+// Today by staff: only shown once a team member has been added.
+const team = computed(() => hasTeam(state))
+const todayByStaff = computed(() => {
+  if (!team.value) return []
+  const groups = new Map(teamMembers(state).map((member) => [member.id, { member, bookings: [] }]))
+  for (const booking of todayBookings.value) {
+    const member = staffForBooking(state, booking)
+    if (!groups.has(member.id)) groups.set(member.id, { member, bookings: [] })
+    groups.get(member.id).bookings.push(booking)
+  }
+  return [...groups.values()]
+})
 
 const statusBusy = ref('')
 const statusError = ref('')
@@ -239,7 +240,7 @@ async function copyLink() {
         <ul v-if="todayBookings.length" class="day-list">
           <li v-for="booking in todayBookings" :key="booking.id">
             <span class="day-time tnum">{{ formatTime(booking) }}</span>
-            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ booking.service_name }} · {{ statusLabel[booking.status] }}</small></span>
+            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ displayName(booking.service_name) }} · {{ statusLabel[booking.status] }}</small></span>
             <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="day-actions">
               <GmButton variant="secondary" size="sm" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'completed')">Mark completed</GmButton>
               <GmButton variant="ghost" size="sm" class="delete-link" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'no_show')">Mark no-show</GmButton>
@@ -254,30 +255,48 @@ async function copyLink() {
         </div>
       </article>
 
-      <article class="card day-card">
+      <article class="card day-card messages-card" data-tour="tour-overview-messages">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Tomorrow</p>
-            <h2>Reminder queue <GmHint text="Bookins does not send reminders for you. For each booking tomorrow, it prepares a message and opens it in your own WhatsApp, SMS or email app so you press send yourself." label="About reminders" /></h2>
-            <p class="tz-label muted">{{ tomorrowKey }} · Opens your own WhatsApp, SMS, or mail app. Bookins does not send.</p>
+            <p class="eyebrow">Messages</p>
+            <h2>Messages due <span class="count-pill tnum">{{ dueMessages.length }}</span> <GmHint text="Reminders, prep notes, thank-yous and rebook nudges that are ready now. Bookins prepares each message and opens it in your own WhatsApp, SMS or email app. You press send; nothing is sent automatically." label="About messages due" /></h2>
+            <p class="tz-label muted">Opened in your own app. Bookins does not send.</p>
           </div>
         </div>
-        <ul v-if="reminders.length" class="day-list">
-          <li v-for="{ booking, message } in reminders" :key="booking.id" class="reminder-row">
-            <span class="day-time tnum">{{ formatTime(booking) }}</span>
-            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ booking.service_name }}</small></span>
-            <span class="day-actions">
-              <a v-if="message.whatsapp" class="primary small-button" :href="message.whatsapp" target="_blank" rel="noreferrer">Open WhatsApp</a>
-              <a v-if="message.sms" class="secondary small-button" :href="message.sms">SMS</a>
-              <a v-if="message.email" class="secondary small-button" :href="message.email">Email</a>
-              <small v-if="!message.whatsapp && !message.sms && !message.email" class="muted">No usable phone or email</small>
-            </span>
-            <label class="reminded"><input type="checkbox" :checked="reminded.has(booking.id)" @change="toggleReminded(booking, $event.target.checked)" />Marked as reminded (this session only)</label>
+        <ul v-if="dueTop.length" class="day-list msg-due-list">
+          <li v-for="item in dueTop" :key="item.id">
+            <span class="upcoming-copy"><strong>{{ item.contact.name }}</strong><small>{{ displayName(item.booking.service_name) }}</small></span>
+            <span class="chip" :class="KIND_TONE[item.kind]">{{ kindLabel(item.kind) }}</span>
           </li>
         </ul>
         <div v-else class="empty compact">
-          <span class="empty-icon"><AppIcon name="clock" :size="20" /></span>
-          <p>No confirmed bookings tomorrow. Reminders for tomorrow's guests will appear here.</p>
+          <span class="empty-icon"><AppIcon name="check" :size="20" /></span>
+          <p>Nothing due right now. Reminders show up here 24 hours and 2 hours before a visit.</p>
+        </div>
+        <p v-if="dueMessages.length > dueTop.length" class="muted more-due">and {{ dueMessages.length - dueTop.length }} more</p>
+        <RouterLink class="secondary open-messages" to="/messages">Open Messages<AppIcon name="chevron" :size="14" /></RouterLink>
+      </article>
+
+      <article v-if="team" class="card day-card by-staff-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Team</p>
+            <h2>Today by staff</h2>
+            <p class="tz-label muted">{{ todayKey }} · {{ scheduleZone }}</p>
+          </div>
+          <RouterLink to="/team">Team <AppIcon name="chevron" :size="14" /></RouterLink>
+        </div>
+        <div class="staff-groups">
+          <section v-for="group in todayByStaff" :key="group.member.id" class="staff-group" :aria-label="`${group.member.name}'s bookings today`">
+            <h3><span class="staff-dot" :style="group.member.color ? { background: group.member.color } : null" />{{ group.member.name }} <span class="count-pill tnum">{{ group.bookings.length }}</span></h3>
+            <ul v-if="group.bookings.length" class="day-list">
+              <li v-for="booking in group.bookings" :key="booking.id">
+                <span class="day-time tnum">{{ formatTime(booking) }}</span>
+                <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ displayName(booking.service_name) }} · {{ statusLabel[booking.status] }}</small></span>
+              </li>
+            </ul>
+            <p v-else class="muted staff-free">No bookings today.</p>
+          </section>
         </div>
       </article>
     </div>
@@ -299,7 +318,7 @@ async function copyLink() {
               <small>{{ new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({ month: 'short' }, booking)) }}</small>
             </span>
             <span class="list-row-main">
-              <strong>{{ booking.service_name }}</strong>
+              <strong>{{ displayName(booking.service_name) }}</strong>
               <span>{{ booking.guest_name }} · {{ formatDate(booking) }}</span>
             </span>
             <span class="list-row-end">
@@ -397,7 +416,18 @@ async function copyLink() {
 .day-actions a { display: inline-flex; align-items: center; text-decoration: none; }
 .delete-link { color: var(--danger); }
 .day-actions :deep(.delete-link) { --button-fg: var(--danger); }
-.reminded { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-xs); }
+.messages-card { display: flex; flex-direction: column; }
+.messages-card .section-heading h2 { display: flex; align-items: center; gap: 8px; }
+.msg-due-list li { grid-template-columns: minmax(0, 1fr) auto; }
+.more-due { margin: var(--space-2) 0 0; font-size: var(--text-sm); }
+.open-messages { margin-top: auto; align-self: flex-start; justify-content: center; text-decoration: none; }
+.messages-card > .empty, .messages-card > .msg-due-list { margin-bottom: var(--space-3); }
+.by-staff-card { grid-column: 1 / -1; }
+.staff-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-4); }
+.staff-group h3 { margin: 0 0 var(--space-2); display: flex; align-items: center; gap: 8px; font-size: var(--text-md); }
+.staff-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--accent); }
+.staff-free { margin: 0; font-size: var(--text-sm); }
+.staff-group .day-list li { grid-template-columns: 64px minmax(0, 1fr); }
 .upcoming-copy { min-width: 0; display: grid; gap: 2px; }
 .upcoming-copy strong, .upcoming-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upcoming-copy strong { font-size: var(--text-md); }
@@ -446,7 +476,7 @@ async function copyLink() {
   .dashboard-side { grid-template-columns: 1fr; }
   .day-list li { grid-template-columns: 64px minmax(0, 1fr); }
   .day-actions { grid-column: 1 / -1; justify-content: flex-start; }
-  .reminded { grid-column: 1 / -1; }
+  .day-list.msg-due-list li { grid-template-columns: minmax(0, 1fr) auto; }
   .upcoming-row .chip { display: none; }
 }
 </style>

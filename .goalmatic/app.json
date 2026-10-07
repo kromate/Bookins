@@ -6,11 +6,11 @@
   "slug": "bookings",
   "name": "Bookins",
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
-  "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, and keep contact history together. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
+  "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, organise a small team, and keep client history together. You open prefilled WhatsApp, SMS or email messages yourself; Bookins does not send them. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.5.3",
-  "releaseType": "patch",
-  "releaseNotes": "Hides the local-development \"Offline preview\" notice on hosted pages, including the public booking page. No new permissions or data changes.",
+  "version": "0.6.0",
+  "releaseType": "minor",
+  "releaseNotes": "Adds Services CSV import and export with categories, sort order, rebook-after days and prep notes; team members with their own schedules and booking assignment; a message journey and a live Messages queue that you open yourself in your own WhatsApp, SMS or email app (Bookins sends nothing automatically); campaigns that build audiences from your booking history with opt-out, for you to open yourself (no delivery or open tracking; discounts are honoured by hand). New optional Tables: Team (staff) and Campaigns, with new capabilities staff-data and campaigns-data that you approve on update. New optional fields on services, bookings and contacts. The optional daily agenda email to you now also lists tomorrow's reminder links (to be proved on a real account). Guests are still not emailed and payments are unavailable.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -261,6 +261,36 @@
       "existingResourceAllowed": true
     },
     {
+      "id": "staff-data",
+      "kind": "tables",
+      "displayName": "Store team members",
+      "description": "Creates an optional account-scoped Table for team members, their colours, and which schedule and services each one has.",
+      "operations": [
+        "tables.records-list",
+        "tables.record-create",
+        "tables.record-update",
+        "tables.record-delete"
+      ],
+      "required": false,
+      "logicalResourceId": "staff",
+      "existingResourceAllowed": true
+    },
+    {
+      "id": "campaigns-data",
+      "kind": "tables",
+      "displayName": "Store campaigns",
+      "description": "Creates an optional account-scoped Table for saved campaigns: audience filters, message wording and offer text. Bookins never sends campaigns.",
+      "operations": [
+        "tables.records-list",
+        "tables.record-create",
+        "tables.record-update",
+        "tables.record-delete"
+      ],
+      "required": false,
+      "logicalResourceId": "campaigns",
+      "existingResourceAllowed": true
+    },
+    {
       "id": "booking-public",
       "kind": "tools",
       "displayName": "Receive public bookings",
@@ -301,7 +331,7 @@
       "id": "owner-daily-agenda-workflow",
       "kind": "workflows",
       "displayName": "Email me a daily agenda",
-      "description": "Installs one scheduled workflow (off until you turn it on) that emails the account owner today's appointments and new bookings each morning. Guests are not emailed.",
+      "description": "Installs one scheduled workflow (off until you turn it on) that emails the account owner today's appointments, new bookings and tomorrow's prefilled reminder links each morning. Guests are not emailed.",
       "operations": [
         "workflows.run",
         "workflows.schedule-configure"
@@ -356,7 +386,7 @@
           },
           {
             "id": "message_templates_json",
-            "name": "Message templates",
+            "name": "Message templates (versioned JSON)",
             "type": "textarea"
           }
         ]
@@ -508,6 +538,26 @@
             "id": "public_link_expires_at",
             "name": "Public link expires at",
             "type": "date"
+          },
+          {
+            "id": "category",
+            "name": "Category",
+            "type": "text"
+          },
+          {
+            "id": "sort_order",
+            "name": "Sort order",
+            "type": "number"
+          },
+          {
+            "id": "rebook_after_days",
+            "name": "Rebook after days",
+            "type": "number"
+          },
+          {
+            "id": "prep_notes",
+            "name": "Prep notes",
+            "type": "textarea"
           }
         ]
       },
@@ -640,6 +690,46 @@
             "id": "series_id",
             "name": "Series ID",
             "type": "text"
+          },
+          {
+            "id": "staff_id",
+            "name": "Staff ID",
+            "type": "text"
+          },
+          {
+            "id": "staff_name",
+            "name": "Staff name",
+            "type": "text"
+          },
+          {
+            "id": "reminder_opened_at",
+            "name": "Reminder opened at",
+            "type": "date"
+          },
+          {
+            "id": "followup_opened_at",
+            "name": "Thank-you opened at",
+            "type": "date"
+          },
+          {
+            "id": "reminder24_opened_at",
+            "name": "24h reminder opened at",
+            "type": "date"
+          },
+          {
+            "id": "reminder2_opened_at",
+            "name": "2h reminder opened at",
+            "type": "date"
+          },
+          {
+            "id": "prep_opened_at",
+            "name": "Prep message opened at",
+            "type": "date"
+          },
+          {
+            "id": "rebook_opened_at",
+            "name": "Rebook message opened at",
+            "type": "date"
           }
         ]
       },
@@ -679,6 +769,152 @@
             "id": "updated_at",
             "name": "Updated at",
             "type": "date"
+          },
+          {
+            "id": "marketing_opt_out",
+            "name": "Marketing opt-out",
+            "type": "boolean"
+          },
+          {
+            "id": "marketing_opt_out_at",
+            "name": "Marketing opt-out at",
+            "type": "date"
+          },
+          {
+            "id": "last_campaign_at",
+            "name": "Last campaign opened at",
+            "type": "date"
+          },
+          {
+            "id": "offers_json",
+            "name": "Offers",
+            "type": "textarea"
+          }
+        ]
+      },
+      {
+        "id": "staff",
+        "name": "Team Members",
+        "description": "Team members, each with their own schedule and the services they offer. The owner is implicit and needs no row. Optional.",
+        "fields": [
+          {
+            "id": "name",
+            "name": "Name",
+            "type": "text",
+            "required": true
+          },
+          {
+            "id": "role",
+            "name": "Role",
+            "type": "text"
+          },
+          {
+            "id": "photo_url",
+            "name": "Photo URL",
+            "type": "url"
+          },
+          {
+            "id": "color",
+            "name": "Colour",
+            "type": "text"
+          },
+          {
+            "id": "phone",
+            "name": "Phone",
+            "type": "text"
+          },
+          {
+            "id": "email",
+            "name": "Email",
+            "type": "email"
+          },
+          {
+            "id": "active",
+            "name": "Active",
+            "type": "boolean"
+          },
+          {
+            "id": "schedule_id",
+            "name": "Schedule ID",
+            "type": "text"
+          },
+          {
+            "id": "service_ids_json",
+            "name": "Service IDs",
+            "type": "textarea"
+          },
+          {
+            "id": "is_owner",
+            "name": "Is owner",
+            "type": "boolean"
+          },
+          {
+            "id": "revision",
+            "name": "Revision",
+            "type": "text"
+          },
+          {
+            "id": "updated_at",
+            "name": "Updated at",
+            "type": "date"
+          }
+        ]
+      },
+      {
+        "id": "campaigns",
+        "name": "Campaigns",
+        "description": "Saved campaigns: audience filters, message wording and offer text. Bookins prepares messages; you open them in your own apps. Optional.",
+        "fields": [
+          {
+            "id": "name",
+            "name": "Name",
+            "type": "text",
+            "required": true
+          },
+          {
+            "id": "segment_json",
+            "name": "Segment filters",
+            "type": "textarea"
+          },
+          {
+            "id": "template_json",
+            "name": "Message template",
+            "type": "textarea"
+          },
+          {
+            "id": "offer_text",
+            "name": "Offer text",
+            "type": "textarea"
+          },
+          {
+            "id": "offer_code",
+            "name": "Offer code",
+            "type": "text"
+          },
+          {
+            "id": "status",
+            "name": "Status",
+            "type": "select",
+            "options": [
+              "draft",
+              "active",
+              "done"
+            ]
+          },
+          {
+            "id": "audience_count",
+            "name": "Audience count",
+            "type": "number"
+          },
+          {
+            "id": "created_at",
+            "name": "Created at",
+            "type": "date"
+          },
+          {
+            "id": "last_opened_at",
+            "name": "Last opened at",
+            "type": "date"
           }
         ]
       }
@@ -688,7 +924,7 @@
       {
         "id": "owner-daily-agenda",
         "name": "Bookins - daily agenda email",
-        "description": "Every morning, reads Bookings and emails the account owner today's appointments, today's time off, and bookings received in the last 24 hours. Guests are not emailed.",
+        "description": "Every morning, reads Bookings, Profiles and Services and emails the account owner today's appointments, today's time off, bookings received in the last 24 hours, and prefilled reminder links for tomorrow's appointments. Guests are not emailed; the owner opens each link.",
         "enabledOnInstall": false,
         "trigger": {
           "id": "agenda-schedule",
@@ -718,11 +954,40 @@
             }
           },
           {
+            "id": "read-profiles",
+            "nodeId": "TABLE_READ",
+            "name": "Read booking profile",
+            "props": {
+              "tableId": {
+                "$appResource": {
+                  "kind": "table",
+                  "logicalResourceId": "profiles"
+                }
+              },
+              "limit": 1
+            }
+          },
+          {
+            "id": "read-services",
+            "nodeId": "TABLE_READ",
+            "name": "Read services",
+            "props": {
+              "tableId": {
+                "$appResource": {
+                  "kind": "table",
+                  "logicalResourceId": "services"
+                }
+              },
+              "limit": 200
+            }
+          },
+          {
             "id": "build-agenda",
             "nodeId": "TRANSFORM_DATA",
             "name": "Format daily agenda",
             "props": {
-              "transformFunction": "(data) => { const records = data && data.payload && Array.isArray(data.payload.records) ? data.payload.records : []; const now = Date.now(); const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\\r\\n]+/g, ' ').trim(); const dayIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(0, 10); } }; const timeIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(11, 16) + ' UTC'; } }; const isOff = (r) => clean(r.status) === 'blocked' || clean(r.service_id) === 'time-off'; const email = (r) => /@bookins\\.invalid$/i.test(clean(r.guest_email)) ? '' : clean(r.guest_email); const today = []; const timeOff = []; const fresh = []; records.forEach((r) => { if (!r) return; const tz = clean(r.timezone) || 'UTC'; const start = Date.parse(r.starts_at); const end = Date.parse(r.ends_at); if (isNaN(start)) return; const status = clean(r.status); if (isOff(r)) { if (status === 'blocked' && !isNaN(end) && end > now && dayIn(start, tz) <= dayIn(now, tz) && dayIn(end, tz) >= dayIn(now, tz)) timeOff.push(timeIn(start, tz) + '-' + timeIn(end, tz) + ' ' + (clean(r.notes) || 'Time off') + ' (' + tz + ')'); return; } if (status !== 'cancelled' && dayIn(start, tz) === dayIn(now, tz)) today.push({ start, line: timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.guest_phone) ? ', ' + clean(r.guest_phone) : '') + (email(r) ? ', ' + email(r) : '') + ' (' + tz + ', ' + clean(r.reference) + ')' }); const created = Date.parse(r.created_at); if (!isNaN(created) && now - created <= 86400000 && status !== 'cancelled' && start > now) fresh.push({ start, line: dayIn(start, tz) + ' ' + timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.source) === 'owner' ? ' (added by you)' : '') + ' (' + tz + ')' }); }); today.sort((a, b) => a.start - b.start); fresh.sort((a, b) => a.start - b.start); const lines = ['Good morning. Here is your Bookins agenda.', '', 'TODAY (' + today.length + ')']; if (today.length) today.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No appointments today.'); if (timeOff.length) { lines.push('', 'TIME OFF TODAY'); timeOff.forEach((l) => lines.push('- ' + l)); } lines.push('', 'NEW IN THE LAST 24 HOURS (' + fresh.length + ')'); if (fresh.length) fresh.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No new bookings.'); lines.push('', 'Open Bookins to message clients, reschedule, or mark appointments completed.', 'Sent from noreply@goalmatic.io to the account owner only. Guests are not emailed. Based on your most recently created 200 bookings.'); const subject = 'Bookins: ' + (today.length ? today.length + ' appointment' + (today.length === 1 ? '' : 's') + ' today' : 'no appointments today') + (fresh.length ? ', ' + fresh.length + ' new' : ''); return { subject, body: lines.join('\\n') }; }"
+              "input": "{\"bookings\":[@step-0-TABLE_READ-records],\"profiles\":[@step-1-TABLE_READ-records],\"services\":[@step-2-TABLE_READ-records]}",
+              "transformFunction": "(data) => {\n  if (typeof data === 'string') throw new Error('The agenda could not read its Bookins tables.');\n  const list = (v) => (Array.isArray(v) ? v : []);\n  const bookings = data && Array.isArray(data.bookings) ? data.bookings : data && data.payload ? list(data.payload.records) : [];\n  const profile = list(data && data.profiles)[0] || {};\n  const services = {};\n  list(data && data.services).forEach((s) => { if (s && s.id) services[s.id] = s; });\n  const now = Date.now();\n  const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\\r\\n]+/g, ' ').trim();\n  const dayIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(0, 10); } };\n  const timeIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(11, 16) + ' UTC'; } };\n  const nextDay = (day) => new Date(Date.parse(day + 'T12:00:00.000Z') + 86400000).toISOString().slice(0, 10);\n  const isOff = (r) => clean(r.status) === 'blocked' || clean(r.service_id) === 'time-off';\n  const email = (r) => (/@bookins\\.invalid$/i.test(clean(r.guest_email)) ? '' : clean(r.guest_email));\n\n  const DEFAULTS = { subject: \"Reminder: \\u007b\\u007bservice\\u007d\\u007d on \\u007b\\u007bdate\\u007d\\u007d\", body: \"Hi \\u007b\\u007bfirst_name\\u007d\\u007d, a friendly reminder of your \\u007b\\u007bservice\\u007d\\u007d with \\u007b\\u007bbusiness\\u007d\\u007d on \\u007b\\u007bdate\\u007d\\u007d at \\u007b\\u007btime\\u007d\\u007d (\\u007b\\u007btimezone\\u007d\\u007d).\\nLocation: \\u007b\\u007blocation\\u007d\\u007d\\n\\nPlease reply if you can no longer make it.\" };\n  const COUNTRY_CODES = {\"NG\":\"234\",\"GH\":\"233\",\"KE\":\"254\",\"ZA\":\"27\",\"UG\":\"256\",\"TZ\":\"255\",\"RW\":\"250\",\"CI\":\"225\",\"SN\":\"221\",\"CM\":\"237\",\"EG\":\"20\"};\n  const TZ_COUNTRIES = {\"Africa/Lagos\":\"NG\",\"Africa/Accra\":\"GH\",\"Africa/Nairobi\":\"KE\",\"Africa/Johannesburg\":\"ZA\",\"Africa/Kampala\":\"UG\",\"Africa/Dar_es_Salaam\":\"TZ\",\"Africa/Kigali\":\"RW\",\"Africa/Abidjan\":\"CI\",\"Africa/Dakar\":\"SN\",\"Africa/Douala\":\"CM\",\"Africa/Cairo\":\"EG\"};\n  const parseJson = (text) => { try { const v = JSON.parse(text || '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; } catch (e) { return {}; } };\n  const saved = parseJson(profile.message_templates_json);\n  const isV2 = saved.v === 2 || (saved.slots && typeof saved.slots === 'object');\n  const savedSlot = isV2 ? (saved.slots || {}).reminder24 : saved.reminder24 || saved.reminder;\n  const slot = savedSlot && typeof savedSlot === 'object' ? savedSlot : {};\n  const overrides = isV2 && saved.serviceOverrides && typeof saved.serviceOverrides === 'object' ? saved.serviceOverrides : {};\n  const channelPref = ['whatsapp', 'sms', 'email'].indexOf(slot.channel) !== -1 ? slot.channel : 'whatsapp';\n  const slotEnabled = slot.enabled !== false;\n  const baseBody = typeof slot.body === 'string' && slot.body.trim() ? slot.body : DEFAULTS.body;\n  const subjectTemplate = typeof slot.subject === 'string' && slot.subject.trim() ? slot.subject : DEFAULTS.subject;\n  const tokenPattern = /\\u007b\\u007b\\s*([a-z_]+)\\s*\\u007d\\u007d/g;\n  const labelLine = /^[^\\S\\n]*[A-Za-z][\\w ]{0,30}:[^\\S\\n]*\\u007b\\u007b\\s*([a-z_]+)\\s*\\u007d\\u007d[^\\S\\n]*$/;\n  const render = (template, vars) => {\n    const val = (k) => (vars[k] === null || vars[k] === undefined ? '' : String(vars[k]));\n    return String(template || '').split('\\n').filter((line) => { const m = labelLine.exec(line); return !(m && val(m[1]) === ''); }).join('\\n').replace(tokenPattern, (_, k) => val(k)).replace(/\\n{3,}/g, '\\n\\n').replace(/\\s+$/, '');\n  };\n  const country = TZ_COUNTRIES[clean(profile.timezone)] || 'NG';\n  const dial = (phone) => {\n    const raw = clean(phone); if (!raw) return '';\n    let digits = raw.replace(/\\D/g, '');\n    if (raw.charAt(0) !== '+') {\n      if (digits.indexOf('00') === 0) digits = digits.slice(2);\n      else if (digits.charAt(0) === '0') digits = COUNTRY_CODES[country] + digits.slice(1);\n      else if (!Object.keys(COUNTRY_CODES).some((k) => digits.indexOf(COUNTRY_CODES[k]) === 0)) return '';\n    }\n    return digits.length >= 8 && 15 >= digits.length ? digits : '';\n  };\n  const waContact = /\\[\\[wa:\\s*(\\+?[\\d\\s().-]{6,25})\\s*\\]\\]/i;\n  const bioMatch = waContact.exec(String(profile.bio || ''));\n  const business = clean(profile.display_name) || 'your host';\n  const trailer = /\\n?\\[\\[bk:(\\{.*\\})\\]\\]\\s*$/s;\n  const prepOf = (svc) => { if (!svc) return ''; if (clean(svc.prep_notes)) return clean(svc.prep_notes); const m = trailer.exec(String(svc.description || '')); if (!m) return ''; try { return clean(JSON.parse(m[1]).p); } catch (e) { return ''; } };\n  const reminderFor = (r, tz, start) => {\n    const svc = services[clean(r.service_id)];\n    const name = clean(r.guest_name);\n    const minutes = Math.round((Date.parse(r.ends_at) - start) / 60000);\n    const link = clean(profile.public_link_url);\n    const vars = {\n      guest_name: name, first_name: name.split(/\\s+/)[0] || name, service: clean(r.service_name) || (svc ? clean(svc.name) : ''),\n      date: new Intl.DateTimeFormat('en-GB', { timeZone: tz, weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(start)),\n      time: new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(start)),\n      timezone: tz, duration: minutes > 0 ? minutes + ' min' : '', business: business, location: svc ? clean(svc.location) : '',\n      reference: clean(r.reference), booking_link: link, staff: clean(r.staff_name), prep_notes: prepOf(svc), rebook_link: link,\n      business_phone: bioMatch ? bioMatch[1].trim() : '', last_service: clean(r.service_name), offer: '', offer_code: '', offer_expires: '',\n    };\n    const override = overrides[clean(r.service_id)] && overrides[clean(r.service_id)].reminder24;\n    const body = override && typeof override.body === 'string' && override.body.trim() ? override.body : baseBody;\n    const text = render(body, vars);\n    const subject = render(subjectTemplate, vars);\n    const links = {\n      whatsapp: dial(r.guest_phone) ? 'https://wa.me/' + dial(r.guest_phone) + '?text=' + encodeURIComponent(text) : '',\n      sms: dial(r.guest_phone) ? 'sms:+' + dial(r.guest_phone) + '?&body=' + encodeURIComponent(text) : '',\n      email: email(r) ? 'mailto:' + encodeURIComponent(email(r)) + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(text) : '',\n    };\n    const order = [channelPref].concat(['whatsapp', 'sms', 'email'].filter((c) => c !== channelPref));\n    const pick = order.filter((c) => links[c])[0] || '';\n    return { channel: pick, link: pick ? links[pick] : '' };\n  };\n\n  const today = []; const timeOff = []; const fresh = []; const reminders = [];\n  const channelLabel = { whatsapp: 'Open WhatsApp', sms: 'Open SMS', email: 'Open email' };\n  bookings.forEach((r) => {\n    if (!r) return;\n    const tz = clean(r.timezone) || 'UTC';\n    const start = Date.parse(r.starts_at);\n    const end = Date.parse(r.ends_at);\n    if (isNaN(start)) return;\n    const status = clean(r.status);\n    const todayKey = dayIn(now, tz);\n    if (isOff(r)) {\n      if (status === 'blocked' && !isNaN(end) && end > now && todayKey >= dayIn(start, tz) && dayIn(end, tz) >= todayKey) timeOff.push(timeIn(start, tz) + '-' + timeIn(end, tz) + ' ' + (clean(r.notes) || 'Time off') + ' (' + tz + ')');\n      return;\n    }\n    const who = clean(r.staff_name) && clean(r.staff_name) !== business ? ' with ' + clean(r.staff_name) : '';\n    if (status !== 'cancelled' && dayIn(start, tz) === todayKey) today.push({ start, line: timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + who + (clean(r.guest_phone) ? ', ' + clean(r.guest_phone) : '') + (email(r) ? ', ' + email(r) : '') + ' (' + tz + ', ' + clean(r.reference) + ')' });\n    const created = Date.parse(r.created_at);\n    if (!isNaN(created) && 86400000 >= now - created && status !== 'cancelled' && start > now) fresh.push({ start, line: dayIn(start, tz) + ' ' + timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.source) === 'owner' ? ' (added by you)' : '') + ' (' + tz + ')' });\n    if (slotEnabled && status === 'confirmed' && dayIn(start, tz) === nextDay(todayKey) && !clean(r.reminder24_opened_at) && !clean(r.reminder_opened_at)) {\n      const made = reminderFor(r, tz, start);\n      reminders.push({ start, line: timeIn(start, tz) + ' ' + (clean(r.guest_name) || 'Guest') + ', ' + clean(r.service_name) + (made.link ? ' - ' + channelLabel[made.channel] + ': ' + made.link : ' - no phone or email to message') });\n    }\n  });\n  const byStart = (a, b) => a.start - b.start;\n  today.sort(byStart); fresh.sort(byStart); reminders.sort(byStart);\n  const shown = reminders.slice(0, 40);\n  const lines = ['Good morning. Here is your Bookins agenda.', '', 'TODAY (' + today.length + ')'];\n  if (today.length) today.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No appointments today.');\n  if (timeOff.length) { lines.push('', 'TIME OFF TODAY'); timeOff.forEach((l) => lines.push('- ' + l)); }\n  lines.push('', 'NEW IN THE LAST 24 HOURS (' + fresh.length + ')');\n  if (fresh.length) fresh.forEach((i) => lines.push('- ' + i.line)); else lines.push('- No new bookings.');\n  lines.push('', 'REMINDERS TO OPEN FOR TOMORROW (' + reminders.length + ')');\n  if (!slotEnabled) lines.push('- The 24-hour reminder is switched off in Bookins > Messages.');\n  else if (shown.length) { shown.forEach((i) => lines.push('- ' + i.line)); if (reminders.length > shown.length) lines.push('- ' + (reminders.length - shown.length) + ' more are waiting in Bookins > Messages.'); }\n  else lines.push('- Nothing to remind about tomorrow.');\n  lines.push('', 'Open Bookins to message clients, reschedule, or mark appointments completed.');\n  lines.push('Reminder links were prepared when this email was built. Opening one only fills in a message in your own WhatsApp, SMS or email app: Bookins sends nothing to guests. Bookings moved or cancelled since then are not reflected here, so check Bookins > Messages first.');\n  lines.push('Sent from noreply@goalmatic.io to the account owner only. Guests are not emailed. Based on your most recently created 200 bookings.');\n  const subject = 'Bookins: ' + (today.length ? today.length + ' appointment' + (today.length === 1 ? '' : 's') + ' today' : 'no appointments today') + (fresh.length ? ', ' + fresh.length + ' new' : '') + (reminders.length ? ', ' + reminders.length + ' to remind' : '');\n  return { subject, body: lines.join('\\n') };\n}"
             }
           },
           {
@@ -732,8 +997,8 @@
             "props": {
               "emailType": "plain",
               "recipientEmail": "USER_EMAIL",
-              "subject": "@step-1-TRANSFORM_DATA-subject",
-              "message": "@step-1-TRANSFORM_DATA-body"
+              "subject": "@step-3-TRANSFORM_DATA-subject",
+              "message": "@step-3-TRANSFORM_DATA-body"
             }
           }
         ]

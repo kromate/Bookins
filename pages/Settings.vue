@@ -1,7 +1,7 @@
 <script setup>
 import { formatDay } from '../format-date.js'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { onBeforeRouteLeave, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import BookinsLogo from '../components/BookinsLogo.vue'
 import GmButton from '../components/ui/GmButton.vue'
@@ -10,14 +10,18 @@ import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
 import GmSelect from '../components/ui/GmSelect.vue'
 import QrCode from '../components/QrCode.vue'
-import { copyText, createPublicLink, isLocalPreview, isTimeOff, revokePublicLink, saveMessageTemplates, saveProfile } from '../booking.js'
+import { copyText, createPublicLink, hasTeam, isLocalPreview, isOwnerMember, isStaffCopy, isTimeOff, revokePublicLink, saveMessageTemplates, saveProfile, staffForBooking } from '../booking.js'
 import {
+  CHANNELS,
   DEFAULT_TEMPLATES,
+  JOURNEY_SLOTS,
+  SLOT_LABELS,
   TEMPLATE_KINDS,
   TEMPLATE_VARIABLES,
   messageVars,
   renderTemplate,
-  resolveTemplates,
+  resolveTemplateConfig,
+  serializeTemplates,
   whatsappShareUrl,
 } from '../messaging.js'
 import { isDemo, registerDemoGuard } from '../runtime.js'
@@ -30,6 +34,7 @@ const refresh = inject('refreshBookings')
 const toast = inject('toast', null)
 const setup = useSetupState()
 const router = useRouter()
+const route = useRoute()
 const saving = ref(false)
 const linking = ref(false)
 const revoking = ref(false)
@@ -139,7 +144,7 @@ const dirty = computed(() => normalizeProfile(form) !== profileBaseline.value)
 const removeModeGuard = registerDemoGuard('bookins-settings', () => {
   if (busy.value) return 'Wait for the current settings action to finish.'
   if (dirty.value) return 'Finish or discard your unsaved profile changes before switching modes.'
-  if (templatesDirty.value || savingTemplates.value) return 'Save or discard your message template edits before switching modes.'
+  if (templatesDirty.value || savingTemplates.value) return 'Save or discard your message journey edits before switching modes.'
   return ''
 })
 onBeforeUnmount(() => {
@@ -172,8 +177,7 @@ function discardChanges() {
     photoUrl: state.profile?.photo_url || '',
   })
   profileBaseline.value = normalizeProfile(form)
-  Object.assign(templates, cloneTemplates(resolveTemplates(state.profile)))
-  templateBaseline.value = JSON.stringify(templates)
+  reseedJourney()
   leavePrompt.value = false
   const route = pendingRoute.value
   pendingRoute.value = ''
@@ -189,8 +193,15 @@ function keepEditing() {
 }
 
 function flash(message, options) {
-  toast?.(message, options)
+  return toast?.(message, options)
 }
+// The "Profile saved [Create booking link]" toast is stale as soon as a link exists.
+let profileToastId = 0
+function dismissProfileToast() {
+  if (profileToastId) toast?.dismiss?.(profileToastId)
+  profileToastId = 0
+}
+watch(publicUrl, (url) => { if (url) dismissProfileToast() })
 function failToast(message) {
   toast?.error?.(message)
 }
@@ -216,15 +227,15 @@ async function submit() {
     if (await reloadChecked()) {
       syncProfileDraft()
       const action = profileNextAction()
-      flash(action ? 'Profile saved' : 'Profile saved. Guests will see these details on your booking page.', action ? { action, duration: 8000 } : undefined)
+      dismissProfileToast()
+      const id = flash(action ? 'Profile saved' : 'Profile saved. Guests will see these details on your booking page.', action ? { action, duration: 8000 } : undefined)
+      if (action) profileToastId = id || 0
     } else {
       profileBaseline.value = normalizeProfile(form)
-      error.value = STALE_MESSAGE
       failToast(STALE_MESSAGE)
     }
   } catch (reason) {
-    error.value = reason?.message || 'The profile could not be saved.'
-    failToast(error.value)
+    failToast(reason?.message || 'The profile could not be saved.')
   } finally {
     saving.value = false
   }
@@ -233,8 +244,7 @@ async function submit() {
 async function createLink() {
   if (isDemo.value || busy.value) return
   if (!state.profile?.id) {
-    error.value = 'Save your profile before creating a booking link.'
-    failToast(error.value)
+    failToast('Save your profile before creating a booking link.')
     return
   }
   linking.value = true
@@ -260,16 +270,16 @@ async function createLink() {
       // Best effort: retire the expired grant so it cannot linger.
       try { await revokePublicLink(previousUrl) } catch { /* already expired or gone */ }
     }
+    dismissProfileToast()
     if (await reloadChecked()) {
       if (!dirty.value) syncProfileDraft()
+      dismissProfileToast()
       flash('Booking link created. Copy it or use the share kit.', { duration: 6000, action: { label: 'Copy link', onClick: copy } })
     } else {
-      error.value = STALE_MESSAGE
       failToast(STALE_MESSAGE)
     }
   } catch (reason) {
-    error.value = reason?.message || 'The public link could not be created.'
-    failToast(error.value)
+    failToast(reason?.message || 'The public link could not be created.')
   } finally {
     linking.value = false
   }
@@ -298,14 +308,12 @@ async function revoke() {
       if (!dirty.value) syncProfileDraft()
       flash('Booking link revoked. Anyone opening it now sees an expired-link page.')
     } else {
-      error.value = STALE_MESSAGE
       failToast(STALE_MESSAGE)
     }
     await nextTick()
     linkHeading.value?.focus()
   } catch (reason) {
-    error.value = reason?.message || 'The public link could not be revoked.'
-    failToast(error.value)
+    failToast(reason?.message || 'The public link could not be revoked.')
   } finally {
     revoking.value = false
   }
@@ -320,8 +328,7 @@ async function copy() {
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => { copied.value = false }, 1600)
   } catch {
-    error.value = 'Your browser blocked copying. Select the link above and copy it manually.'
-    failToast(error.value)
+    failToast('Your browser blocked copying. Select the link above and copy it manually.')
   }
 }
 
@@ -346,8 +353,7 @@ async function copyShare(key, value) {
     window.clearTimeout(copiedKeyTimer)
     copiedKeyTimer = window.setTimeout(() => { copiedKey.value = '' }, 1600)
   } catch {
-    error.value = 'Your browser blocked copying. Select the text and copy it manually.'
-    failToast(error.value)
+    failToast('Your browser blocked copying. Select the text and copy it manually.')
   }
 }
 
@@ -355,7 +361,7 @@ async function copyShare(key, value) {
 const sections = [
   { id: 'settings-profile', label: 'Profile' },
   { id: 'settings-link', label: 'Booking link & share kit' },
-  { id: 'settings-templates', label: 'Message templates' },
+  { id: 'settings-templates', label: 'Message journey' },
   { id: 'settings-delivery', label: 'Delivery status' },
 ]
 const activeSection = ref(sections[0].id)
@@ -382,82 +388,180 @@ onMounted(() => {
   window.addEventListener('scroll', updateActiveSection, { passive: true })
   window.addEventListener('resize', updateActiveSection)
   updateActiveSection()
+  // Deep links such as /settings#settings-templates (from Messages) jump to that section.
+  const target = route.hash.replace(/^#/, '')
+  if (target && sections.some((item) => item.id === target)) nextTick(() => goToSection(target))
 })
 
-// ----- message templates -----
-const activeKind = ref(TEMPLATE_KINDS[0])
-const showSaveBar = computed(() => !isDemo.value && (dirty.value || templatesDirty.value))
-const templateLabels = {
-  confirmation: 'Booking confirmation',
-  reminder: 'Reminder',
+// ----- message journey -----
+const JOURNEY_KINDS = [...JOURNEY_SLOTS, 'reschedule', 'cancellation']
+const CHANNEL_LABELS = { whatsapp: 'WhatsApp', sms: 'SMS', email: 'Email' }
+const SLOT_WHEN = {
+  confirmation: 'For a new booking. Open it from Bookings right after someone books.',
+  reminder24: 'Listed on Messages from 24 hours before the appointment.',
+  reminder2: 'Listed on Messages from 2 hours before the appointment.',
+  prep: 'Listed on Messages from 48 hours before, only for services that have prep notes.',
+  thanks: 'Listed on Messages for 24 hours after a visit is marked completed.',
+  rebook: 'Listed on Messages when a client is due back, per the service\'s "rebook after" days, and has no newer booking.',
+  reschedule: 'For a booking that moved. Open it from Bookings after you reschedule.',
+  cancellation: 'For a cancelled booking. Open it from Bookings after you cancel.',
+}
+const SLOT_TABS = {
+  confirmation: 'Confirmation',
+  reminder24: 'Reminder 24h',
+  reminder2: 'Reminder 2h',
+  prep: 'Prep / arrival info',
+  thanks: 'Thank-you',
+  rebook: 'Rebook nudge',
   reschedule: 'Rescheduled',
   cancellation: 'Cancelled',
-  followup: 'Follow-up',
 }
-const cloneTemplates = (source) =>
-  Object.fromEntries(TEMPLATE_KINDS.map((kind) => [kind, { subject: source[kind].subject, body: source[kind].body }]))
-const templates = reactive(cloneTemplates(resolveTemplates(state.profile)))
-const templateBaseline = ref(JSON.stringify(templates))
-const templatesDirty = computed(() => JSON.stringify(templates) !== templateBaseline.value)
+const VARIABLE_NAMES = TEMPLATE_VARIABLES.filter((name) => !['offer', 'offer_code', 'offer_expires'].includes(name))
+const VARIABLE_HELP = {
+  staff: 'The team member the booking is with. Empty when you work alone.',
+  prep_notes: 'The prep notes saved on the service (Services page). Empty when the service has none.',
+  booking_link: 'Your public booking link.',
+  rebook_link: 'The link a client uses to book again (your booking link).',
+  business_phone: 'The number you put in your bio as [[wa:+234...]]. Empty if you did not add one.',
+}
+const SMS_PART = 160
+
+// Always carries every kind (including ones this page does not show) so saving never drops saved wording.
+const cloneJourney = (config) => ({
+  templates: Object.fromEntries(
+    TEMPLATE_KINDS.map((kind) => {
+      const slot = config.templates[kind]
+      return [kind, { channel: slot.channel, subject: slot.subject, body: slot.body, enabled: slot.enabled !== false }]
+    }),
+  ),
+  overrides: JSON.parse(JSON.stringify(config.serviceOverrides || {})),
+})
+const journey = reactive(cloneJourney(resolveTemplateConfig(state.profile)))
+const journeyPayload = () => serializeTemplates({ templates: journey.templates, serviceOverrides: journey.overrides })
+const serializedJourney = () => JSON.stringify(journeyPayload())
+const journeyBaseline = ref(serializedJourney())
+const templatesDirty = computed(() => serializedJourney() !== journeyBaseline.value)
+const showSaveBar = computed(() => !isDemo.value && (dirty.value || templatesDirty.value))
+const activeKind = ref(JOURNEY_KINDS[0])
 const savingTemplates = ref(false)
-const templateFields = {}
-const lastField = reactive({})
-const setTemplateField = (kind, field) => (element) => {
-  if (element) templateFields[`${kind}:${field}`] = element
+function reseedJourney() {
+  const fresh = cloneJourney(resolveTemplateConfig(state.profile))
+  for (const key of Object.keys(journey.overrides)) delete journey.overrides[key]
+  Object.assign(journey.templates, fresh.templates)
+  Object.assign(journey.overrides, fresh.overrides)
+  journeyBaseline.value = serializedJourney()
 }
 watch(
   () => state.profile?.message_templates_json,
   () => {
     if (savingTemplates.value || templatesDirty.value) return
-    Object.assign(templates, cloneTemplates(resolveTemplates(state.profile)))
-    templateBaseline.value = JSON.stringify(templates)
+    reseedJourney()
   },
 )
+// A browser refresh or tab close with unsaved wording asks first.
+const warnBeforeUnload = (event) => {
+  if (isDemo.value || (!dirty.value && !templatesDirty.value)) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', warnBeforeUnload))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', warnBeforeUnload))
+
+// Preview: a real recent booking, or a sample.
+const SAMPLE_KEY = '__sample'
+const previewPick = ref('')
+// Soonest upcoming bookings first (what reminders are about), then the most recent past ones.
+const recentBookings = computed(() => {
+  const nowMs = Date.now()
+  const real = state.bookings.filter((item) => !isTimeOff(item) && item.guest_name && item.status !== 'cancelled' && Number.isFinite(Date.parse(item.starts_at)))
+  const upcoming = real.filter((item) => Date.parse(item.starts_at) >= nowMs).sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at))
+  const past = real.filter((item) => Date.parse(item.starts_at) < nowMs).sort((left, right) => Date.parse(right.starts_at) - Date.parse(left.starts_at))
+  return [...upcoming, ...past].slice(0, 8)
+})
 const sampleBooking = computed(() => {
-  const latest = [...state.bookings]
-    .filter((item) => !isTimeOff(item) && item.guest_name)
-    .sort((left, right) => Date.parse(right.starts_at) - Date.parse(left.starts_at))[0]
-  if (latest) return { booking: latest, real: true }
   const start = new Date(Date.now() + 2 * 86_400_000)
   start.setMinutes(0, 0, 0)
+  const service = state.services.find((item) => item.active !== false && !isStaffCopy(item)) || state.services[0]
   return {
-    real: false,
-    booking: {
-      guest_name: 'Ada Obi',
-      service_name: state.services[0]?.name || 'Consultation',
-      starts_at: start.toISOString(),
-      ends_at: new Date(start.getTime() + 30 * 60_000).toISOString(),
-      timezone: state.schedules[0]?.timezone || state.profile?.timezone || 'UTC',
-      reference: 'BK-SAMPLE',
-    },
+    id: SAMPLE_KEY,
+    guest_name: 'Ada Obi',
+    service_id: service?.id || '',
+    service_name: service?.name || 'Consultation',
+    starts_at: start.toISOString(),
+    ends_at: new Date(start.getTime() + (Number(service?.duration_minutes) || 30) * 60_000).toISOString(),
+    timezone: state.schedules[0]?.timezone || state.profile?.timezone || 'UTC',
+    reference: 'BK-SAMPLE',
   }
 })
-const previewVars = computed(() => {
-  const { booking } = sampleBooking.value
+const previewOptions = computed(() => [
+  ...recentBookings.value.map((item) => ({
+    value: item.id,
+    label: `${item.guest_name} · ${item.service_name || 'Booking'} · ${new Date(item.starts_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`,
+  })),
+  { value: SAMPLE_KEY, label: 'Sample booking (Ada Obi)' },
+])
+const previewKey = computed(() => (previewOptions.value.some((option) => option.value === previewPick.value) ? previewPick.value : previewOptions.value[0].value))
+const previewBooking = computed(() => recentBookings.value.find((item) => item.id === previewKey.value) || sampleBooking.value)
+const previewIsReal = computed(() => previewBooking.value.id !== SAMPLE_KEY)
+const serviceById = (id) => state.services.find((item) => item.id === id)
+function varsFor(booking, service) {
+  const sampleService = previewIsReal.value || service?.prep_notes ? service : service && { ...service, prep_notes: 'Arrive 10 minutes early with a clean, dry face.' }
   return messageVars(booking, {
     profile: state.profile,
-    service: state.services.find((item) => item.id === booking.service_id) || state.services[0],
+    service: sampleService,
     timezone: state.schedules[0]?.timezone,
-    bookingLink: shareReady.value ? publicUrl.value : state.profile?.public_link_url,
+    bookingLink: publicUrl.value,
+    rebookLink: publicUrl.value,
+    // The implicit owner has no separate staff name: let the preview fall back to the business name.
+    staff: hasTeam(state) && previewIsReal.value ? (isOwnerMember(staffForBooking(state, booking)) ? { implicit: true } : staffForBooking(state, booking)) : null,
   })
-})
-const preview = (kind) => ({
-  subject: renderTemplate(templates[kind].subject, previewVars.value),
-  body: renderTemplate(templates[kind].body, previewVars.value),
-})
-const isDefault = (kind) =>
-  templates[kind].subject === DEFAULT_TEMPLATES[kind].subject && templates[kind].body === DEFAULT_TEMPLATES[kind].body
+}
+const previewVars = computed(() => varsFor(previewBooking.value, serviceById(previewBooking.value.service_id)))
+const renderPreview = (text, vars = previewVars.value) => renderTemplate(text, vars)
+const previewSubject = (kind) => renderPreview(journey.templates[kind].subject)
+const previewBody = (kind) => renderPreview(journey.templates[kind].body)
+const usesVariable = (text, name) => new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`).test(text)
+const missingPrepNote = (kind) =>
+  [journey.templates[kind].body, ...Object.values(journey.overrides).map((per) => per[kind]?.body || '')].some((text) => usesVariable(text, 'prep_notes')) &&
+  !previewVars.value.prep_notes
+const overrideMissingPrep = (kind, serviceId) => {
+  const service = serviceById(serviceId)
+  const booking = { ...previewBooking.value, service_id: serviceId, service_name: service?.name || previewBooking.value.service_name }
+  return usesVariable(journey.overrides[serviceId][kind].body, 'prep_notes') && !varsFor(booking, service).prep_notes
+}
+const smsParts = (kind) => Math.max(1, Math.ceil(previewBody(kind).length / SMS_PART))
 
+const isDefault = (kind) => {
+  const slot = journey.templates[kind]
+  const base = DEFAULT_TEMPLATES[kind]
+  return slot.subject === base.subject && slot.body === base.body && slot.channel === 'whatsapp' && slot.enabled !== false
+}
+const resetReason = (kind) => (isDemo.value ? 'Demo is read-only.' : isDefault(kind) ? 'Already using the default wording, channel and setting.' : '')
+
+// Variable insertion at the cursor of whichever field was focused last (subject, message, or a service override).
 const variableToken = (name) => '{' + '{' + name + '}' + '}'
+const fieldElements = {}
+const lastField = reactive({})
+const setField = (kind, field) => (element) => {
+  if (element) fieldElements[`${kind}:${field}`] = element
+}
+const fieldValue = (kind, field) => (field.startsWith('ov:') ? journey.overrides[field.slice(3)]?.[kind]?.body ?? '' : journey.templates[kind][field])
+function writeField(kind, field, value) {
+  if (field.startsWith('ov:')) {
+    const entry = journey.overrides[field.slice(3)]?.[kind]
+    if (entry) entry.body = value
+  } else journey.templates[kind][field] = value
+}
 function insertVariable(kind, name) {
   if (isDemo.value || savingTemplates.value) return
-  const field = lastField[kind] || 'body'
-  const element = templateFields[`${kind}:${field}`]
+  let field = lastField[kind] || 'body'
+  let element = fieldElements[`${kind}:${field}`]
+  if (!element || !element.isConnected) { field = 'body'; element = fieldElements[`${kind}:body`] }
   const token = variableToken(name)
-  const current = templates[kind][field]
+  const current = fieldValue(kind, field) || ''
   const start = element?.selectionStart ?? current.length
   const end = element?.selectionEnd ?? start
-  templates[kind][field] = current.slice(0, start) + token + current.slice(end)
+  writeField(kind, field, current.slice(0, start) + token + current.slice(end))
   nextTick(() => {
     if (!element) return
     element.focus()
@@ -467,39 +571,56 @@ function insertVariable(kind, name) {
 }
 function resetTemplate(kind) {
   if (isDemo.value || savingTemplates.value) return
-  templates[kind].subject = DEFAULT_TEMPLATES[kind].subject
-  templates[kind].body = DEFAULT_TEMPLATES[kind].body
-  toast?.info?.(`${templateLabels[kind]} reset to the default wording. Save templates to keep it.`)
+  Object.assign(journey.templates[kind], { ...DEFAULT_TEMPLATES[kind], channel: 'whatsapp', enabled: true })
+  toast?.info?.(`${SLOT_LABELS[kind]} is back to the default wording. Save to keep it.`)
 }
+
+// Per-service overrides: a different message body for one service (for example prep notes for one treatment).
+const overridableServices = computed(() => state.services.filter((item) => item.active !== false && !isStaffCopy(item)))
+const serviceName = (id) => serviceById(id)?.name || 'Removed service'
+const overridesFor = (kind) => Object.entries(journey.overrides).filter(([, per]) => per?.[kind]).map(([id]) => ({ id, name: serviceName(id) }))
+const overrideOptions = (kind) =>
+  overridableServices.value.filter((item) => !journey.overrides[item.id]?.[kind]).map((item) => ({ value: item.id, label: item.name }))
+function addOverride(kind, serviceId) {
+  if (!serviceId || isDemo.value || savingTemplates.value) return
+  journey.overrides[serviceId] ||= {}
+  journey.overrides[serviceId][kind] = { body: journey.templates[kind].body }
+  lastField[kind] = `ov:${serviceId}`
+  toast?.info?.(`Added a ${serviceName(serviceId)} version of this message. Save to keep it.`)
+}
+function removeOverride(kind, serviceId) {
+  if (isDemo.value || savingTemplates.value) return
+  if (!journey.overrides[serviceId]) return
+  delete journey.overrides[serviceId][kind]
+  if (!Object.keys(journey.overrides[serviceId]).length) delete journey.overrides[serviceId]
+  if (lastField[kind] === `ov:${serviceId}`) lastField[kind] = 'body'
+  toast?.info?.(`Removed the ${serviceName(serviceId)} version. Save to keep this change.`)
+}
+const overridePreview = (kind, serviceId) => {
+  const service = serviceById(serviceId)
+  const booking = { ...previewBooking.value, service_id: serviceId, service_name: service?.name || previewBooking.value.service_name }
+  return renderTemplate(journey.overrides[serviceId][kind].body, varsFor(booking, service))
+}
+
 async function saveTemplates() {
   if (isDemo.value || savingTemplates.value || busy.value) return
   if (!state.profile?.id) {
-    error.value = 'Save your profile before saving message templates.'
-    failToast(error.value)
+    failToast('Save your profile before saving your message journey.')
     return
-  }
-  const custom = {}
-  for (const kind of TEMPLATE_KINDS) {
-    const subject = templates[kind].subject.trim() ? templates[kind].subject : DEFAULT_TEMPLATES[kind].subject
-    const body = templates[kind].body.trim() ? templates[kind].body : DEFAULT_TEMPLATES[kind].body
-    if (subject !== DEFAULT_TEMPLATES[kind].subject || body !== DEFAULT_TEMPLATES[kind].body) custom[kind] = { subject, body }
   }
   savingTemplates.value = true
   error.value = ''
   try {
-    await saveMessageTemplates(state.profile, custom)
+    await saveMessageTemplates(state.profile, journeyPayload())
     if (await reloadChecked()) {
-      Object.assign(templates, cloneTemplates(resolveTemplates(state.profile)))
-      templateBaseline.value = JSON.stringify(templates)
-      flash('Message templates saved. New messages use your wording.')
+      reseedJourney()
+      flash('Message journey saved. New messages use your wording.')
     } else {
-      templateBaseline.value = JSON.stringify(templates)
-      error.value = STALE_MESSAGE
+      journeyBaseline.value = serializedJourney()
       failToast(STALE_MESSAGE)
     }
   } catch (reason) {
-    error.value = reason?.message || 'Message templates could not be saved.'
-    failToast(error.value)
+    failToast(reason?.message || 'Your message journey could not be saved.')
   } finally {
     savingTemplates.value = false
   }
@@ -515,7 +636,7 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.5.3 candidate</span>
+      <span class="chip accent version-chip">Bookins v0.6.0 candidate</span>
     </div>
 
     <div v-if="error" class="notice error" role="alert"><AppIcon name="info" :size="18" />{{ error }}</div>
@@ -752,73 +873,125 @@ async function saveTemplates() {
         </div>
 
         <section id="settings-templates" class="card templates-card" aria-labelledby="templates-title">
-          <p class="eyebrow">Message templates</p>
-          <h2 id="templates-title">Messages to your guests</h2>
-          <p class="muted">These open in your own WhatsApp, SMS, or email. Bookins does not send them.</p>
-          <p class="field-hint">Variables like {{ variableToken('guest_name') }} are replaced with the booking's details when you open a message. <GmHint text="Click a variable chip under the message to insert it where your cursor is. Unknown names are left as plain text." label="About message variables" /></p>
-          <p class="field-hint">
-            Preview uses {{ sampleBooking.real ? `your most recent booking (${sampleBooking.booking.guest_name})` : 'a sample booking' }}.
-          </p>
-          <div class="tab-bar template-tabs" role="group" aria-label="Choose a message template">
+          <p class="eyebrow">Message journey</p>
+          <h2 id="templates-title">Messages to your clients <GmHint text="Each step of the client journey has its own wording. Bookins fills in the booking details, then opens the message in your own WhatsApp, SMS or email app. You press send yourself." label="About the message journey" /></h2>
+          <p class="muted">These open in your own WhatsApp, SMS, or email app. Bookins does not send anything for you and cannot see whether you pressed send.</p>
+          <div class="field preview-pick">
+            <label for="journey-preview-booking">Preview with <GmHint text="The preview fills the variables from a real recent booking so you see exactly what a client gets. Pick another booking, or the sample." label="About the preview" /></label>
+            <GmSelect id="journey-preview-booking" :model-value="previewKey" :options="previewOptions" label="Booking used for the preview" @update:model-value="previewPick = $event" />
+            <p class="field-hint">{{ previewIsReal ? 'Using a real booking from your workspace.' : 'No bookings yet, so the preview uses a sample.' }}</p>
+          </div>
+          <div class="tab-bar template-tabs" role="group" aria-label="Choose a message">
             <button
-              v-for="kind in TEMPLATE_KINDS"
+              v-for="kind in JOURNEY_KINDS"
               :key="kind"
               type="button"
               :class="{ 'is-active': activeKind === kind }"
               :aria-pressed="activeKind === kind"
               @click="activeKind = kind"
-              >{{ templateLabels[kind] }}<span v-if="!isDefault(kind)" class="custom-dot" title="Customised"><span class="visually-hidden">(customised)</span></span></button
+              >{{ SLOT_TABS[kind] }}<span v-if="journey.templates[kind].enabled === false" class="chip neutral off-chip">Off</span><span v-else-if="!isDefault(kind)" class="custom-dot" title="Customised"><span class="visually-hidden">(customised)</span></span></button
             >
           </div>
-          <template v-for="kind in TEMPLATE_KINDS" :key="kind">
+          <template v-for="kind in JOURNEY_KINDS" :key="kind">
             <div v-if="activeKind === kind" class="template-block">
               <div class="template-head">
-                <h3>{{ templateLabels[kind] }}</h3>
-                <GmButton variant="ghost" size="sm" :disabled="savingTemplates" :disabled-reason="isDemo ? 'Demo is read-only.' : isDefault(kind) ? 'Already the default.' : ''" @click="resetTemplate(kind)">Reset to default</GmButton>
+                <div>
+                  <h3>{{ SLOT_LABELS[kind] }}</h3>
+                  <p class="field-hint">{{ SLOT_WHEN[kind] }}</p>
+                </div>
+                <GmButton variant="ghost" size="sm" :disabled="savingTemplates" :disabled-reason="resetReason(kind)" @click="resetTemplate(kind)">Reset to default</GmButton>
+              </div>
+              <div class="slot-controls">
+                <label class="inline-check" :for="`tpl-${kind}-enabled`">
+                  <input :id="`tpl-${kind}-enabled`" v-model="journey.templates[kind].enabled" type="checkbox" :disabled="isDemo || savingTemplates" />
+                  Offer this message
+                  <GmHint text="Turn off to stop listing this message on the Messages page and in message menus. Nothing is deleted." label="About offering this message" />
+                </label>
+                <div class="channel-pick" role="group" :aria-label="`Preferred channel for ${SLOT_LABELS[kind]}`">
+                  <span class="field-label">Preferred channel <GmHint text="The button for this channel is shown first. If a booking has no usable phone or email, the other channels are used." label="About the preferred channel" /></span>
+                  <div class="segmented">
+                    <button v-for="channel in CHANNELS" :key="channel" type="button" :class="{ 'is-active': journey.templates[kind].channel === channel }" :aria-pressed="journey.templates[kind].channel === channel" :disabled="isDemo || savingTemplates" @click="journey.templates[kind].channel = channel">{{ CHANNEL_LABELS[channel] }}</button>
+                  </div>
+                </div>
               </div>
               <div class="template-grid">
                 <div class="template-edit">
                   <div class="field">
-                    <label :for="`tpl-${kind}-subject`">Subject (email)</label>
-                    <input :id="`tpl-${kind}-subject`" :ref="setTemplateField(kind, 'subject')" v-model="templates[kind].subject" :disabled="isDemo || savingTemplates" maxlength="200" @focus="lastField[kind] = 'subject'" />
+                    <label :for="`tpl-${kind}-subject`">Email subject <GmHint text="Only used when the message opens as an email. WhatsApp and SMS ignore it." label="About the email subject" /></label>
+                    <input :id="`tpl-${kind}-subject`" :ref="setField(kind, 'subject')" v-model="journey.templates[kind].subject" :disabled="isDemo || savingTemplates" maxlength="200" @focus="lastField[kind] = 'subject'" />
                   </div>
                   <div class="field">
                     <label :for="`tpl-${kind}-body`">Message</label>
-                    <textarea :id="`tpl-${kind}-body`" :ref="setTemplateField(kind, 'body')" v-model="templates[kind].body" :disabled="isDemo || savingTemplates" rows="6" maxlength="2000" @focus="lastField[kind] = 'body'"></textarea>
-                    <p class="field-hint">{{ templates[kind].body.length }}/2000 characters</p>
+                    <textarea :id="`tpl-${kind}-body`" :ref="setField(kind, 'body')" v-model="journey.templates[kind].body" :disabled="isDemo || savingTemplates" rows="7" maxlength="2000" @focus="lastField[kind] = 'body'"></textarea>
+                    <p class="field-hint counter">
+                      <span>{{ journey.templates[kind].body.length }}/2000 characters</span>
+                      <span v-if="journey.templates[kind].channel === 'sms'">Preview is {{ previewBody(kind).length }} characters, about {{ smsParts(kind) }} SMS {{ smsParts(kind) === 1 ? 'part' : 'parts' }}</span>
+                    </p>
                   </div>
-                  <p class="var-label" :id="`tpl-${kind}-vars`">Insert a variable at the cursor <GmHint text="Each chip is replaced with real booking details, for example the guest's name, the service and the time, when the message opens." label="About variables" /></p>
-                  <div class="var-chips" role="group" :aria-label="`Insert a variable into ${templateLabels[kind]}`">
-                    <button v-for="name in TEMPLATE_VARIABLES" :key="name" class="chip var-chip" type="button" :disabled="isDemo || savingTemplates" @mousedown.prevent @click="insertVariable(kind, name)">{{ variableToken(name) }}</button>
+                  <p class="var-label" :id="`tpl-${kind}-vars`">Insert a variable at the cursor <GmHint text="Click a chip to drop it where your cursor is, in the subject, the message or a service version. Each chip is replaced with real booking details when the message opens." label="About variables" /></p>
+                  <div class="var-chips" role="group" :aria-label="`Insert a variable into ${SLOT_LABELS[kind]}`">
+                    <button v-for="name in VARIABLE_NAMES" :key="name" class="chip var-chip" type="button" :title="VARIABLE_HELP[name] || ''" :disabled="isDemo || savingTemplates" @mousedown.prevent @click="insertVariable(kind, name)">{{ variableToken(name) }}</button>
                   </div>
                 </div>
                 <div class="template-preview" aria-live="polite">
                   <span class="field-label">Preview</span>
-                  <strong>{{ preview(kind).subject }}</strong>
-                  <p>{{ preview(kind).body }}</p>
+                  <strong>{{ previewSubject(kind) }}</strong>
+                  <p>{{ previewBody(kind) }}</p>
+                  <p v-if="missingPrepNote(kind)" class="field-hint prep-hint">The booking in the preview has no prep notes, so {{ variableToken('prep_notes') }} is empty here. Add prep notes to the service on the <router-link to="/services">Services page</router-link>, or preview another booking.</p>
+                </div>
+              </div>
+
+              <div class="override-block">
+                <div class="override-head">
+                  <h4>Different wording for one service <GmHint text="Use this when one service needs its own message, for example a prep note for knotless braids. Clients booking that service get this version; everyone else gets the message above." label="About service versions" /></h4>
+                </div>
+                <div v-for="entry in overridesFor(kind)" :key="entry.id" class="override-row">
+                  <div class="override-top">
+                    <strong>{{ entry.name }}</strong>
+                    <button class="ghost small-button" type="button" :disabled="isDemo || savingTemplates" @click="removeOverride(kind, entry.id)"><AppIcon name="trash" :size="14" />Remove</button>
+                  </div>
+                  <div class="field">
+                    <label :for="`tpl-${kind}-ov-${entry.id}`">Message for {{ entry.name }}</label>
+                    <textarea :id="`tpl-${kind}-ov-${entry.id}`" :ref="setField(kind, `ov:${entry.id}`)" v-model="journey.overrides[entry.id][kind].body" :disabled="isDemo || savingTemplates" rows="5" maxlength="2000" @focus="lastField[kind] = `ov:${entry.id}`"></textarea>
+                    <p class="field-hint">{{ journey.overrides[entry.id][kind].body.length }}/2000 characters</p>
+                  </div>
+                  <div class="template-preview"><span class="field-label">Preview for {{ entry.name }}</span><p>{{ overridePreview(kind, entry.id) }}</p><p v-if="overrideMissingPrep(kind, entry.id)" class="field-hint prep-hint">{{ entry.name }} has no prep notes yet, so {{ variableToken('prep_notes') }} is empty. Add them on the <router-link to="/services">Services page</router-link>, or type the note straight into this version.</p></div>
+                </div>
+                <div class="override-add">
+                  <label :for="`tpl-${kind}-ov-add`" class="field-label">Add a version for a service</label>
+                  <GmSelect
+                    :id="`tpl-${kind}-ov-add`"
+                    :model-value="''"
+                    :options="overrideOptions(kind)"
+                    :placeholder="overridableServices.length ? (overrideOptions(kind).length ? 'Choose a service' : 'Every service already has a version') : 'Add a service first'"
+                    label="Service for a different version"
+                    :disabled="isDemo || savingTemplates || !overrideOptions(kind).length"
+                    :described-by="!overridableServices.length ? `tpl-${kind}-ov-why` : undefined"
+                    @update:model-value="addOverride(kind, $event)"
+                  />
+                  <p v-if="!overridableServices.length" :id="`tpl-${kind}-ov-why`" class="field-hint">You have no services yet. <router-link to="/services">Add a service</router-link> to give it its own wording.</p>
                 </div>
               </div>
             </div>
           </template>
-          <p v-if="templatesDirty && !isDemo" class="field-hint">Unsaved template changes. Save them here or in the bar at the bottom.</p>
-          <div v-if="templatesDirty && !isDemo" class="stack-sm"><GmButton variant="secondary" :pending="savingTemplates" pending-label="Saving…" :disabled="busy && !savingTemplates" @click="saveTemplates">Save templates</GmButton></div>
+          <p v-if="templatesDirty && !isDemo" class="field-hint">Unsaved message changes. Use Save messages in the bar at the bottom of the page.</p>
         </section>
 
         <article id="settings-delivery" class="card provider-card">
           <p class="eyebrow">What Bookins does and does not do</p><h2>Delivery and integrations</h2>
           <ul>
             <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>On-screen booking confirmation</strong><small>Guests see their confirmation right after booking.</small></div></li>
-            <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>Guest messages from your own apps</strong><small>Open WhatsApp, SMS or email with the message filled in. Bookins does not send or confirm delivery.</small></div></li>
+            <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>Guest messages from your own apps</strong><small>Bookins prepares the message and opens WhatsApp, SMS or email with it filled in. You press send. Nothing is sent to guests automatically, and Bookins cannot tell whether a message was sent.</small></div></li>
             <li><span class="status-icon pending">·</span><div><strong>Google Calendar</strong><small>Optional, per booking, needs your approval each time, and never invites guests. Needs a connected Google account.</small></div></li>
-            <li><span class="status-icon pending">·</span><div><strong>Daily agenda email to you</strong><small>A scheduled workflow emails your day's bookings to your account address. Not yet confirmed on a live account.</small></div></li>
-            <li><span class="status-icon pending">·</span><div><strong>Guest emails and online payments</strong><small>Not available. Prices are arranged with you.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Daily agenda email to you</strong><small>A scheduled workflow can email your day's bookings to your own account address only, never to guests. It is off until you turn it on, and it is not yet proven on a real account.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Automatic guest emails and online payments</strong><small>Not available. Bookins sends nothing automatically to guests, and prices are arranged with you.</small></div></li>
           </ul>
         </article>
       </div>
     </div>
 
     <div v-if="showSaveBar" class="sticky-save-bar" role="status">
-      <span>{{ dirty && templatesDirty ? 'Unsaved profile and template changes' : dirty ? 'Unsaved profile changes' : 'Unsaved template changes' }}</span>
+      <span>{{ dirty && templatesDirty ? 'Unsaved profile and message changes' : dirty ? 'Unsaved profile changes' : 'Unsaved message changes' }}</span>
       <div class="cluster">
         <GmConfirm
           v-model:open="leavePrompt"
@@ -833,7 +1006,7 @@ async function saveTemplates() {
         >
           <button class="ghost" type="button" :disabled="busy" @click="leavePrompt = true">Discard changes</button>
         </GmConfirm>
-        <button v-if="templatesDirty" class="secondary" type="button" :class="{ 'is-pending': savingTemplates }" :disabled="isDemo || savingTemplates || busy" @click="saveTemplates">{{ savingTemplates ? 'Saving…' : 'Save templates' }}</button>
+        <button v-if="templatesDirty" class="secondary" type="button" :class="{ 'is-pending': savingTemplates }" :disabled="isDemo || savingTemplates || busy" @click="saveTemplates">{{ savingTemplates ? 'Saving…' : 'Save messages' }}</button>
         <button v-if="dirty" class="primary" type="submit" form="settings-profile" :class="{ 'is-pending': saving }" :disabled="busy || isDemo">{{ saving ? 'Saving…' : 'Save profile' }}</button>
       </div>
     </div>
@@ -904,7 +1077,24 @@ async function saveTemplates() {
 .template-tabs button { position: relative; }
 .custom-dot { width: 8px; height: 8px; margin-left: 8px; display: inline-block; border-radius: 50%; background: var(--accent); }
 .template-block { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); }
-.template-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.template-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.template-head .field-hint { margin-top: 2px; }
+.preview-pick { margin: var(--space-3) 0 0; max-width: 460px; }
+.off-chip { min-height: 20px; padding: 0 8px; font-size: var(--text-xs); }
+.slot-controls { margin-top: var(--space-3); display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-4); }
+.channel-pick { display: grid; gap: 6px; }
+.channel-pick .segmented { width: fit-content; max-width: 100%; }
+.inline-check { min-height: var(--control-h-sm, 40px); display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: 650; }
+.inline-check input { width: 18px; min-height: 0; height: 18px; }
+.counter { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.prep-hint { margin: 4px 0 0 !important; color: #6d5700; }
+.prep-hint a { color: var(--accent); }
+.override-block { margin-top: var(--space-4); padding-top: var(--space-3); display: grid; gap: var(--space-3); border-top: 1px dashed var(--line-strong); }
+.override-head h4 { margin: 0; font-size: var(--text-sm); font-weight: 700; }
+.override-row { padding: var(--space-3); display: grid; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
+.override-row .field { margin: 0; }
+.override-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.override-add { display: grid; gap: 6px; max-width: 360px; }
 .template-head h3 { margin: 0; font-size: var(--text-md); }
 .template-grid { margin-top: var(--space-3); display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
 .template-edit { min-width: 0; }
