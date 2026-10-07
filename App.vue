@@ -20,6 +20,9 @@ import {
 } from './runtime.js'
 
 const route = useRoute()
+// The "Offline preview" runtime notice is only shown on loopback (see global.css).
+if (['localhost', '127.0.0.1'].includes(globalThis.location?.hostname))
+  document.documentElement.classList.add('bookins-loopback')
 const router = useRouter()
 const menuOpen = ref(false)
 const workspaceDetails = ref(null)
