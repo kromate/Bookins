@@ -117,6 +117,10 @@ const en = {
   'form.srvName': 'Check your name.',
   'form.srvPhone': 'Check this phone number.',
 
+  'clock.aria': 'Time format',
+  'confirm.what': 'What',
+  'confirm.when': 'When',
+  'confirm.who': 'With',
   'sum.eyebrow': 'Your booking',
   'sum.duration': 'Duration',
   'sum.price': 'Price',
@@ -251,6 +255,10 @@ const fr = {
   'form.srvName': 'Vérifiez votre nom.',
   'form.srvPhone': 'Vérifiez ce numéro de téléphone.',
 
+  'clock.aria': 'Format de l’heure',
+  'confirm.what': 'Quoi',
+  'confirm.when': 'Quand',
+  'confirm.who': 'Avec',
   'sum.eyebrow': 'Votre réservation',
   'sum.duration': 'Durée',
   'sum.price': 'Prix',

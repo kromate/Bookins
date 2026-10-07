@@ -135,3 +135,25 @@ export function formatDateClock(value, locale = 'en', timeZone = 'UTC', dateStyl
   const date = new Date(value).toLocaleDateString(locale, { dateStyle, timeZone: zone })
   return `${date} · ${formatClock(value, locale, zone)}`
 }
+
+const clockModeFormatters = new Map()
+/** Clock with an explicit 12h/24h choice (the guest's toggle). mode: '12h' | '24h'. */
+export function formatClockMode(value, locale = 'en', timeZone = 'UTC', mode = '12h') {
+  const zone = displayTimeZone(timeZone)
+  const cacheKey = `${locale}|${zone}|${mode}`
+  let formatter = clockModeFormatters.get(cacheKey)
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, {
+      timeZone: zone,
+      minute: '2-digit',
+      ...(mode === '24h' ? { hour: '2-digit', hourCycle: 'h23' } : { hour: 'numeric', hour12: true }),
+    })
+    clockModeFormatters.set(cacheKey, formatter)
+  }
+  return formatter.format(new Date(value))
+}
+
+/** Locale default for the 12h/24h toggle (French is 24h, everything else 12h). */
+export function defaultClockMode(locale = 'en') {
+  return String(locale).toLowerCase().startsWith('fr') ? '24h' : '12h'
+}

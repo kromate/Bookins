@@ -189,6 +189,10 @@ defineProps({
     <template v-else-if="name === 'more'">
       <path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3" />
     </template>
+    <template v-else-if="name === 'swap'"><path d="M4 8h14m-3-3 3 3-3 3M20 16H6m3-3-3 3 3 3" /></template>
+    <template v-else-if="name === 'bolt'"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></template>
+    <template v-else-if="name === 'back'"><path d="M19 12H5m6-6-6 6 6 6" /></template>
+    <template v-else-if="name === 'help'"><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 .9-1 1.7M12 17h.01" /></template>
     <template v-else-if="name === 'info'">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 11v5M12 8h.01" />

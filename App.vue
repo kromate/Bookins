@@ -5,6 +5,9 @@ import { useRoute, useRouter } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
 import BookinsLogo from './components/BookinsLogo.vue'
 import ProductTour from './components/ProductTour.vue'
+import WorkspaceMenu from './components/WorkspaceMenu.vue'
+import CreditsPill from './components/CreditsPill.vue'
+import { APPS_URL, loadAccounts, loadCredits, resetShellRuntime } from './components/shell-runtime.js'
 
 // Owner-only feedback widget: loaded lazily and never on the public /book page.
 const GoalmaticFeedback = defineAsyncComponent(() => import('./components/GoalmaticFeedback.vue'))
@@ -25,55 +28,20 @@ if (['localhost', '127.0.0.1'].includes(globalThis.location?.hostname))
   document.documentElement.classList.add('bookins-loopback')
 const router = useRouter()
 const menuOpen = ref(false)
-const workspaceDetails = ref(null)
+const sideMenu = ref(null)
+const closeWorkspaceMenus = () => sideMenu.value?.close?.()
 const tour = ref(null)
-const helpOpen = ref(false)
-const helpRoot = ref(null)
-function workspaceKeydown(event) {
-  if (event.key !== 'Escape' || !workspaceDetails.value?.open) return
-  event.preventDefault()
-  event.stopPropagation()
-  workspaceDetails.value.open = false
-  workspaceDetails.value.querySelector('summary')?.focus()
-}
 function focusMain() {
   document.getElementById('main-content')?.focus()
 }
 // Starts the Live or Demo tour (whichever matches the current mode). Closes every menu first.
 async function startTour() {
-  if (workspaceDetails.value) workspaceDetails.value.open = false
+  closeWorkspaceMenus()
   menuOpen.value = false
   moreOpen.value = false
-  helpOpen.value = false
   await nextTick()
   await tour.value?.start()
 }
-async function toggleHelp(open = !helpOpen.value, { restoreFocus = false } = {}) {
-  helpOpen.value = open
-  await nextTick()
-  if (open) helpRoot.value?.querySelector('.help-popover > *')?.focus()
-  else if (restoreFocus) helpRoot.value?.querySelector('.help-button')?.focus()
-}
-function helpKeydown(event) {
-  if (!helpOpen.value) return
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    event.stopPropagation()
-    toggleHelp(false, { restoreFocus: true })
-    return
-  }
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    const items = [...helpRoot.value.querySelectorAll('.help-popover > *')]
-    const index = items.indexOf(document.activeElement)
-    event.preventDefault()
-    items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
-  }
-}
-function helpOutside(event) {
-  if (helpOpen.value && !helpRoot.value?.contains(event.target)) helpOpen.value = false
-}
-onMounted(() => document.addEventListener('pointerdown', helpOutside, true))
-onBeforeUnmount(() => document.removeEventListener('pointerdown', helpOutside, true))
 const narrowScreen = ref(false)
 let navigationMedia
 const updateNavigationMedia = event => { narrowScreen.value = event.matches }
@@ -110,6 +78,8 @@ const loaded = ref(false)
 const error = ref('')
 const copied = ref(false)
 const accountLabel = ref('Goalmatic workspace')
+const userLabel = ref('')
+const avatarUrl = ref('')
 const transitioning = ref(isDemo.value)
 const modeRequesting = ref(false)
 const modeActionError = ref('')
@@ -363,6 +333,10 @@ async function loadWorkspace({ silent = false } = {}) {
     if (isDemo.value) accountLabel.value = 'Demo workspace'
     else if (askUser) accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
     else if (localPreview) accountLabel.value = 'Sample workspace'
+    if (askUser) {
+      userLabel.value = user?.name || user?.displayName || user?.email || ''
+      avatarUrl.value = user?.avatar || user?.photoURL || user?.photoUrl || ''
+    }
     Object.assign(state, workspace)
     loaded.value = true
     lastLoadedAt = Date.now()
@@ -376,6 +350,7 @@ async function loadWorkspace({ silent = false } = {}) {
   }
 }
 
+const workspaceBusy = computed(() => modeRequesting.value || loading.value)
 const removeModeCommitHandler = registerModeCommitHandler(() => {
   state.profile = null
   state.schedules = []
@@ -385,15 +360,35 @@ const removeModeCommitHandler = registerModeCommitHandler(() => {
   loaded.value = false
   error.value = ''
   accountLabel.value = isDemo.value ? 'Demo workspace' : 'Goalmatic workspace'
+  if (isDemo.value) resetShellRuntime()
+  else { void loadAccounts(); void loadCredits() }
   return refresh()
 })
 
 onBeforeUnmount(removeModeCommitHandler)
 
+// After the runtime switches the active Goalmatic workspace, drop the old workspace's data and reload.
+async function onWorkspaceSwitched() {
+  closeWorkspaceMenus()
+  menuOpen.value = false
+  moreOpen.value = false
+  state.profile = null
+  state.schedules = []
+  state.services = []
+  state.bookings = []
+  state.contacts = []
+  loaded.value = false
+  error.value = ''
+  void loadCredits()
+  await refresh()
+  void loadAccounts()
+}
+
 async function changeMode(enabled) {
   if (modeRequesting.value || enabled === isDemo.value) return
-  if (workspaceDetails.value) workspaceDetails.value.open = false
+  closeWorkspaceMenus()
   menuOpen.value = false
+  moreOpen.value = false
   modeActionError.value = ''
   if (!isDemo.value) rememberLiveRoute(route.fullPath)
   modeRequesting.value = true
@@ -502,6 +497,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => toastGuard?.disconnect())
 onMounted(async () => {
+  if (!isPublicRoute.value && !isDemo.value) void loadCredits()
   try {
     await refresh()
   } finally {
@@ -542,24 +538,20 @@ onMounted(async () => {
         /></button>
       </div>
 
-      <details ref="workspaceDetails" class="workspace-card workspace-menu" @keydown="workspaceKeydown">
-        <summary tabindex="0">
-        <span class="workspace-avatar">{{ initials }}</span>
-        <div
-          ><small>{{ isDemo ? 'Demo mode' : localPreview ? 'Sample workspace' : 'Active workspace' }}</small
-          ><strong>{{ accountLabel }}</strong></div
-        >
-        </summary>
-        <div class="workspace-menu-actions">
-          <button type="button" :disabled="modeRequesting" @click="changeMode(!isDemo)">{{ isDemo ? 'Switch to Live' : 'Switch to Demo' }}</button>
-          <RouterLink v-if="isDemo" to="/demo/guest" @click="menuOpen = false; workspaceDetails.open = false">Guest preview</RouterLink>
-        </div>
-      </details>
-
-      <div class="mode-switch" role="group" aria-label="Workspace data">
-        <button type="button" :aria-pressed="!isDemo" :disabled="modeRequesting" @click="changeMode(false)">{{ localPreview ? 'Sample' : 'Live' }}</button>
-        <button type="button" :aria-pressed="isDemo" :disabled="modeRequesting" @click="changeMode(true)">Demo</button>
-      </div>
+      <WorkspaceMenu
+        ref="sideMenu"
+        id-prefix="sidebar-workspace"
+        :label="accountLabel"
+        :user-label="userLabel"
+        :avatar-url="avatarUrl"
+        :is-demo="isDemo"
+        :local-preview="localPreview"
+        :busy="workspaceBusy"
+        @toggle-mode="changeMode(!isDemo)"
+        @switched="onWorkspaceSwitched"
+      >
+        <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="menuOpen = false; closeWorkspaceMenus()">Guest preview</RouterLink>
+      </WorkspaceMenu>
 
       <p class="nav-section-label">WORKSPACE</p>
       <nav
@@ -630,22 +622,16 @@ onMounted(async () => {
           >
         </div>
       </div>
-      <div ref="helpRoot" class="help-menu" @keydown="helpKeydown">
-        <div v-if="helpOpen" id="help-popover" class="help-popover" role="menu" aria-label="Help">
-          <button type="button" role="menuitem" @click="startTour"><AppIcon name="sparkle" :size="18" />Take the tour</button>
-          <RouterLink to="/" role="menuitem" @click="helpOpen = false; menuOpen = false"><AppIcon name="check" :size="18" />Setup checklist</RouterLink>
-          <a href="https://goalmatic.io/support" target="_blank" rel="noreferrer" role="menuitem" @click="helpOpen = false"><AppIcon name="external" :size="18" />Contact support</a>
-        </div>
+      <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
+      <div class="sidebar-links">
         <button
-          class="help-button"
+          class="sidebar-link"
           type="button"
           data-tour="tour-help-button"
           data-bookins-walkthrough-trigger
-          aria-haspopup="menu"
-          :aria-expanded="helpOpen"
-          aria-controls="help-popover"
-          @click="toggleHelp()"
-        ><AppIcon name="info" :size="18" />Help</button>
+          @click="startTour"
+        ><AppIcon name="help" :size="17" />Take a walkthrough</button>
+        <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="17" />Back to Apps</a>
       </div>
       <div class="runtime-label"
         ><span
@@ -806,9 +792,26 @@ onMounted(async () => {
     <template v-if="moreOpen">
       <button class="more-sheet-scrim" type="button" aria-label="Close more menu" tabindex="-1" @click="toggleMore(false)" />
       <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-label="More pages" @keydown="moreKeydown">
+        <h2>Workspace</h2>
+        <WorkspaceMenu
+          inline
+          id-prefix="sheet-workspace"
+          :label="accountLabel"
+          :user-label="userLabel"
+          :avatar-url="avatarUrl"
+          :is-demo="isDemo"
+          :local-preview="localPreview"
+          :busy="workspaceBusy"
+          @toggle-mode="changeMode(!isDemo)"
+          @switched="onWorkspaceSwitched"
+        >
+          <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="moreOpen = false">Guest preview</RouterLink>
+        </WorkspaceMenu>
+        <CreditsPill v-if="!isDemo" id-prefix="sheet-credits" />
+        <hr />
         <h2>Help</h2>
-        <button type="button" class="more-item" @click="startTour"><AppIcon name="sparkle" :size="20" />Take the tour</button>
-        <RouterLink to="/" class="more-item" @click="moreOpen = false"><AppIcon name="check" :size="20" />Setup checklist</RouterLink>
+        <button type="button" class="more-item" @click="startTour"><AppIcon name="help" :size="20" />Take a walkthrough</button>
+        <a class="more-item" :href="APPS_URL" target="_blank" rel="noopener" @click="moreOpen = false"><AppIcon name="back" :size="20" />Back to Apps</a>
         <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="20" />Contact support</a>
         <hr />
         <h2>More</h2>
@@ -846,13 +849,6 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.workspace-menu { display: block; }
-.workspace-menu summary { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; list-style: none; }
-.workspace-menu summary::after { content: ""; width: 6px; height: 6px; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); flex: none; }
-.workspace-menu summary::-webkit-details-marker { display: none; }
-.workspace-menu-actions { display: grid; gap: 4px; margin-top: 8px; }
-.workspace-menu-actions button, .workspace-menu-actions a { min-height: 44px; padding: 10px 6px; background: transparent; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.workspace-menu summary:focus-visible, .workspace-menu-actions button:focus-visible, .workspace-menu-actions a:focus-visible { outline: 2px solid #2336dc; outline-offset: 2px; }
 @media (max-width: 480px) { .mobile-brand span:last-child { display: none; } .preview-pill { padding: 0 10px; } }
 .demo-entry { min-height: 36px; white-space: nowrap; }
 .demo-mode-banner { align-items: center; justify-content: space-between; gap: 12px; }

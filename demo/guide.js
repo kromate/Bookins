@@ -59,5 +59,5 @@ export const liveGuideSteps = Object.freeze([
   { id: 'bookings', route: '/bookings', targetId: 'tour-bookings-list', title: 'Confirmed bookings', explanation: 'Confirmed appointments land here. Guest messages open in your own WhatsApp, SMS or email app. Bookins does not send them for you.' },
   { id: 'contacts', route: '/contacts', targetId: 'tour-contacts-list', title: 'Your contacts', explanation: 'Guests you have booked are kept here with private notes.' },
   { id: 'insights', route: '/insights', targetId: 'tour-insights-summary', title: 'Insights', explanation: 'Counts here exclude time off.' },
-  { id: 'done', route: '/', targetId: 'tour-help-button', title: 'Replay any time', explanation: 'Replay this tour whenever you like from Help.' },
+  { id: 'done', route: '/', targetId: 'tour-help-button', title: 'Replay any time', explanation: 'Replay this tour any time from "Take a walkthrough" in the sidebar.' },
 ])
