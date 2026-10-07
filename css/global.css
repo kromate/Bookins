@@ -2057,6 +2057,9 @@ body:has(.gm-dialog-overlay) .toast-region { inset: auto 0 calc(12px + env(safe-
 }
 /* Local dev shim banner ("Offline preview"). goalmatic.dev.js prepends it before mount as a full-width block, which pushed the
    whole app down. Keep it visible and honest, but as a small fixed pill that takes no layout space. */
+/* The runtime notice is injected by goalmatic.dev.js before mount. It is only honest on localhost
+   (no Web Key); hosted owner and guest pages must never show it. */
+html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runtime-notice='offline'] { display: none !important; }
 [data-goalmatic-runtime-notice] {
   position: fixed !important;
   left: 50% !important;
