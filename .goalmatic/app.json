@@ -8,7 +8,7 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, organise a small team, and keep client history together. You open prefilled WhatsApp, SMS or email messages yourself; Bookins does not send them. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "releaseType": "minor",
   "releaseNotes": "Redesigns the owner workspace and guest booking flow with consistent mobile layouts, right-side forms, searchable dropdowns and custom date/time pickers. Adds four booking themes and calendar preferences, faster page navigation, and booking-specific private links for secure guest rescheduling and cancellation. Adds the guest-management capability and two credential metadata fields; existing bookings retain host-assisted changes. Calendar-linked guest changes require host reconciliation.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
