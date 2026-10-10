@@ -3,7 +3,7 @@
 // WhatsApp / SMS / your own mail app, or export a CSV. Bookins never sends anything, so the only progress it can
 // show is "opened by you". No delivery, open-rate or revenue claims anywhere on this page.
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
@@ -401,6 +401,8 @@ async function setStatus(record, status) {
 // ---------------------------------------------------------------- unsaved changes
 const confirmKey = ref('')
 const pendingAction = ref(null)
+const pendingRoute = ref('')
+const allowLeave = ref(false)
 const setConfirm = (key, open) => {
   if (open) confirmKey.value = key
   else if (confirmKey.value === key) confirmKey.value = ''
@@ -432,7 +434,23 @@ function discardChanges() {
   discardOpen.value = false
   if (savedRecord.value) loadCampaign(savedRecord.value)
   else resetDraft()
+  const nextRoute = pendingRoute.value
+  pendingRoute.value = ''
+  if (nextRoute) {
+    allowLeave.value = true
+    router.push(nextRoute)
+  }
 }
+onBeforeRouteLeave((to) => {
+  if (allowLeave.value) {
+    allowLeave.value = false
+    return true
+  }
+  if (!dirty.value) return true
+  pendingRoute.value = to.fullPath
+  discardOpen.value = true
+  return false
+})
 const onBeforeUnload = (event) => {
   if (!dirty.value) return
   event.preventDefault()
@@ -1051,6 +1069,7 @@ async function copyBookingLink() {
           cancel-label="Keep editing"
           tone="danger"
           @confirm="discardChanges"
+          @cancel="pendingRoute = ''"
         >
           <button class="secondary small" type="button" @click="discardOpen = true">Discard</button>
         </GmConfirm>

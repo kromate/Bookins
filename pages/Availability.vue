@@ -53,6 +53,7 @@ const route = useRoute()
 const saving = ref(false)
 const error = ref('')
 const availabilityBaseline = ref('')
+const persistedScheduleBaseline = ref('')
 const leavePrompt = ref(false)
 const pendingRoute = ref('')
 const allowLeave = ref(false)
@@ -214,9 +215,31 @@ const formFromSchedule = (schedule) => ({
   minimumNoticeMinutes: Number(schedule.minimum_notice_minutes),
   bookingHorizonDays: Number(schedule.booking_horizon_days),
 })
+const scheduleFingerprint = (schedule) => {
+  if (!schedule) return ''
+  let weeklyWindows = schedule.weekly_windows_json || ''
+  try {
+    weeklyWindows = JSON.parse(weeklyWindows)
+      .map((item) => ({
+        weekday: Number(item.weekday),
+        startMinute: Number(item.startMinute),
+        endMinute: Number(item.endMinute),
+      }))
+      .sort((a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute || a.endMinute - b.endMinute)
+  } catch { /* keep malformed persisted data comparable until hydrate reports it */ }
+  return JSON.stringify({
+    id: schedule.id || '',
+    timezone: schedule.timezone || '',
+    slotIntervalMinutes: Number(schedule.slot_interval_minutes),
+    minimumNoticeMinutes: Number(schedule.minimum_notice_minutes),
+    bookingHorizonDays: Number(schedule.booking_horizon_days),
+    weeklyWindows,
+  })
+}
 function hydrate() {
   const existing = currentSchedule.value
   remoteChanged.value = false
+  persistedScheduleBaseline.value = scheduleFingerprint(existing)
   if (!existing) {
     // No hours saved yet: a team member starts from a copy of the owner's hours (a suggestion until saved).
     const owner = !isOwnerView.value ? scheduleOf(state, ownerStaff(state)) : null
@@ -250,8 +273,11 @@ watch(() => [route.query.interval, route.query.from], () => applyIntervalQuery()
 
 watch(
   () => currentSchedule.value,
-  () => {
+  (nextSchedule) => {
     if (saving.value) return
+    const nextFingerprint = scheduleFingerprint(nextSchedule)
+    if (nextFingerprint === persistedScheduleBaseline.value) return
+    persistedScheduleBaseline.value = nextFingerprint
     if (dirty.value) remoteChanged.value = true
     else hydrate()
   },

@@ -10,7 +10,7 @@
   "category": "productivity",
   "version": "0.8.0",
   "releaseType": "minor",
-  "releaseNotes": "Improves workspace navigation, weekly-hours editing and mobile forms. Adds direct Gmail compose, clearer campaign previews and reporting labels, bounded availability recovery, linked Calendar reschedule/cancellation with retry, and owner agenda controls. Improves session persistence diagnostics. Calendar updates need the matching Goalmatic platform release; new schedule-status access is optional and subject to installation consent.",
+  "releaseNotes": "Adds customizable booking-page themes and default calendar layouts, with a fuller desktop layout and square date cells. Fixes campaign draft navigation, false schedule-change warnings, keyboard focus, legacy booking-link Calendar messaging, and offline data recovery.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -388,6 +388,11 @@
           {
             "id": "message_templates_json",
             "name": "Message templates (versioned JSON)",
+            "type": "textarea"
+          },
+          {
+            "id": "booking_page_settings_json",
+            "name": "Booking page appearance (JSON)",
             "type": "textarea"
           }
         ]

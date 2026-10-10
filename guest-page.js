@@ -1,5 +1,7 @@
 // Pure helpers for the public /book page (no Vue, no network) so they can be unit-tested in node.
 
+import { BOOKING_LAYOUTS, BOOKING_THEMES } from './booking-appearance.js'
+
 // ---- host bio: hidden WhatsApp contact marker ----
 // The page-get profile has no phone field, so an owner may put `[[wa:+234...]]` in the bio. It is parsed here,
 // never displayed, and only honoured when it is an international number (leading +, 8-15 digits).
@@ -27,8 +29,9 @@ export function parseBio(bio) {
 }
 
 // ---- URL parameters ----
-export const LAYOUTS = ['month', 'week', 'column']
-export const THEMES = ['light', 'dark']
+export const LAYOUTS = BOOKING_LAYOUTS.map(item => item.value)
+// Keep the legacy values in the URL contract. Book.vue normalizes them to indigo/midnight.
+export const THEMES = [...BOOKING_THEMES.map(item => item.id), 'light', 'dark']
 
 const control = /[\u0000-\u001f\u007f]/g
 

@@ -1,4 +1,5 @@
 import { isDemo, runOwnerCall } from './runtime.js'
+import { normalizeBookingAppearance } from './booking-appearance.js'
 import {
   BookingError,
   assertScheduleSettings,
@@ -293,6 +294,30 @@ const transientReadFailure = error =>
   error?.code === 'BOOKING_READ_TIMEOUT' || error?.retryable === true || [408, 425, 429].includes(Number(error?.status)) || Number(error?.status) >= 500 ||
   /failed to fetch|network|record loading failed|temporarily unavailable/i.test(error?.message || '')
 
+const errorChain = error => {
+  const chain = []
+  const seen = new Set()
+  let current = error
+  while (current && typeof current === 'object' && !seen.has(current) && chain.length < 8) {
+    chain.push(current)
+    seen.add(current)
+    current = current.cause
+  }
+  return chain
+}
+
+const errorDetail = error => {
+  const chain = errorChain(error)
+  const semantic = chain.find(item => item.code && item.code !== 'PAGINATION_REQUEST_FAILED') || chain.find(item => item.code) || null
+  const status = chain.find(item => item.status !== undefined || item.statusCode !== undefined) || null
+  const retryable = chain.find(item => item.retryable === true) || null
+  return {
+    code: semantic?.code,
+    status: status?.status ?? status?.statusCode,
+    retryable: Boolean(retryable),
+  }
+}
+
 const tableReadError = (table, cause) => {
   const labels = {
     profiles: 'Booking profile',
@@ -303,11 +328,33 @@ const tableReadError = (table, cause) => {
     staff: 'Team',
     campaigns: 'Campaigns',
   }
-  const error = new Error(`${labels[table] || 'Workspace data'} could not load. ${cause?.message || 'Try again.'}`)
-  if (cause?.code) error.code = cause.code
-  if (cause?.retryable === true) error.retryable = true
-  if (cause?.status !== undefined) error.status = cause.status
+  const label = labels[table] || 'Workspace data'
+  const offline = globalThis.navigator?.onLine === false
+  const error = new Error(
+    offline ? `${label} could not load because you are offline. Reconnect, then try again.` : `${label} could not load. ${cause?.message || 'Try again.'}`,
+    { cause },
+  )
+  const detail = errorDetail(cause)
+  if (detail.code) error.code = detail.code
+  if (detail.retryable) error.retryable = true
+  if (detail.status !== undefined) error.status = detail.status
   return error
+}
+
+const OPTIONAL_TABLE_MISSING_CODES = new Set([
+  // Hosted App runtime resolves an absent declared binding before proxying the operation.
+  'APP_RESOURCE_BINDING_REQUIRED',
+  // The Web Key runtime rejects a logical Table selector that is absent from installation bindings.
+  'APP_RESOURCE_BINDING_DENIED',
+])
+
+const listOptional = async table => {
+  try {
+    return await list(table)
+  } catch (error) {
+    if (errorChain(error).some(item => OPTIONAL_TABLE_MISSING_CODES.has(item.code))) return []
+    throw error
+  }
 }
 
 async function list(table) {
@@ -368,10 +415,10 @@ export async function loadOwnerWorkspace() {
       list(TABLES.services),
       list(TABLES.bookings),
       // Contacts is optional (added in v0.5.0); an unbound Table must not block the workspace.
-      list(TABLES.contacts).catch(() => []),
+      listOptional(TABLES.contacts),
       // Staff and campaigns are optional (added in v0.6.0); unbound Tables behave as empty.
-      list(TABLES.staff).catch(() => []),
-      list(TABLES.campaigns).catch(() => []),
+      listOptional(TABLES.staff),
+      listOptional(TABLES.campaigns),
     ])
     return { profile: profiles[0] || null, schedules, services, bookings, contacts, staff, campaigns }
   })
@@ -870,6 +917,20 @@ export function saveMessageTemplates(profile, templates) {
   )
 }
 
+export function saveBookingAppearance(existing, input) {
+  return runOwnerCall(
+    'saveBookingAppearance',
+    async () => {
+      if (!existing?.id) throw notStarted(409, 'BOOKING_PROFILE_REQUIRED', 'Save your profile before changing your booking page.')
+      return update(TABLES.profiles, existing.id, {
+        booking_page_settings_json: JSON.stringify(input || {}),
+        updated_at: new Date().toISOString(),
+      })
+    },
+    [existing, input],
+  )
+}
+
 /** Client record keyed by lowercased email: private notes and tags merged with booking history. */
 export function saveContact(existing, input = {}) {
   return runOwnerCall(
@@ -929,6 +990,7 @@ export async function loadGuestPage() {
         bio: profile.bio || '',
         photoUrl: profile.photo_url || null,
         timezone: profile.timezone || 'UTC',
+        bookingAppearance: normalizeBookingAppearance(profile.booking_page_settings_json),
       },
       services: localTable(TABLES.services)
         .filter((item) => item.active !== false && serviceAllowed(item, subject))
@@ -1052,6 +1114,12 @@ export const isCalendarNotConnected = (error) =>
     error?.data?.message,
     error?.error?.message,
   ].filter(Boolean).join(' '))
+
+// Older pinned public links predate the optional calendar-busy action. Keep that exact compatibility case
+// available-without-Calendar; other 404s and all authentication or service failures remain failed checks.
+const isLegacyGuestCalendarUnavailable = error => errorChain(error).some(item =>
+  Number(item.status ?? item.statusCode) === 404 && item.message === 'Public App action not found',
+)
 
 function calendarErrorMessage(error, fallback) {
   if (isCalendarNotConnected(error)) return 'Google Calendar is not connected.'
@@ -1284,7 +1352,7 @@ export async function loadGuestCalendarCheck(fromMs, toMs) {
     }
     return { state: 'checked', busy }
   } catch (error) {
-    return { state: isCalendarNotConnected(error) ? 'unavailable' : 'failed', busy: [] }
+    return { state: isCalendarNotConnected(error) || isLegacyGuestCalendarUnavailable(error) ? 'unavailable' : 'failed', busy: [] }
   }
 }
 

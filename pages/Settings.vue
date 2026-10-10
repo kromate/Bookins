@@ -11,7 +11,8 @@ import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
 import GmSelect from '../components/ui/GmSelect.vue'
 import QrCode from '../components/QrCode.vue'
-import { copyText, createPublicLink, hasTeam, isLocalPreview, isOwnerMember, isStaffCopy, isTimeOff, revokePublicLink, saveMessageTemplates, saveProfile, staffForBooking } from '../booking.js'
+import { copyText, createPublicLink, hasTeam, isLocalPreview, isOwnerMember, isStaffCopy, isTimeOff, revokePublicLink, saveBookingAppearance, saveMessageTemplates, saveProfile, staffForBooking } from '../booking.js'
+import { BOOKING_LAYOUTS, BOOKING_THEMES, bookingTheme, normalizeBookingAppearance } from '../booking-appearance.js'
 import {
   CHANNELS,
   DEFAULT_TEMPLATES,
@@ -37,14 +38,17 @@ const setup = useSetupState()
 const router = useRouter()
 const route = useRoute()
 const saving = ref(false)
+const savingAppearance = ref(false)
 const linking = ref(false)
 const revoking = ref(false)
-const busy = computed(() => saving.value || linking.value || revoking.value)
+const busy = computed(() => saving.value || savingAppearance.value || linking.value || revoking.value)
 const confirmRevoke = ref(false)
 const linkHeading = ref(null)
 const copied = ref(false)
 const error = ref('')
 const form = reactive({ displayName: '', bio: '', timezone: 'Africa/Lagos', photoUrl: '' })
+const appearance = reactive(normalizeBookingAppearance(state.profile?.booking_page_settings_json))
+const appearanceBaseline = ref(JSON.stringify(normalizeBookingAppearance(state.profile?.booking_page_settings_json)))
 const profilePhotoFailed = ref(false)
 watch(() => form.photoUrl, () => { profilePhotoFailed.value = false })
 const profileBaseline = ref('')
@@ -103,8 +107,10 @@ watch(
   () => state.profile,
   () => {
     if (busy.value) return
-    if (dirty.value) remoteChanged.value = true
+    const savedProfile = normalizeProfile(profileInput(state.profile))
+    if (dirty.value) remoteChanged.value = savedProfile !== profileBaseline.value
     else syncProfileDraft()
+    if (!appearanceDirty.value) syncAppearanceDraft()
   },
 )
 
@@ -132,21 +138,34 @@ function normalizeProfile(value) {
   })
 }
 
+function profileInput(profile = {}) {
+  return {
+    displayName: profile?.display_name || '',
+    bio: profile?.bio || '',
+    timezone: profile?.timezone || 'Africa/Lagos',
+    photoUrl: profile?.photo_url || '',
+  }
+}
+
 function syncProfileDraft() {
   remoteChanged.value = false
-  Object.assign(form, {
-    displayName: state.profile?.display_name || '',
-    bio: state.profile?.bio || '',
-    timezone: state.profile?.timezone || 'Africa/Lagos',
-    photoUrl: state.profile?.photo_url || '',
-  })
+  Object.assign(form, profileInput(state.profile))
   profileBaseline.value = normalizeProfile(form)
 }
 
 const dirty = computed(() => normalizeProfile(form) !== profileBaseline.value)
+const serializedAppearance = () => JSON.stringify(normalizeBookingAppearance(appearance))
+const appearanceDirty = computed(() => serializedAppearance() !== appearanceBaseline.value)
+const activeTheme = computed(() => bookingTheme(appearance))
+const previewMonth = computed(() => new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date()))
+function syncAppearanceDraft() {
+  Object.assign(appearance, normalizeBookingAppearance(state.profile?.booking_page_settings_json))
+  appearanceBaseline.value = serializedAppearance()
+}
 const removeModeGuard = registerDemoGuard('bookins-settings', () => {
   if (busy.value) return 'Wait for the current settings action to finish.'
   if (dirty.value) return 'Finish or discard your unsaved profile changes before switching modes.'
+  if (appearanceDirty.value) return 'Save or discard your booking page changes before switching modes.'
   if (templatesDirty.value || savingTemplates.value) return 'Save or discard your message journey edits before switching modes.'
   return ''
 })
@@ -165,7 +184,7 @@ onBeforeRouteLeave((to) => {
     allowLeave.value = false
     return true
   }
-  if (!dirty.value && !templatesDirty.value) return true
+  if (!dirty.value && !appearanceDirty.value && !templatesDirty.value) return true
   pendingRoute.value = to.fullPath
   leavePrompt.value = true
   return false
@@ -173,13 +192,9 @@ onBeforeRouteLeave((to) => {
 
 function discardChanges() {
   if (busy.value) return
-  Object.assign(form, {
-    displayName: state.profile?.display_name || '',
-    bio: state.profile?.bio || '',
-    timezone: state.profile?.timezone || 'Africa/Lagos',
-    photoUrl: state.profile?.photo_url || '',
-  })
-  profileBaseline.value = normalizeProfile(form)
+  error.value = ''
+  syncProfileDraft()
+  syncAppearanceDraft()
   reseedJourney()
   leavePrompt.value = false
   const route = pendingRoute.value
@@ -187,6 +202,30 @@ function discardChanges() {
   if (route) {
     allowLeave.value = true
     router.push(route)
+  }
+}
+
+async function saveAppearance() {
+  if (isDemo.value || busy.value || savingTemplates.value) return
+  if (!state.profile?.id) {
+    failToast('Save your profile before changing your booking page.')
+    return
+  }
+  savingAppearance.value = true
+  error.value = ''
+  try {
+    await saveBookingAppearance(state.profile, normalizeBookingAppearance(appearance))
+    if (await reloadChecked()) {
+      syncAppearanceDraft()
+      flash('Booking page saved. Existing links without an appearance override now use this look.')
+    } else {
+      appearanceBaseline.value = serializedAppearance()
+      failToast(STALE_MESSAGE)
+    }
+  } catch (reason) {
+    failToast(reason?.message || 'The booking page could not be saved.')
+  } finally {
+    savingAppearance.value = false
   }
 }
 
@@ -363,6 +402,7 @@ async function copyShare(key, value) {
 // ----- in-page section nav -----
 const sections = [
   { id: 'settings-profile', label: 'Profile' },
+  { id: 'settings-booking-page', label: 'Booking page' },
   { id: 'settings-link', label: 'Booking link & share kit' },
   { id: 'settings-templates', label: 'Message journey' },
   { id: 'settings-delivery', label: 'Delivery status' },
@@ -444,7 +484,7 @@ const journeyPayload = () => serializeTemplates({ templates: journey.templates, 
 const serializedJourney = () => JSON.stringify(journeyPayload())
 const journeyBaseline = ref(serializedJourney())
 const templatesDirty = computed(() => serializedJourney() !== journeyBaseline.value)
-const showSaveBar = computed(() => !isDemo.value && (dirty.value || templatesDirty.value))
+const showSaveBar = computed(() => !isDemo.value && (dirty.value || appearanceDirty.value || templatesDirty.value))
 const activeKind = ref(JOURNEY_KINDS[0])
 const savingTemplates = ref(false)
 function reseedJourney() {
@@ -463,7 +503,7 @@ watch(
 )
 // A browser refresh or tab close with unsaved wording asks first.
 const warnBeforeUnload = (event) => {
-  if (isDemo.value || (!dirty.value && !templatesDirty.value)) return
+  if (isDemo.value || (!dirty.value && !appearanceDirty.value && !templatesDirty.value)) return
   event.preventDefault()
   event.returnValue = ''
 }
@@ -639,7 +679,7 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.7.0</span>
+      <span class="chip accent version-chip">Bookins v0.8.0</span>
     </div>
 
     <div v-if="error" class="notice error" role="alert"><AppIcon name="info" :size="18" />{{ error }}</div>
@@ -745,6 +785,64 @@ async function saveTemplates() {
             >
           </div>
         </form>
+
+        <article id="settings-booking-page" class="card appearance-card">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Public booking page</p>
+              <h2>Choose its look</h2>
+              <p class="muted">Existing links without an appearance override use these settings. Guests do not need a new link.</p>
+            </div>
+          </div>
+          <fieldset class="appearance-fieldset" :disabled="isDemo || busy || savingTemplates">
+            <legend>Colour theme</legend>
+            <div class="theme-grid">
+              <label v-for="theme in BOOKING_THEMES" :key="theme.id" class="theme-choice" :class="{ selected: appearance.theme === theme.id }" :style="{ '--theme-accent': theme.accent, '--theme-background': theme.background, '--theme-card': theme.card, '--theme-ink': theme.ink, '--theme-muted': theme.muted }">
+                <input v-model="appearance.theme" type="radio" name="booking-theme" :value="theme.id" />
+                <span class="theme-swatch" aria-hidden="true"><i /><i /><i /></span>
+                <strong>{{ theme.label }}</strong>
+                <small>{{ theme.description }}</small>
+              </label>
+            </div>
+            <div class="field appearance-layout">
+              <label for="booking-layout">Default calendar view</label>
+              <GmSelect id="booking-layout" v-model="appearance.layout" :options="BOOKING_LAYOUTS" label="Default calendar view" />
+              <p class="field-hint">Guests can switch views. Phones use a compact day picker with the full month one tap away.</p>
+            </div>
+          </fieldset>
+          <div class="appearance-preview" :style="{ '--preview-accent': activeTheme.accent, '--preview-background': activeTheme.background, '--preview-card': activeTheme.card, '--preview-ink': activeTheme.ink, '--preview-muted': activeTheme.muted }" aria-label="Booking page preview">
+            <div class="preview-top"><span>{{ form.displayName || 'Your booking page' }}</span><small>Preview</small></div>
+            <template v-if="appearance.layout === 'month'">
+              <div class="preview-month"><strong>{{ previewMonth }}</strong><span>Select a date</span></div>
+              <div class="preview-days"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+              <div class="preview-calendar"><i v-for="day in 21" :key="day" :class="{ selected: day === 11, muted: day < 4 }">{{ day }}</i></div>
+            </template>
+            <template v-else-if="appearance.layout === 'week'">
+              <div class="preview-month"><strong>This week</strong><span>Pick a day and time</span></div>
+              <div class="preview-week"><span v-for="day in ['Mon 12', 'Tue 13', 'Wed 14', 'Thu 15', 'Fri 16', 'Sat 17', 'Sun 18']" :key="day" :class="{ selected: day === 'Wed 14' }">{{ day }}</span></div>
+              <div class="preview-times"><span>10:00</span><span class="selected">11:30</span><span>14:00</span></div>
+            </template>
+            <template v-else>
+              <div class="preview-month"><strong>Choose a day</strong><span>Times by day</span></div>
+              <div class="preview-columns">
+                <div v-for="day in [{ label: 'Tue 13', times: ['10:00', '13:30'] }, { label: 'Wed 14', times: ['11:30', '15:00'] }, { label: 'Thu 15', times: ['09:30', '14:00'] }]" :key="day.label" :class="{ selected: day.label === 'Wed 14' }"><strong>{{ day.label }}</strong><span v-for="time in day.times" :key="time" :class="{ selected: time === '11:30' }">{{ time }}</span></div>
+              </div>
+            </template>
+          </div>
+          <div class="form-actions appearance-actions">
+            <GmButton
+              type="button"
+              variant="primary"
+              :pending="savingAppearance"
+              pending-label="Saving…"
+              :disabled="(busy && !savingAppearance) || savingTemplates"
+              :disabled-reason="isDemo ? 'Demo is read-only.' : !state.profile?.id ? 'Save your profile before changing your booking page.' : !appearanceDirty ? 'Saved. Change something to save again.' : ''"
+              reason-visible
+              @click="saveAppearance"
+              >Save booking page</GmButton
+            >
+          </div>
+        </article>
 
         <div id="settings-link" class="link-section">
           <article class="card booking-page-card" data-tour="tour-settings-link">
@@ -997,7 +1095,7 @@ async function saveTemplates() {
     </div>
 
     <div v-if="showSaveBar" class="sticky-save-bar" role="status">
-      <span>{{ dirty && templatesDirty ? 'Unsaved profile and message changes' : dirty ? 'Unsaved profile changes' : 'Unsaved message changes' }}</span>
+      <span>{{ dirty && appearanceDirty && templatesDirty ? 'Unsaved profile, booking page and message changes' : dirty && appearanceDirty ? 'Unsaved profile and booking page changes' : dirty && templatesDirty ? 'Unsaved profile and message changes' : appearanceDirty && templatesDirty ? 'Unsaved booking page and message changes' : dirty ? 'Unsaved profile changes' : appearanceDirty ? 'Unsaved booking page changes' : 'Unsaved message changes' }}</span>
       <div class="cluster">
         <GmConfirm
           v-model:open="leavePrompt"
@@ -1013,6 +1111,7 @@ async function saveTemplates() {
           <button class="ghost" type="button" :disabled="busy" @click="leavePrompt = true">Discard changes</button>
         </GmConfirm>
         <button v-if="templatesDirty" class="secondary" type="button" :class="{ 'is-pending': savingTemplates }" :disabled="isDemo || savingTemplates || busy" @click="saveTemplates">{{ savingTemplates ? 'Saving…' : 'Save messages' }}</button>
+        <button v-if="appearanceDirty" class="secondary" type="button" :class="{ 'is-pending': savingAppearance }" :disabled="isDemo || savingAppearance || busy || !state.profile?.id" @click="saveAppearance">{{ savingAppearance ? 'Saving…' : 'Save booking page' }}</button>
         <button v-if="dirty" class="primary" type="submit" form="settings-profile" :class="{ 'is-pending': saving }" :disabled="busy || isDemo">{{ saving ? 'Saving…' : 'Save profile' }}</button>
       </div>
     </div>
@@ -1058,6 +1157,39 @@ async function saveTemplates() {
 .revoke-row { margin-top: var(--space-3); display: flex; justify-content: center; }
 .revoke-link { color: var(--danger); }
 .profile-actions { margin-top: var(--space-4); }
+.appearance-card { display: grid; gap: var(--space-4); }
+.appearance-fieldset { margin: 0; padding: 0; border: 0; }
+.appearance-fieldset > legend { margin-bottom: 10px; font-size: var(--text-sm); font-weight: 700; }
+.theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.theme-choice { position: relative; display: grid; gap: 4px; min-height: 136px; padding: 11px; cursor: pointer; color: var(--theme-ink); border: 1px solid color-mix(in srgb, var(--theme-muted) 32%, transparent); border-radius: 12px; background: var(--theme-background); transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
+.theme-choice:hover { transform: translateY(-1px); }
+.theme-choice.selected { border-color: var(--theme-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent) 22%, transparent); }
+.theme-choice input { position: absolute; inline-size: 1px; block-size: 1px; opacity: 0; }
+.theme-swatch { display: flex; gap: 4px; align-items: end; min-height: 54px; padding: 7px; border-radius: 8px; background: var(--theme-card); }
+.theme-swatch i { display: block; flex: 1; min-height: 24px; border-radius: 4px; background: var(--theme-background); }
+.theme-swatch i:nth-child(2) { min-height: 36px; background: var(--theme-accent); }
+.theme-swatch i:nth-child(3) { min-height: 30px; background: color-mix(in srgb, var(--theme-accent) 22%, var(--theme-card)); }
+.theme-choice strong { margin-top: 3px; font-size: var(--text-sm); }
+.theme-choice small { color: var(--theme-muted); font-size: var(--text-xs); }
+.appearance-layout { max-width: 330px; margin-top: var(--space-4); }
+.appearance-preview { display: grid; gap: 11px; max-width: 460px; padding: 16px; color: var(--preview-ink); border: 1px solid color-mix(in srgb, var(--preview-muted) 26%, transparent); border-radius: 14px; background: var(--preview-background); }
+.preview-top, .preview-month, .preview-days, .preview-times { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.preview-top small, .preview-month span, .preview-days { color: var(--preview-muted); font-size: var(--text-xs); }
+.preview-month strong { font-size: var(--text-sm); }
+.preview-days { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; }
+.preview-calendar { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.preview-calendar i { display: grid; aspect-ratio: 1; place-items: center; font-style: normal; font-size: var(--text-xs); border-radius: 4px; background: var(--preview-card); }
+.preview-calendar i.muted { opacity: .42; }
+.preview-calendar i.selected, .preview-times .selected, .preview-week .selected, .preview-columns > .selected > strong, .preview-columns .selected { color: #fff; background: var(--preview-accent); }
+.preview-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+.preview-week span { display: grid; min-height: 52px; place-items: center; padding: 4px; text-align: center; border-radius: 5px; background: var(--preview-card); font-size: var(--text-xs); }
+.preview-times { justify-content: start; }
+.preview-times span { padding: 7px 9px; font-size: var(--text-xs); border: 1px solid color-mix(in srgb, var(--preview-muted) 32%, transparent); border-radius: 5px; background: var(--preview-card); }
+.preview-columns { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.preview-columns > div { display: grid; gap: 5px; padding: 6px; border-radius: 6px; background: color-mix(in srgb, var(--preview-card) 82%, var(--preview-background)); }
+.preview-columns strong, .preview-columns span { display: grid; min-height: 25px; place-items: center; padding: 3px; text-align: center; border-radius: 4px; font-size: var(--text-xs); }
+.preview-columns span { background: var(--preview-card); }
+.appearance-actions { margin-top: 0; }
 .eyebrow .chip { margin-left: 8px; vertical-align: middle; }
 .readiness-hint a { color: var(--accent); }
 .readiness-list { margin: var(--space-4) 0; padding: 0; list-style: none; display: grid; gap: 8px; }
@@ -1139,6 +1271,7 @@ async function saveTemplates() {
 @media (max-width: 800px) {
   .template-grid { grid-template-columns: 1fr; }
   .link-section { grid-template-columns: minmax(0, 1fr); }
+  .theme-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 700px) {
   .notice { flex-wrap: wrap; }

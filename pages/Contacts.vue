@@ -1,7 +1,7 @@
 <script setup>
 import { formatDay } from '../format-date.js'
 import { csvCell } from '../csv.js'
-import { computed, inject, ref } from 'vue'
+import { computed, inject, nextTick, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
@@ -153,12 +153,24 @@ const editingEmail = ref('')
 const draft = ref({ notes: '', tags: [], tagInput: '' })
 const saving = ref(false)
 const saveError = ref('')
+const editTriggers = new Map()
+function setEditTrigger(email, element) {
+  if (element) editTriggers.set(email, element)
+  else editTriggers.delete(email)
+}
+function focusEditTrigger(email) {
+  nextTick(() => {
+    const trigger = editTriggers.get(email)
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true })
+  })
+}
 
 function startEdit(contact) {
   if (saving.value) return
   editingEmail.value = contact.email
   draft.value = { notes: contact.notes, tags: [...contact.tags], tagInput: '' }
   saveError.value = ''
+  nextTick(() => document.getElementById(`notes-${contact.email}`)?.focus({ preventScroll: true }))
 }
 const discardOpen = ref(false)
 const editing = computed(() => contacts.value.find((item) => item.email === editingEmail.value) || null)
@@ -175,9 +187,11 @@ const dirty = computed(() => {
 })
 function cancelEdit() {
   if (saving.value) return
+  const email = editingEmail.value
   discardOpen.value = false
   editingEmail.value = ''
   saveError.value = ''
+  focusEditTrigger(email)
 }
 function requestCancel() {
   if (saving.value) return
@@ -213,7 +227,9 @@ async function saveEdit(contact) {
     })
     await refresh()
     discardOpen.value = false
+    const email = editingEmail.value
     editingEmail.value = ''
+    focusEditTrigger(email)
     toast?.success(`Notes and tags saved for ${contact.name}.`)
   } catch (reason) {
     saveError.value = reason?.message || 'The client record could not be saved.'
@@ -461,7 +477,7 @@ function exportCsv() {
         </form>
         <div v-else class="card-actions">
           <GmHint wrap :text="isDemo ? 'Demo is read-only. Exit Demo to edit contacts.' : 'Save or discard the notes you are editing first.'" :disabled="!(isDemo || (editingEmail && dirty))" v-slot="{ describedby }">
-            <button class="secondary small-button" type="button" :aria-disabled="(isDemo || (!!editingEmail && dirty)) || undefined" :aria-describedby="(isDemo || (editingEmail && dirty)) ? describedby : undefined" @click="!(isDemo || (editingEmail && dirty)) && startEdit(contact)"><AppIcon name="edit" :size="16" />{{ contact.notes || contact.tags.length ? 'Edit notes and tags' : 'Add notes and tags' }}</button>
+            <button :ref="(element) => setEditTrigger(contact.email, element)" class="secondary small-button" type="button" :aria-disabled="(isDemo || (!!editingEmail && dirty)) || undefined" :aria-describedby="(isDemo || (editingEmail && dirty)) ? describedby : undefined" @click="!(isDemo || (editingEmail && dirty)) && startEdit(contact)"><AppIcon name="edit" :size="16" />{{ contact.notes || contact.tags.length ? 'Edit notes and tags' : 'Add notes and tags' }}</button>
           </GmHint>
           <details v-if="followUp(contact)" class="message-menu">
             <summary class="secondary small-button" :aria-label="`Message ${contact.name}`">Message</summary>
