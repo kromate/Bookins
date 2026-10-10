@@ -29,6 +29,7 @@ function createGoalmaticRuntimeCard() {
 }
 
 function showGoalmaticRuntimeError(message) {
+  document.querySelector('.bootstrap-loading')?.remove()
   const overlay = document.querySelector('[data-goalmatic-runtime-loading]') || createGoalmaticRuntimeOverlay()
   delete overlay.dataset.goalmaticRuntimeLoading
   delete overlay.dataset.goalmaticSignIn
@@ -173,7 +174,7 @@ async function start() {
   try {
     goalmaticRuntime = await configureGoalmaticRuntime()
   } catch {
-    showRuntimeNotice('Goalmatic runtime could not start. Check VITE_GOALMATIC_API_KEY and its allowed origin.', 'error')
+    showGoalmaticRuntimeError('Goalmatic could not connect. Check your connection and try again.')
     return
   }
   const router = createRouter({ history: createWebHistory(), routes })
@@ -184,7 +185,8 @@ async function start() {
   }
   app.use(router)
   await settleGoalmaticRuntime(goalmaticRuntime)
+  await router.isReady()
   app.mount('#app')
 }
 
-void start()
+void start().catch(() => showGoalmaticRuntimeError('Bookins could not load. Check your connection and try again.'))

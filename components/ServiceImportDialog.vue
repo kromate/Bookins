@@ -7,6 +7,7 @@ import GmButton from './ui/GmButton.vue'
 import GmConfirm from './ui/GmConfirm.vue'
 import GmDialog from './ui/GmDialog.vue'
 import GmHint from './ui/GmHint.vue'
+import GmSelect from './ui/GmSelect.vue'
 import {
   createStaffServices,
   importErrorReportCsv,
@@ -99,6 +100,16 @@ function setMapping(name, field) {
   else delete next[name]
   mapping.value = next
   runParse()
+}
+function mappingOptions(headerName) {
+  return [
+    { value: '', label: 'Not used (ignore)' },
+    ...FIELD_OPTIONS.map((field) => ({
+      value: field,
+      label: FIELD_LABELS[field],
+      disabled: fieldTakenBy(field, headerName),
+    })),
+  ]
 }
 
 // ---- reading input ----
@@ -565,10 +576,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
           <div class="mapper-grid">
             <div v-for="header in mapperColumns" :key="header.name" class="mapper-row">
               <label :for="`map-${header.name}`"><span class="col-name">{{ header.name }}</span> is…</label>
-              <select :id="`map-${header.name}`" class="input" :value="mapping[header.name] || ''" @change="setMapping(header.name, $event.target.value)">
-                <option value="">Not used (ignore)</option>
-                <option v-for="field in FIELD_OPTIONS" :key="field" :value="field" :disabled="fieldTakenBy(field, header.name)">{{ FIELD_LABELS[field] }}</option>
-              </select>
+              <GmSelect :id="`map-${header.name}`" class="input" :model-value="mapping[header.name] || ''" :options="mappingOptions(header.name)" :label="`Match ${header.name}`" @change="setMapping(header.name, $event)" />
             </div>
           </div>
           <p v-if="recognised.length" class="muted small-print">Recognised: {{ recognised.map((header) => `${header.name} → ${FIELD_LABELS[header.field]}`).join(' · ') }}</p>

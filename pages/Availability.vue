@@ -5,6 +5,8 @@ import AppIcon from '../components/AppIcon.vue'
 import WeeklyHoursEditor from '../components/WeeklyHoursEditor.vue'
 import IntervalField from '../components/IntervalField.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
+import GmDatePicker from '../components/ui/GmDatePicker.vue'
+import GmTimePicker from '../components/ui/GmTimePicker.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmHint from '../components/ui/GmHint.vue'
@@ -597,11 +599,10 @@ async function submit() {
   <section>
     <div class="page-header">
       <div
-        ><p class="eyebrow">Working hours</p><h1>Availability</h1
+        ><h1>Availability</h1
         ><p class="lede"
-          ><template v-if="team">Each person on your team has their own working hours and time off, so two people can be booked at the same time. Pick whose calendar to edit.</template
-          ><template v-else>Choose when guests can book you. Times are shown in your booking timezone and confirmed
-          slots are removed automatically.</template></p
+          ><template v-if="team">Choose a team member, then set their working hours.</template
+          ><template v-else>Set your working hours and days off.</template></p
         ></div
       >
     </div>
@@ -655,15 +656,15 @@ async function submit() {
           <div class="schedule-heading"
             ><div
               ><p class="eyebrow">Weekly schedule<template v-if="team"> · {{ memberName(currentMember) }}</template> <span v-if="isDraft" class="chip warning">Not saved yet</span><span v-else-if="dirty && !isDemo" class="chip warning">Unsaved changes</span><span v-else-if="!isDemo" class="chip success">Saved</span></p><h2>{{ isOwnerView ? 'Regular hours' : `${memberFirstName(currentMember)}'s regular hours` }}</h2
-              ><p class="muted">Turn a day on, then set one or more booking windows, for example before and after a lunch break.</p></div
+              ><p class="muted">Turn on the days you work. Use More for breaks or to copy hours.</p></div
             ></div
           >
           <WeeklyHoursEditor class="days" :days="days" :disabled="locked" @notice="onEditorNotice" />
         </article>
 
-        <article class="card timeoff-card" aria-labelledby="timeoff-title" data-tour="tour-availability-timeoff">
-          <div><p class="eyebrow">Time off<template v-if="team"> · {{ memberName(currentMember) }}</template></p><h2 id="timeoff-title">Block out days or hours <GmHint :text="team ? `Time off blocks only ${whose} calendar. The rest of the team can still be booked. Existing bookings are not cancelled; you will be told if any fall inside it.` : 'Time off hides those times from your booking page without changing your weekly hours. Existing bookings are not cancelled; you will be told if any fall inside it.'" label="About time off" /></h2>
-            <p class="muted">Guests cannot book blocked times<template v-if="team"> with {{ isOwnerView ? 'you' : memberFirstName(currentMember) }}</template>. Dates and times use {{ whose }} schedule timezone, {{ displayTimeZone(scheduleZone) }}.</p></div>
+        <details class="card availability-panel timeoff-card" data-tour="tour-availability-timeoff">
+          <summary class="panel-summary"><span><strong id="timeoff-title">Time off</strong><small>Block days or a few hours</small></span><AppIcon name="chevron" :size="17" /></summary>
+          <div class="panel-body">
           <p v-if="!scheduleReady" class="muted">Save {{ whose }} weekly hours first (button at the bottom of the page), then you can add time off.</p>
           <form v-else class="timeoff-form" @submit.prevent="addTimeOff">
             <div class="preset-row" role="group" aria-label="Quick time off presets">
@@ -673,15 +674,15 @@ async function submit() {
             </div>
             <label class="inline-check"><input v-model="offForm.allDay" type="checkbox" :disabled="isDemo || timeOffBusy" /> All day</label>
             <div v-if="offForm.allDay" class="field-row off-grid">
-              <div class="field"><label for="off-start">First day</label><input id="off-start" v-model="offForm.startDate" type="date" required :disabled="isDemo || timeOffBusy" /></div>
-              <div class="field"><label for="off-end">Last day (included)</label><input id="off-end" v-model="offForm.endDate" type="date" :min="offForm.startDate" :disabled="isDemo || timeOffBusy" /></div>
+              <div class="field"><label for="off-start">First day</label><GmDatePicker id="off-start" v-model="offForm.startDate" label="First day" required :disabled="isDemo || timeOffBusy" /></div>
+              <div class="field"><label for="off-end">Last day (included)</label><GmDatePicker id="off-end" v-model="offForm.endDate" label="Last day included" :min="offForm.startDate" :disabled="isDemo || timeOffBusy" /></div>
             </div>
             <div v-else class="field-row off-grid three">
-              <div class="field"><label for="off-date">Date</label><input id="off-date" v-model="offForm.startDate" type="date" required :disabled="isDemo || timeOffBusy" /></div>
-              <div class="field"><label for="off-from">From</label><input id="off-from" v-model="offForm.startTime" type="time" required :disabled="isDemo || timeOffBusy" /></div>
-              <div class="field"><label for="off-to">To</label><input id="off-to" v-model="offForm.endTime" type="time" required :disabled="isDemo || timeOffBusy" /></div>
+              <div class="field"><label for="off-date">Date</label><GmDatePicker id="off-date" v-model="offForm.startDate" label="Time off date" required :disabled="isDemo || timeOffBusy" /></div>
+              <div class="field"><label for="off-from">From</label><GmTimePicker id="off-from" v-model="offForm.startTime" label="Time off starts" :step="300" required :disabled="isDemo || timeOffBusy" /></div>
+              <div class="field"><label for="off-to">To</label><GmTimePicker id="off-to" v-model="offForm.endTime" label="Time off ends" :step="300" required :disabled="isDemo || timeOffBusy" /></div>
             </div>
-            <p class="field-hint off-format">Pick from the calendar or type the date in your browser's format. Dates are in {{ displayTimeZone(scheduleZone) }}; today is {{ formatDay(todayInZone()) }}.</p>
+            <p class="field-hint off-format">Dates use {{ displayTimeZone(scheduleZone) }}. Today is {{ formatDay(todayInZone()) }}.</p>
             <p v-if="offSummary" class="field-hint off-summary" aria-live="polite">Will block: <strong>{{ offSummary }}</strong> ({{ displayTimeZone(scheduleZone) }}).</p>
             <div class="field"><label for="off-reason">Reason (optional)</label><input id="off-reason" v-model="offForm.reason" maxlength="160" placeholder="Holiday, training, errand" :disabled="isDemo || timeOffBusy" /></div>
             <div class="stack-sm"><GmButton type="submit" variant="primary" :pending="timeOffBusy" pending-label="Saving…" :disabled-reason="isDemo ? 'Demo is read-only.' : !offForm.startDate ? 'Choose a first day, or tap Today, Tomorrow or Next 7 days.' : ''" reason-visible>Add time off</GmButton></div>
@@ -722,7 +723,8 @@ async function submit() {
               <li v-for="item in pastTimeOff" :key="item.id"><AppIcon name="calendar" :size="18" class="off-icon" /><span class="off-text"><strong>{{ timeOffLabel(item) }}</strong><small v-if="timeOffReason(item)">{{ timeOffReason(item) }}</small></span></li>
             </ul>
           </div>
-        </article>
+          </div>
+        </details>
       </div>
 
       <aside class="availability-side">
@@ -740,11 +742,12 @@ async function submit() {
           >
         </article>
 
-        <article class="card settings-card">
-          <div><p class="eyebrow">Booking rules</p><h2>Timing and notice</h2><p class="muted">{{ team ? `These rules apply to ${whose} calendar only.` : 'These rules apply to every service on your booking page.' }}</p></div>
+        <details class="card availability-panel settings-card">
+          <summary class="panel-summary"><span><strong>Booking rules</strong><small>Timezone, start times and notice</small></span><AppIcon name="chevron" :size="17" /></summary>
+          <div class="panel-body settings-panel-body">
           <div class="field"
             ><label for="availability-timezone">Timezone <GmHint text="Your weekly hours and time off are read in this timezone, and guests see times converted to theirs. Pick the city where you work." label="About timezone" /></label
-            ><GmSelect id="availability-timezone" v-model="form.timezone" :options="timezoneItems" label="Timezone" :disabled="isDemo || saving" required described-by="availability-timezone-help" />
+            ><GmSelect id="availability-timezone" v-model="form.timezone" :options="timezoneItems" label="Timezone" :disabled="isDemo || saving" required searchable search-placeholder="Search by city or timezone" described-by="availability-timezone-help" />
             <p id="availability-timezone-help" class="field-hint">The timezone your hours are in. Type a city name to search.</p
           ><button v-if="browserZone && browserZone !== form.timezone" class="ghost small-button" type="button" :disabled="locked" @click="useBrowserZone">Use this browser's timezone ({{ browserZone }})</button
           ></div>
@@ -846,7 +849,8 @@ async function submit() {
               from using the same time.</template></p
             ></div
           >
-        </article>
+          </div>
+        </details>
       </aside>
     </div>
 
@@ -874,9 +878,12 @@ async function submit() {
 </template>
 
 <style scoped>
-.availability-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.65fr); gap: var(--space-4); align-items: start; }
-.availability-main { min-width: 0; display: grid; gap: var(--space-4); }
-.availability-side { display: grid; gap: var(--space-4); min-width: 0; }
+.availability-layout { max-width: 980px; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-3); align-items: start; }
+.availability-main, .availability-side { display: contents; }
+.schedule-card { order: 1; }
+.summary-card { order: 2; }
+.timeoff-card { order: 3; }
+.settings-card { order: 4; }
 .notice-action { margin-left: auto; flex: none; }
 .draft-notice span { min-width: 0; }
 .eyebrow .chip { margin-left: 8px; vertical-align: middle; }
@@ -884,9 +891,8 @@ async function submit() {
 .sticky-save-bar { flex-wrap: wrap; }
 .save-reason { flex-basis: 100%; margin: 0; color: var(--danger); text-align: right; }
 .availability-layout { padding-bottom: 96px; }
-.timeoff-card h2 { display: flex; align-items: center; gap: 4px; }
 .schedule-heading { margin-bottom: var(--space-4); }
-.schedule-heading h2, .timeoff-card h2, .settings-card h2 { margin: 0 0 4px; }
+.schedule-heading h2 { margin: 0 0 4px; }
 .schedule-heading .muted, .timeoff-card .muted { margin: 0; font-size: var(--text-sm); }
 .days { margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); }
 
@@ -896,7 +902,16 @@ async function submit() {
 .member-picker .field-hint { display: flex; align-items: center; gap: 7px; }
 .switch-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
 
-.timeoff-card { display: grid; gap: var(--space-3); }
+.availability-panel { padding: 0; overflow: visible; box-shadow: none; }
+.panel-summary { min-height: 64px; padding: 0 var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); cursor: pointer; list-style: none; }
+.panel-summary::-webkit-details-marker { display: none; }
+.panel-summary > span { display: grid; gap: 2px; }
+.panel-summary strong { font-size: var(--text-md); }
+.panel-summary small { color: var(--muted); font-size: var(--text-xs); }
+.panel-summary > svg { color: var(--muted); transition: transform var(--dur-fast) var(--ease); }
+.availability-panel[open] > .panel-summary > svg { transform: rotate(90deg); }
+.panel-body { padding: 0 var(--space-4) var(--space-4); display: grid; gap: var(--space-3); border-top: 1px solid var(--line); }
+.panel-body > :first-child { margin-top: var(--space-4); }
 .timeoff-form { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
 .preset-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .inline-check { min-height: var(--control-h-sm); display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: 600; }
@@ -926,28 +941,26 @@ async function submit() {
 .warning-note > div { min-width: 0; }
 .warning-note p { margin: 4px 0 0; }
 .warning-note li { font-size: var(--text-sm); }
-.settings-card { display: grid; gap: var(--space-3); }
+.settings-panel-body { gap: var(--space-3); }
 .settings-card .field { margin-bottom: 0; }
 
-.summary-card { color: #fff; background: linear-gradient(145deg, #2336dc, #4154ef); border-color: transparent; box-shadow: 0 16px 38px rgba(35, 54, 220, 0.2); }
-.summary-card .eyebrow { color: #dfe3ff; }
-.summary-number { margin: 8px 0 var(--space-4); display: flex; align-items: baseline; gap: 8px; }
-.summary-number strong { font-size: 42px; letter-spacing: -0.05em; font-variant-numeric: tabular-nums; }
-.summary-number span { color: #e6e9ff; font-size: var(--text-sm); }
-.summary-row { padding: 12px 0; display: flex; justify-content: space-between; gap: 14px; border-top: 1px solid rgba(255, 255, 255, 0.2); font-size: var(--text-sm); }
-.summary-row span { color: #e6e9ff; }
-.summary-row strong { text-align: right; overflow-wrap: anywhere; }
+.summary-card { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: auto repeat(3, minmax(0, auto)); align-items: center; gap: var(--space-4); box-shadow: none; }
+.summary-card .eyebrow { margin: 0; }
+.summary-number { display: flex; align-items: baseline; gap: 5px; }
+.summary-number strong { font-size: var(--text-xl); font-variant-numeric: tabular-nums; }
+.summary-number span { color: var(--muted); font-size: var(--text-xs); }
+.summary-row { padding-left: var(--space-4); display: grid; gap: 2px; border-left: 1px solid var(--line); font-size: var(--text-xs); }
+.summary-row span { color: var(--muted); }
+.summary-row strong { overflow-wrap: anywhere; }
 .rule-note { padding: 12px; display: flex; align-items: flex-start; gap: 9px; color: var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
 .rule-note svg { flex: none; margin-top: 2px; }
 .rule-note p { margin: 0; color: #445071; font-size: var(--text-sm); }
 
-@media (max-width: 1140px) {
-  .availability-layout { grid-template-columns: 1fr; }
-  .availability-side { grid-template-columns: 1fr 1fr; align-items: start; }
-}
 @media (max-width: 780px) {
   .days { margin: 0 calc(var(--space-4) * -1) calc(var(--space-4) * -1); }
-  .availability-side { grid-template-columns: 1fr; }
+  .summary-card { grid-template-columns: 1fr 1fr; }
+  .summary-card .eyebrow { grid-column: 1 / -1; }
+  .summary-row { padding-left: 0; border-left: 0; }
   .timeoff-form { padding: var(--space-3); }
   .save-reason { text-align: left; }
   .notice { flex-wrap: wrap; }

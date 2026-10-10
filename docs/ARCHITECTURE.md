@@ -61,3 +61,40 @@ Private testing and Store publication are separate. Production must promote the 
 
 Domain logic is pure and unit-tested outside the Vue pages: `scheduling.js` mirrors the hosted opening and overlap rules; `services.js` and `csv.js` parse, validate, and import service CSV; `team.js` models staff as one schedule per person; `messaging.js` renders templates and computes the live message queue from bookings; `campaigns.js` builds segments, queues, and batches; `service-meta.js` reads and writes the description trailer. `booking.js` is the only module that touches Tables, the Goalmatic runtime, and the local preview store, and every owner write goes through `runOwnerCall` so Demo stays read-only.
 
+
+## Guest self-service management
+
+The reviewed public journey uses the existing anonymous `/book` route. A private
+management link wraps the public grant, booking ID, and a 256-bit management token
+inside a `#bm=` URL fragment; the secret never enters URL query parameters. The
+frontend unwraps the grant before `GoalmaticGuest.ready()` and restores the private
+fragment for bookmark/reload use. Guests are told to keep the link private.
+
+`booking.create-managed` generates the random token and stores only its SHA-256
+hash in `management_token_hash`, with a 365-day `management_expires_at`. The raw
+token is returned with the creation receipt. Legacy `booking.create` does not
+write the new fields, preserving old pinned grant/schema compatibility.
+
+The new manifest capability declares create-managed, guest-get, guest-openings,
+guest-reschedule, and guest-cancel. Every public action binds profile, schedule,
+service and booking Tables from the installation; callers cannot replace those
+bindings. Management verifies the booking-specific token and expiry, account/Table
+ownership and grant subject, then returns only appointment facts. It never returns
+contact details, notes or token hashes.
+
+Only confirmed future bookings can change. Availability excludes only the verified
+booking and follows its stored service/schedule. Rescheduling uses one revision-
+checked Table PATCH and the existing unique reservation key. Cancellation releases
+the reservation and is idempotent. The bounded busy-record scan fails closed if
+not exhausted. Existing owner operations still have their documented concurrency
+limitations; external Calendar availability is a separate non-atomic check.
+
+The guest UI checks the declared Calendar busy action while choosing a replacement
+and before submitting it. Unavailable checks are disclosed. Linked Calendar events
+are marked `pending` after a guest change; the host must reconcile them using the
+existing retry action. No guest email or automatic Calendar delivery is implied.
+
+The local preview adapter exercises the same user journey with browser-memory
+sample data. Its records intentionally reset on a full reload, so hosted private
+link persistence must be verified in the private-test installation. These changes
+are implemented locally and have not been published by this design task.

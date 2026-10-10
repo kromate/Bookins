@@ -3,14 +3,19 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import { initLocale, intlLocale, locale, setLocale, t } from '../i18n/guest.js'
 import AppIcon from '../components/AppIcon.vue'
 import BookinsLogo from '../components/BookinsLogo.vue'
+import GuestBookingManagement from '../components/GuestBookingManagement.vue'
 import { demoGuestApi } from '../demo/guest.js'
 import {
   isLocalPreview,
+  buildGuestManagementLink,
+  copyText,
   loadGuestCalendarCheck,
   loadGuestOpenings,
   loadGuestPage,
   openingOverlapsBusy,
   readWithDeadline,
+  readGuestManagementLink,
+  clearGuestManagementLink,
   submitGuestBooking,
 } from '../booking.js'
 import { bookingTheme, normalizeBookingAppearance } from '../booking-appearance.js'
@@ -29,6 +34,7 @@ import {
 } from '../time-display.js'
 
 const props = defineProps({ demoPreview: { type: Boolean, default: false } })
+const initialManagementSession = readGuestManagementLink()
 initLocale()
 
 const MAX_RANGE_DAYS = 31
@@ -54,6 +60,10 @@ const selectedSlot = ref(null)
 const pendingSlot = ref(null) // small screens: a tapped time waits for the sticky Continue bar
 const submitting = ref(false)
 const confirmation = ref(null)
+const managementSession = ref(initialManagementSession)
+const managementInitialBooking = ref(null)
+const managementInitialMode = ref('summary')
+const managementLinkCopied = ref(false)
 const notes = ref('')
 const contact = reactive({ name: params.name, email: params.email, phone: params.phone })
 const touched = reactive({ name: false, email: false, phone: false })
@@ -1071,6 +1081,7 @@ const detailsText = computed(() => {
   })
 })
 const shareUrl = computed(() => `https://wa.me/?text=${encodeURIComponent(detailsText.value)}`)
+const managementUrl = computed(() => (confirmation.value?.managementToken ? buildGuestManagementLink(confirmation.value, theme.value) : ''))
 const changeUrl = computed(() =>
   bio.value.whatsapp && confirmation.value
     ? `https://wa.me/${bio.value.whatsapp}?text=${encodeURIComponent(t('share.changeText', { reference: confirmation.value.reference }))}`
@@ -1083,6 +1094,39 @@ async function copyDetails() {
     detailsCopied.value = true
     setTimeout(() => { detailsCopied.value = false }, 2000)
   } catch { /* clipboard unavailable: the details are on screen */ }
+}
+
+async function copyManagementLink() {
+  if (!managementUrl.value) return
+  try {
+    await copyText(managementUrl.value)
+    managementLinkCopied.value = true
+    setTimeout(() => { managementLinkCopied.value = false }, 2000)
+  } catch { /* the private link remains available as an ordinary link */ }
+}
+
+function openManagement(mode = 'summary') {
+  const value = confirmation.value
+  if (!value?.bookingId || !value.managementToken) return
+  managementInitialBooking.value = value
+  managementInitialMode.value = mode
+  managementSession.value = { bookingId: value.bookingId, managementToken: value.managementToken }
+  window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' })
+}
+
+function closeManagement() {
+  managementSession.value = null
+  managementInitialBooking.value = null
+  managementInitialMode.value = 'summary'
+  clearGuestManagementLink()
+  confirmation.value = null
+  selectedService.value = null
+  selectedSlot.value = null
+  start()
+}
+
+function acceptManagedBooking(value) {
+  if (confirmation.value) confirmation.value = { ...confirmation.value, ...value }
 }
 
 async function bookAnother() {
@@ -1169,7 +1213,7 @@ onMounted(() => {
   document.addEventListener('pointerdown', onDocumentPointer)
   mobileQuery?.addEventListener?.('change', onMobileChange)
   syncRootBackground()
-  start()
+  if (!managementSession.value) start()
 })
 watch(theme, () => {
   if (typeof document !== 'undefined') syncRootBackground()
@@ -1189,7 +1233,7 @@ onBeforeUnmount(() => {
     <header class="bk-header">
       <a href="/" aria-label="Bookins"><BookinsLogo :inverse="theme === 'midnight'" /></a>
       <div class="bk-header-end">
-        <span class="bk-secure"><AppIcon name="lock" :size="14" />{{ demoPreview ? t('header.demo') : t('header.secure') }}</span>
+        <span v-if="demoPreview" class="bk-secure"><AppIcon name="lock" :size="14" />{{ t('header.demo') }}</span>
         <div class="bk-lang" role="group" :aria-label="t('lang.label')">
           <button type="button" lang="en" :aria-pressed="locale === 'en'" :class="{ active: locale === 'en' }" @click="setLocale('en')">EN</button>
           <button type="button" lang="fr" :aria-pressed="locale === 'fr'" :class="{ active: locale === 'fr' }" @click="setLocale('fr')">FR</button>
@@ -1202,7 +1246,18 @@ onBeforeUnmount(() => {
     </div>
 
     <main class="bk-main">
-      <div v-if="loading" class="bk-loading" role="status" aria-live="polite">
+      <GuestBookingManagement
+        v-if="managementSession"
+        :booking-id="managementSession.bookingId"
+        :management-token="managementSession.managementToken"
+        :initial-booking="managementInitialBooking"
+        :initial-mode="managementInitialMode"
+        :locale="locale"
+        @close="closeManagement"
+        @updated="acceptManagedBooking"
+      />
+
+      <div v-else-if="loading" class="bk-loading" role="status" aria-live="polite">
         <h1 class="bk-sr">{{ t('loading.title') }}</h1>
         <p class="bk-sr">{{ t('loading.text') }}</p>
         <div class="bk-card bk-skel-card" aria-hidden="true">
@@ -1255,7 +1310,19 @@ onBeforeUnmount(() => {
           <button class="bk-btn" type="button" @click="copyDetails"><AppIcon name="copy" :size="15" />{{ detailsCopied ? t('confirm.detailsCopied') : t('confirm.copyDetails') }}</button>
           <span class="bk-sr" role="status">{{ detailsCopied ? t('confirm.detailsCopied') : '' }}</span>
         </div>
-        <p v-if="changeUrl" class="bk-change">
+        <div v-if="confirmation.managementToken && managementUrl" class="bk-private-actions">
+          <p>{{ locale === 'fr' ? 'Gardez ce lien privé. Toute personne qui le possède peut modifier cette réservation.' : 'Keep this link private. Anyone with it can change this booking.' }}</p>
+          <div>
+            <button class="bk-btn" type="button" @click="copyManagementLink">
+              <AppIcon name="copy" :size="15" />
+              {{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : (locale === 'fr' ? 'Copier le lien privé' : 'Copy private management link') }}
+            </button>
+            <button class="bk-btn" type="button" @click="openManagement('reschedule')">{{ locale === 'fr' ? 'Reprogrammer' : 'Reschedule' }}</button>
+            <button class="bk-btn danger" type="button" @click="openManagement('cancel')">{{ locale === 'fr' ? 'Annuler la réservation' : 'Cancel booking' }}</button>
+            <span class="bk-sr" role="status">{{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : '' }}</span>
+          </div>
+        </div>
+        <p v-if="changeUrl && !confirmation.managementToken" class="bk-change">
           {{ t('confirm.change', { host: page.profile.displayName }) }}
           <a class="bk-btn small" :href="changeUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.changeCta', { host: page.profile.displayName }) }}</a>
         </p>
@@ -1267,11 +1334,18 @@ onBeforeUnmount(() => {
         <!-- Profile: host header and service list -->
         <section v-if="view === 'profile'" key="profile" class="bk-profile">
           <div class="bk-card bk-host">
-            <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
-            <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
-            <p class="bk-host-eyebrow">{{ t('host.eyebrow') }}</p>
-            <h1>{{ page.profile.displayName }}</h1>
-            <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
+            <div class="bk-host-identity">
+              <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+              <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
+              <div>
+                <p class="bk-host-eyebrow">{{ t('host.eyebrow') }}</p>
+                <h1>{{ page.profile.displayName }}</h1>
+                <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
+              </div>
+            </div>
+            <div class="bk-progress" :aria-label="t('svc.title')">
+              <i v-for="n in 3" :key="n" :class="{ active: n <= step }" />
+            </div>
           </div>
           <div v-if="page.services.length" class="bk-card bk-services">
             <div class="bk-services-title">
@@ -1295,9 +1369,12 @@ onBeforeUnmount(() => {
                     :aria-controls="row.team ? `team-${row.key}` : undefined"
                     @click="row.team ? toggleTeam(row.key) : chooseService(row.options[0].copy)"
                   >
-                    <span class="bk-service-name">{{ row.name }}</span>
-                    <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
-                    <span v-if="row.prepNotes" class="bk-service-prep">{{ t('svc.prep', { notes: row.prepNotes }) }}</span>
+                    <span class="bk-radio" aria-hidden="true" />
+                    <span class="bk-service-copy">
+                      <span class="bk-service-name">{{ row.name }}</span>
+                      <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
+                      <span v-if="row.prepNotes" class="bk-service-prep">{{ t('svc.prep', { notes: row.prepNotes }) }}</span>
+                    </span>
                     <span class="bk-chips">
                       <span class="bk-chip"><AppIcon name="clock" :size="12" />{{ t('svc.min', { count: row.durationMinutes }) }}</span>
                       <span class="bk-chip">{{ priceLabel(row) }}</span>
@@ -1306,8 +1383,9 @@ onBeforeUnmount(() => {
                   </button>
                   <div v-if="row.team && openTeam === row.key" :id="`team-${row.key}`" class="bk-team" role="group" :aria-label="t('svc.pickWho')">
                     <button v-for="(option, index) in row.options" :key="option.copy.id" type="button" class="bk-pro" @click="chooseService(option.copy)">
+                      <span class="bk-radio" aria-hidden="true" />
                       <span class="bk-avatar" aria-hidden="true">{{ initialOf(option.owner ? page.profile.displayName : option.copy.staffName || t('team.option', { n: index + 1 })) }}</span>
-                      <span>{{ optionLabel(option, index) }}</span>
+                      <span class="bk-pro-name">{{ optionLabel(option, index) }}</span>
                       <span class="bk-pro-price">{{ priceLabel(option.copy) }}</span>
                     </button>
                   </div>
@@ -1328,15 +1406,29 @@ onBeforeUnmount(() => {
             <p>{{ t(banner.key) }}</p>
           </div>
           <div class="bk-card bk-grid" :class="`stage-${stage}`">
+            <div class="bk-book-hero">
+              <div class="bk-host-identity compact">
+                <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+                <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
+                <div>
+                  <p>{{ t('host.eyebrow') }}</p>
+                  <h1>{{ page.profile.displayName }}</h1>
+                  <div class="bk-service-meta">
+                    <span>{{ selectedService.name }}</span><i aria-hidden="true" />
+                    <span>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</span><i aria-hidden="true" />
+                    <span>{{ priceLabel(selectedService) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="bk-progress" :aria-label="t('time.title')">
+                <i v-for="n in 3" :key="n" :class="{ active: n <= step }" />
+              </div>
+            </div>
             <aside class="bk-info">
               <button v-if="showBack" class="bk-back" :disabled="submitting" type="button" @click="back">
                 <AppIcon name="arrow-left" :size="15" />{{ t('back') }}
               </button>
-              <div class="bk-host-line">
-                <img v-if="showPhoto" class="bk-avatar" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
-                <span v-else class="bk-avatar" aria-hidden="true">{{ hostInitial }}</span>
-                <span>{{ page.profile.displayName }}</span>
-              </div>
+              <h2 class="bk-summary-title">{{ t('sum.eyebrow') }}</h2>
               <h1 class="bk-title">{{ selectedService.name }}</h1>
               <p v-if="selectedService.description" class="bk-desc">{{ selectedService.description }}</p>
               <ul class="bk-meta">
@@ -1864,6 +1956,8 @@ onBeforeUnmount(() => {
 .bk-btn:hover:not(:disabled) { background: var(--line-soft); }
 .bk-btn.primary { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+.bk-btn.danger { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
+.bk-btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-bg); }
 .bk-btn.wide { width: 100%; }
 .bk-btn.small { min-height: 32px; padding: 0 12px; font-size: 13px; }
 .bk-btn:disabled { color: var(--soft); border-color: var(--line); background: var(--line); cursor: not-allowed; }
@@ -2098,6 +2192,9 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
 .bk-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .bk-ref code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 15px; user-select: all; }
 .bk-confirm-actions { width: 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 4px 0 4px; }
+.bk-private-actions { width: 100%; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+.bk-private-actions > p { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+.bk-private-actions > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .bk-change { display: grid; justify-items: center; gap: 8px; color: var(--body); }
 .bk-confirm .bk-fine { margin-top: 8px; }
 .bk-confirm-check svg { stroke-dasharray: 28; stroke-dashoffset: 0; }
@@ -2231,5 +2328,375 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-view-tools { align-items: flex-end; flex-wrap: wrap; }
   .bk-range { width: 100%; justify-content: space-between; gap: 2px; }
   .bk-calendar.is-sheet { padding-left: 10px; padding-right: 10px; }
+}
+</style>
+
+<style scoped>
+/* Approved guest direction: one quiet booking surface with compact, square controls. */
+.bk {
+  --ink: #20242d;
+  --body: #4f5662;
+  --muted: #707580;
+  --soft: #8b919c;
+  --line: #e5e7eb;
+  --line-soft: #f0f1f3;
+  --surface: #f7f8fa;
+  --bg: #e9ebef;
+  --input-line: #d5d8de;
+  --shadow: rgba(24, 31, 45, 0.08);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.bk[data-theme='sage'] {
+  --accent: #36765a;
+  --accent-hover: #245d43;
+  --surface: #eaf4ed;
+  --bg: #e8ece9;
+  --ring: rgba(54, 118, 90, 0.16);
+}
+.bk[data-theme='sand'] {
+  --accent: #9d6538;
+  --accent-hover: #7f4d28;
+  --surface: #fbf0e5;
+  --bg: #eeeae5;
+  --card: #fffdf9;
+  --ring: rgba(157, 101, 56, 0.16);
+}
+.bk[data-theme='midnight'] {
+  --accent: #a8b8ff;
+  --accent-hover: #c2ccff;
+  --on-accent: #172047;
+  --ink: #f1f4fc;
+  --body: #c7d0e2;
+  --muted: #afb9ce;
+  --soft: #98a5bc;
+  --line: #36405a;
+  --line-soft: #2a3349;
+  --surface: #252e4b;
+  --bg: #151b2d;
+  --card: #20283c;
+  --input-line: #505b73;
+}
+.bk-header {
+  width: min(1120px, calc(100% - 40px));
+  max-width: none;
+  height: 72px;
+  padding: 8px 2px 0;
+}
+.bk-header > a { color: var(--accent); }
+.bk-header :deep(.bookins-logo) { height: 40px; }
+.bk-header-end { gap: 10px; }
+.bk-lang {
+  padding: 2px;
+  border-color: var(--input-line);
+  border-radius: 7px;
+}
+.bk-lang button { min-width: 40px; min-height: 30px; border-radius: 5px; font-size: 12px; }
+.bk-main {
+  width: 100%;
+  max-width: none;
+  padding: 20px 20px 48px;
+}
+.bk-footer { padding-bottom: 22px; }
+.bk-card { border-radius: 14px; }
+.bk-btn {
+  min-height: 40px;
+  padding: 0 15px;
+  border-color: var(--input-line);
+  border-radius: 7px;
+  font-weight: 660;
+}
+.bk-btn:hover:not(:disabled) { border-color: #aeb4c0; background: var(--card); }
+.bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+.bk-input { border-radius: 7px; }
+
+.bk-profile {
+  max-width: 1120px;
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-host {
+  min-height: 110px;
+  padding: 21px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.bk-host-identity { min-width: 0; display: flex; align-items: center; gap: 14px; }
+.bk-host-identity.compact p { margin-bottom: 2px; color: var(--muted); font-size: 13px; }
+.bk-host-identity.compact h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-avatar.big {
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  color: #fff;
+  background: #20242d;
+  font-size: 17px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.bk-host .bk-avatar { margin: 0; }
+.bk-host-eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.bk-host h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-bio { max-width: 64ch; margin-top: 3px; color: var(--body); font-size: 13px; }
+.bk-progress { flex: none; display: flex; align-items: center; gap: 7px; }
+.bk-progress i { width: 23px; height: 3px; border-radius: 10px; background: #dfe2e7; }
+.bk-progress i.active { background: var(--accent); }
+.bk-services {
+  padding: 28px 32px 30px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.bk-services-title { max-width: 680px; margin: 0 auto 20px; padding: 0; }
+.bk-services-title h2 { font-size: 22px; line-height: 1.2; letter-spacing: -0.026em; }
+.bk-services-title p { margin-top: 7px; }
+.bk-services > ul,
+.bk-services > .bk-group,
+.bk-services > .bk-nomatch { width: min(680px, 100%); margin-left: auto; margin-right: auto; }
+.bk-search { width: min(680px, 100%); margin: 0 auto 12px; }
+.bk-group { padding: 14px 0 7px; border: 0; text-transform: none; letter-spacing: 0; }
+.bk-services li + li { margin-top: 10px; }
+.bk-service {
+  min-height: 83px;
+  padding: 17px 18px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--input-line) !important;
+  border-radius: 8px !important;
+  background: var(--card);
+}
+.bk-service:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--input-line)) !important; background: var(--card); }
+.bk-radio { width: 18px; height: 18px; border: 1.5px solid #b5bac3; border-radius: 50%; background: var(--card); }
+.bk-service-copy { min-width: 0; display: grid; gap: 3px; }
+.bk-service-name { font-size: 15px; }
+.bk-service-desc { font-size: 12px; }
+.bk-service-prep { font-size: 12px; }
+.bk-chips { margin: 0; justify-content: flex-end; }
+.bk-chip { padding: 0; color: var(--body); background: transparent; font-size: 13px; }
+.bk-team { padding: 10px 0 0 33px; gap: 8px; }
+.bk-pro { min-height: 56px; border-radius: 8px; }
+.bk-pro .bk-radio { display: none; }
+.bk-pro-name { min-width: 0; }
+
+.bk-book { max-width: 1240px; }
+.bk-banner { max-width: 1120px; border-radius: 7px; }
+.bk-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: auto minmax(490px, auto);
+  min-height: 0;
+  border-color: var(--line);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-grid.stage-schedule { max-width: 1120px; margin: 0 auto; }
+.bk-grid.stage-details {
+  grid-template-columns: 320px minmax(0, 1fr);
+  column-gap: 48px;
+  grid-template-rows: auto auto;
+}
+.bk-book-hero {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-height: 110px;
+  padding: 21px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  border-bottom: 1px solid var(--line);
+}
+.bk-service-meta { margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: var(--body); font-size: 13px; }
+.bk-service-meta i { width: 4px; height: 4px; border-radius: 50%; background: var(--soft); }
+.bk-info {
+  grid-column: 1;
+  grid-row: 2;
+  z-index: 3;
+  padding: 24px 20px;
+  border-right: 1px solid var(--line);
+  gap: 7px;
+}
+.stage-details .bk-info {
+  margin: 36px 0 40px 40px;
+  padding: 24px;
+  align-self: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.bk-summary-title { margin-bottom: 4px; font-size: 15px; }
+.bk-back { margin: -8px 0 6px -6px; }
+.bk-title { margin-top: 2px; font-size: 20px; letter-spacing: -0.025em; }
+.bk-desc { font-size: 13px; }
+.bk-meta { margin-top: 12px; gap: 11px; font-size: 13px; }
+.bk-tz { padding-top: 16px; }
+.stage-details .bk-tz { margin-top: 4px; }
+.bk-schedule {
+  grid-column: 2;
+  grid-row: 2;
+  grid-template-columns: minmax(360px, 1fr) 190px;
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+.bk-viewbar {
+  min-height: 0;
+  padding: 22px 28px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+.bk-view-heading h2 { font-size: 22px; }
+.bk-view-heading p { margin-top: 5px; }
+.bk-view-tools { width: 100%; justify-content: space-between; gap: 16px; }
+.bk-switch { border-radius: 8px; }
+.bk-switch button { border-radius: 5px; }
+.bk-calendar { width: min(476px, 100%); padding: 20px 28px 28px; }
+.bk-days { width: min(420px, 100%); gap: 4px; }
+.bk-weekdays span { font-size: 10px; }
+.bk-day {
+  width: 100%;
+  min-width: 0;
+  max-width: 56px;
+  min-height: 0;
+  max-height: none;
+  justify-self: center;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.bk-day.open { border-color: #e8eaf0; background: var(--surface); }
+.bk-day:not(.open) { border-color: transparent; background: transparent; }
+.bk-day.selected,
+.bk-day.selected.open,
+.bk-day.selected:hover {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.bk-slots { align-self: stretch; }
+.bk-slots-inner { position: static; min-height: 100%; padding: 20px 21px 28px; overflow: visible; }
+.bk-slots-head h3 { font-size: 13px; }
+.bk-slot-list { grid-template-columns: 1fr; gap: 7px; }
+.bk-slot {
+  min-height: 40px;
+  padding: 0 10px;
+  border-color: var(--input-line);
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: left;
+}
+.bk-clock { margin-bottom: 4px; }
+.bk-calendar-status.warning { border-radius: 7px; }
+
+.bk-details {
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 36px 40px 40px 0;
+}
+.bk-form-title { font-size: 26px; line-height: 1.2; }
+.bk-details > .bk-muted { margin-top: 7px; }
+.bk-form { margin-top: 28px; gap: 20px; }
+.bk-field { gap: 8px; }
+.bk-field label { font-size: 14px; }
+.bk-input { min-height: 46px; font-size: 15px; }
+textarea.bk-input { min-height: 82px; }
+.bk-actions { margin-top: 4px; padding-top: 20px; border-top: 1px solid var(--line); }
+.bk-actions .bk-btn { min-height: 44px; padding: 0 20px; }
+
+.bk-confirm {
+  max-width: 610px;
+  min-height: 490px;
+  margin: 0 auto;
+  padding: 48px 32px 32px;
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-confirm h1 { font-size: 25px; }
+.bk-confirm-check { width: 54px; height: 54px; margin-bottom: 10px; }
+.bk-facts { max-width: 430px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.bk-facts > div { grid-template-columns: 86px minmax(0, 1fr); }
+.bk-state {
+  min-height: 420px;
+  max-width: 590px;
+  margin: 0 auto;
+  padding: 48px 32px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+
+@container booking-page (max-width: 1100px) {
+  .bk-grid { grid-template-columns: 240px minmax(0, 1fr); }
+  .bk-grid.stage-details { grid-template-columns: 280px minmax(0, 1fr); column-gap: 28px; }
+  .stage-details .bk-info { margin-left: 28px; }
+  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr) 190px; grid-template-rows: auto auto minmax(0, 1fr); }
+  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: 100%; }
+  .bk-schedule.dv-month .bk-slots { grid-column: 2; grid-row: 3; min-height: 0; border-top: 0; border-left: 1px solid var(--line); }
+  .bk-schedule.dv-month .bk-slots-inner { position: static; max-height: none; }
+}
+
+@container booking-page (max-width: 760px) {
+  .bk-grid,
+  .bk-grid.stage-details { display: block; }
+  .bk-book-hero { min-height: 0; padding: 21px 20px; }
+  .bk-info { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .stage-details .bk-info { margin: 24px 20px 0; padding: 18px; border: 1px solid var(--line); }
+  .bk-schedule { display: grid; }
+  .bk-details { padding: 24px 20px; }
+  .bk-form-title { font-size: 22px; }
+}
+
+@media (max-width: 820px) {
+  .bk-header { width: calc(100% - 24px); height: 56px; padding-top: 0; }
+  .bk-main { padding: 14px 12px 32px; }
+  .bk-profile { border-radius: 10px; }
+  .bk-host { min-height: 0; padding: 21px 20px; }
+  .bk-host h1, .bk-host-identity.compact h1 { font-size: 21px; }
+  .bk-bio { display: none; }
+  .bk-services { padding: 25px 20px 28px; }
+  .bk-services-title h2 { font-size: 20px; }
+  .bk-service { grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 14px; }
+  .bk-service .bk-chips { grid-column: 2; justify-content: flex-start; }
+  .bk-team { padding-left: 28px; }
+  .bk-book-hero .bk-progress { margin-top: 17px; }
+  .bk-book-hero { align-items: flex-start; flex-direction: column; gap: 0; }
+  .bk-grid { border-radius: 10px; }
+  .bk-summary-title { font-size: 13px; }
+  .bk-schedule { grid-template-columns: 1fr; }
+  .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-slot { min-height: 44px; text-align: center; }
+  .bk-details { padding-bottom: 0; }
+  .bk-form { margin-top: 24px; }
+  .bk-actions { margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
+  .bk-confirm { min-height: 420px; padding-top: 32px; }
+}
+
+@media (max-width: 600px) {
+  .bk-progress i { width: 20px; }
+  .bk-host { align-items: flex-start; flex-direction: column; gap: 16px; }
+  .bk-service .bk-chip.team { width: 100%; }
+  .bk-pro { padding: 8px 10px; }
+}
+@media (max-width: 820px) {
+  .stage-details .bk-actions { position:static; margin:8px 0 0; padding:16px 0; backdrop-filter:none; }
+  .stage-details .bk-details { padding-bottom:20px; }
 }
 </style>

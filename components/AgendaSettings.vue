@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, ref } from 'vue'
 import GmButton from './ui/GmButton.vue'
+import GmTimePicker from './ui/GmTimePicker.vue'
 import { isDemo } from '../runtime.js'
 
 const state = inject('bookingState')
@@ -71,7 +72,7 @@ onMounted(load)
     <template v-else>
       <p v-if="pending === 'load'" role="status">Checking agenda status…</p>
       <p v-else-if="status" class="agenda-status">{{ status.enabled ? 'Enabled' : 'Paused' }}<span v-if="status.enabled"> · {{ time }} · {{ status.timezone }}</span></p>
-      <label for="agenda-time">Send each day at <input id="agenda-time" v-model="time" type="time" :disabled="Boolean(pending)" required /></label>
+      <label for="agenda-time">Send each day at <GmTimePicker id="agenda-time" v-model="time" label="Daily agenda time" :disabled="Boolean(pending)" required /></label>
       <p class="field-hint">Time is in {{ timezone }}. Enabling this schedules a recurring email to you.</p>
       <div class="agenda-actions">
         <GmButton :disabled="!status || !validTime || Boolean(pending)" :pending="pending === 'enable'" @click="configure(true)">{{ status?.enabled ? 'Save agenda time' : 'Enable daily agenda' }}</GmButton>

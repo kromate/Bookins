@@ -99,3 +99,20 @@ yarn build
 `preview` is the editable branch. `main` is the read-only Store candidate. A push updates source and previews only. Production changes through the App Store release flow using an immutable tested build.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for records, trust boundaries, and release limits.
+
+### Approved design and guest self-service (local implementation)
+
+Overview, the weekly Bookings calendar, `/bookings?new=1`, the owner sidebar, and
+`/book` use the reviewed Bookins design. The booking form keeps its save actions
+visible on short screens; public details use a wide summary/form layout.
+
+New bookings can receive a private management link when the installed grant
+supports `booking-create-managed`. This link allows only that booking to be read,
+rescheduled, or cancelled. Existing public links continue using legacy creation
+when the new action is absent. Existing bookings without a management credential
+keep the host-contact flow.
+
+This source adds a required `booking-guest-management` permission and two optional
+booking fields. It requires the matching Goalmatic backend operations and an
+updated installation/private test before production publication. A local build
+alone does not make the capability available on the hosted app.

@@ -403,9 +403,9 @@ async function copyShare(key, value) {
 const sections = [
   { id: 'settings-profile', label: 'Profile' },
   { id: 'settings-booking-page', label: 'Booking page' },
-  { id: 'settings-link', label: 'Booking link & share kit' },
-  { id: 'settings-templates', label: 'Message journey' },
-  { id: 'settings-delivery', label: 'Delivery status' },
+  { id: 'settings-link', label: 'Booking link' },
+  { id: 'settings-templates', label: 'Messages' },
+  { id: 'settings-delivery', label: 'Delivery & agenda' },
 ]
 const activeSection = ref(sections[0].id)
 let scrollLock = 0
@@ -674,9 +674,9 @@ async function saveTemplates() {
   <section>
     <div class="page-header">
       <div
-        ><p class="eyebrow">Configuration</p><h1>Settings</h1
+        ><h1>Settings</h1
         ><p class="lede"
-          >Update your public profile and manage the link guests use to book with you.</p
+          >Control what guests see and how they book.</p
         ></div
       >
       <span class="chip accent version-chip">Bookins v0.8.0</span>
@@ -711,28 +711,13 @@ async function saveTemplates() {
         >
           <div class="section-heading"
             ><div
-              ><p class="eyebrow">Public profile <span v-if="!state.profile?.id" class="chip warning">Not saved yet</span></p><h2>How guests see you</h2
-              ><p class="muted">This information appears at the top of your booking page.</p></div
-            ></div
-          >
-          <div class="profile-identity"
-            ><span
-              v-if="!form.photoUrl || profilePhotoFailed"
-              class="profile-avatar"
-              >{{ initials }}</span
-            ><img
-              v-else
-              :src="form.photoUrl"
-              alt="Profile preview"
-              @error="profilePhotoFailed = true"
-            /><div
-              ><strong>{{ form.displayName || 'Your display name' }}</strong
-              ><small>{{ form.timezone }}</small></div
+              ><p v-if="!state.profile?.id" class="eyebrow"><span class="chip warning">Not saved yet</span></p><h2>Your business details</h2
+              ><p class="muted">Shown at the top of your booking page.</p></div
             ></div
           >
           <div class="form-section">
             <div class="field"
-              ><label for="profile-name">Display name <GmHint text="The name guests see at the top of your booking page and in confirmations. Use your own name or your business name." label="About display name" /></label
+              ><label for="profile-name">Business name <GmHint text="The name guests see at the top of your booking page and in confirmations. Use your own name or your business name." label="About display name" /></label
               ><input
                 id="profile-name"
                 v-model.trim="form.displayName"
@@ -756,12 +741,13 @@ async function saveTemplates() {
           <div class="form-section">
             <div class="field"
               ><label for="profile-timezone">Booking timezone <GmHint text="Your schedule's timezone is what bookings actually use. Keep this the same as the timezone on the Availability page." label="About booking timezone" /></label
-              ><GmSelect id="profile-timezone" v-model="form.timezone" :options="timezoneItems" label="Booking timezone" :disabled="isDemo || busy" required described-by="profile-timezone-help" />
+              ><GmSelect id="profile-timezone" v-model="form.timezone" :options="timezoneItems" label="Booking timezone" :disabled="isDemo || busy" required searchable search-placeholder="Search by city or timezone" described-by="profile-timezone-help" />
                 <p id="profile-timezone-help" class="field-hint">Shown on your booking page. Type a city name to search.</p
               ><p v-if="zoneMismatch" class="field-hint zone-warning" role="status">Your schedule runs in {{ displayTimeZone(scheduleZone) }}, and bookings use the schedule timezone. <button class="ghost small-button" type="button" :disabled="busy" @click="form.timezone = scheduleZone">Use {{ scheduleZone }}</button></p
             ></div>
+            <details class="profile-photo-options"><summary>Profile photo <span>Optional</span></summary>
             <div class="field"
-              ><label for="profile-photo">Photo URL</label
+              ><label for="profile-photo">Photo link</label
               ><input
                 id="profile-photo"
                 v-model.trim="form.photoUrl"
@@ -770,7 +756,22 @@ async function saveTemplates() {
                 placeholder="https://example.com/photo.jpg"
                 :aria-describedby="profilePhotoFailed ? 'profile-photo-error' : 'profile-photo-hint'"
               /><p v-if="profilePhotoFailed" id="profile-photo-error" class="field-hint field-error" role="status">This image could not be loaded. Check that the link is public and starts with https://.</p><p v-else id="profile-photo-hint" class="field-hint">Use a square image with a public HTTPS URL.</p></div
-            >
+            >          <div class="profile-identity"
+            ><span
+              v-if="!form.photoUrl || profilePhotoFailed"
+              class="profile-avatar"
+              >{{ initials }}</span
+            ><img
+              v-else
+              :src="form.photoUrl"
+              alt="Profile preview"
+              @error="profilePhotoFailed = true"
+            /><div
+              ><strong>{{ form.displayName || 'Your display name' }}</strong
+              ><small>{{ form.timezone }}</small></div
+            ></div
+          >
+            </details>
           </div>
           <div class="profile-actions stack-sm">
             <GmButton
@@ -790,12 +791,13 @@ async function saveTemplates() {
           <div class="section-heading">
             <div>
               <p class="eyebrow">Public booking page</p>
-              <h2>Choose its look</h2>
-              <p class="muted">Existing links without an appearance override use these settings. Guests do not need a new link.</p>
+              <h2>Booking page style</h2>
+              <p class="muted">Used by booking links that do not have their own style.</p>
             </div>
           </div>
+          <div class="appearance-workspace">
           <fieldset class="appearance-fieldset" :disabled="isDemo || busy || savingTemplates">
-            <legend>Colour theme</legend>
+            <legend>Colours</legend>
             <div class="theme-grid">
               <label v-for="theme in BOOKING_THEMES" :key="theme.id" class="theme-choice" :class="{ selected: appearance.theme === theme.id }" :style="{ '--theme-accent': theme.accent, '--theme-background': theme.background, '--theme-card': theme.card, '--theme-ink': theme.ink, '--theme-muted': theme.muted }">
                 <input v-model="appearance.theme" type="radio" name="booking-theme" :value="theme.id" />
@@ -805,12 +807,12 @@ async function saveTemplates() {
               </label>
             </div>
             <div class="field appearance-layout">
-              <label for="booking-layout">Default calendar view</label>
-              <GmSelect id="booking-layout" v-model="appearance.layout" :options="BOOKING_LAYOUTS" label="Default calendar view" />
-              <p class="field-hint">Guests can switch views. Phones use a compact day picker with the full month one tap away.</p>
+              <label for="booking-layout">Calendar layout</label>
+              <GmSelect id="booking-layout" v-model="appearance.layout" :options="BOOKING_LAYOUTS" label="Calendar layout" />
+              <p class="field-hint">Guests can switch layouts.</p>
             </div>
           </fieldset>
-          <div class="appearance-preview" :style="{ '--preview-accent': activeTheme.accent, '--preview-background': activeTheme.background, '--preview-card': activeTheme.card, '--preview-ink': activeTheme.ink, '--preview-muted': activeTheme.muted }" aria-label="Booking page preview">
+          <div class="appearance-preview-wrap"><p class="appearance-preview-label">Guest preview</p><div class="appearance-preview" :style="{ '--preview-accent': activeTheme.accent, '--preview-background': activeTheme.background, '--preview-card': activeTheme.card, '--preview-ink': activeTheme.ink, '--preview-muted': activeTheme.muted }" aria-label="Booking page preview">
             <div class="preview-top"><span>{{ form.displayName || 'Your booking page' }}</span><small>Preview</small></div>
             <template v-if="appearance.layout === 'month'">
               <div class="preview-month"><strong>{{ previewMonth }}</strong><span>Select a date</span></div>
@@ -828,6 +830,8 @@ async function saveTemplates() {
                 <div v-for="day in [{ label: 'Tue 13', times: ['10:00', '13:30'] }, { label: 'Wed 14', times: ['11:30', '15:00'] }, { label: 'Thu 15', times: ['09:30', '14:00'] }]" :key="day.label" :class="{ selected: day.label === 'Wed 14' }"><strong>{{ day.label }}</strong><span v-for="time in day.times" :key="time" :class="{ selected: time === '11:30' }">{{ time }}</span></div>
               </div>
             </template>
+          </div>
+          </div>
           </div>
           <div class="form-actions appearance-actions">
             <GmButton
@@ -850,8 +854,7 @@ async function saveTemplates() {
             <p class="eyebrow">Public booking page</p>
             <h2 ref="linkHeading" tabindex="-1">{{ linkExpired ? 'Your link has expired' : publicUrl ? 'Your link is active' : 'Create your booking link' }}</h2>
             <p class="muted"
-              >{{ publicUrl ? 'This link is connected to this Bookins workspace and App version.' : 'Create a link for this Bookins workspace and App version.' }} Guests can only read your public
-              profile, see available times, and make a booking.</p
+              >This link belongs to this workspace. Guests can see your profile, choose a time and book.</p
             >
 
             <template v-if="publicUrl">
@@ -976,8 +979,8 @@ async function saveTemplates() {
         </div>
 
         <section id="settings-templates" class="card templates-card" aria-labelledby="templates-title">
-          <p class="eyebrow">Message journey</p>
-          <h2 id="templates-title">Messages to your clients <GmHint text="Each step of the client journey has its own wording. Bookins fills in the booking details, then opens the message in your own WhatsApp, SMS or email app. You press send yourself." label="About the message journey" /></h2>
+          <p class="eyebrow">Messages</p>
+          <h2 id="templates-title">Client message templates <GmHint text="Bookins fills in the booking details, then opens the message in your own WhatsApp, SMS or email app. You press send yourself." label="About message templates" /></h2>
           <p class="muted">These open in your own WhatsApp, SMS, or email app. Bookins does not send anything for you and cannot see whether you pressed send.</p>
           <div class="field preview-pick">
             <label for="journey-preview-booking">Preview with <GmHint text="The preview fills the variables from a real recent booking so you see exactly what a client gets. Pick another booking, or the sample." label="About the preview" /></label>
@@ -1081,7 +1084,7 @@ async function saveTemplates() {
         </section>
 
         <article id="settings-delivery" class="card provider-card">
-          <p class="eyebrow">What Bookins does and does not do</p><h2>Delivery and integrations</h2>
+          <p class="eyebrow">Delivery & agenda</p><h2>How delivery works</h2>
           <ul>
             <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>On-screen booking confirmation</strong><small>Guests see their confirmation right after booking.</small></div></li>
             <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>Guest messages from your own apps</strong><small>Bookins prepares the message and opens WhatsApp, SMS or email with it filled in. You press send. Nothing is sent to guests automatically, and Bookins cannot tell whether a message was sent.</small></div></li>
@@ -1158,9 +1161,10 @@ async function saveTemplates() {
 .revoke-link { color: var(--danger); }
 .profile-actions { margin-top: var(--space-4); }
 .appearance-card { display: grid; gap: var(--space-4); }
+.appearance-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 0.8fr); gap: var(--space-5); align-items: start; }
 .appearance-fieldset { margin: 0; padding: 0; border: 0; }
 .appearance-fieldset > legend { margin-bottom: 10px; font-size: var(--text-sm); font-weight: 700; }
-.theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .theme-choice { position: relative; display: grid; gap: 4px; min-height: 136px; padding: 11px; cursor: pointer; color: var(--theme-ink); border: 1px solid color-mix(in srgb, var(--theme-muted) 32%, transparent); border-radius: 12px; background: var(--theme-background); transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
 .theme-choice:hover { transform: translateY(-1px); }
 .theme-choice.selected { border-color: var(--theme-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent) 22%, transparent); }
@@ -1172,6 +1176,8 @@ async function saveTemplates() {
 .theme-choice strong { margin-top: 3px; font-size: var(--text-sm); }
 .theme-choice small { color: var(--theme-muted); font-size: var(--text-xs); }
 .appearance-layout { max-width: 330px; margin-top: var(--space-4); }
+.appearance-preview-wrap { display: grid; gap: 8px; }
+.appearance-preview-label { margin: 0; font-size: var(--text-sm); font-weight: 700; }
 .appearance-preview { display: grid; gap: 11px; max-width: 460px; padding: 16px; color: var(--preview-ink); border: 1px solid color-mix(in srgb, var(--preview-muted) 26%, transparent); border-radius: 14px; background: var(--preview-background); }
 .preview-top, .preview-month, .preview-days, .preview-times { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .preview-top small, .preview-month span, .preview-days { color: var(--preview-muted); font-size: var(--text-xs); }
@@ -1267,6 +1273,7 @@ async function saveTemplates() {
   .settings-nav button.is-active { border-color: var(--accent-line); }
   .settings-content > *, .link-section > * { scroll-margin-top: calc(var(--topbar-h) + 64px); }
   .link-section { scroll-margin-top: calc(var(--topbar-h) + 64px); }
+  .appearance-workspace { grid-template-columns: 1fr; }
 }
 @media (max-width: 800px) {
   .template-grid { grid-template-columns: 1fr; }
@@ -1277,4 +1284,5 @@ async function saveTemplates() {
   .notice { flex-wrap: wrap; }
   .notice-action { margin-left: 0; }
 }
+.profile-photo-options>summary{display:flex;align-items:center;justify-content:space-between;min-height:44px;cursor:pointer;font-size:14px;font-weight:600}.profile-photo-options>summary span{font-size:12px;color:var(--muted);font-weight:400}.profile-photo-options .profile-identity{margin-top:16px}
 </style>

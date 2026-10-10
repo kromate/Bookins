@@ -3,6 +3,7 @@ import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } fr
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
+import GmTextSuggest from '../components/ui/GmTextSuggest.vue'
 import GmDialog from '../components/ui/GmDialog.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
@@ -671,25 +672,13 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
   <section>
     <div class="page-header">
       <div
-        ><p class="eyebrow">Your offerings</p><h1>Services</h1
+        ><h1>Services</h1
         ><p class="lede"
-          >Create the sessions people can book. Each service uses your shared availability and can
-          be paused without losing its history.</p
+          >Choose what clients can book.</p
         ></div
       >
       <div class="page-header-actions">
         <GmButton
-          variant="secondary"
-          :disabled-reason="exportReason"
-          @click="exportCsv"
-          ><template #leading><AppIcon name="download" :size="17" /></template>Export services</GmButton
-        ><GmButton
-          data-tour="tour-services-import"
-          variant="secondary"
-          :disabled-reason="importDisabledReason"
-          @click="importOpen = true"
-          ><template #leading><AppIcon name="copy" :size="17" /></template>Import</GmButton
-        ><GmButton
           data-tour="tour-services-new"
           class="primary"
           :disabled-reason="isDemo ? 'The demo is read-only. Switch to your own workspace to add services.' : ''"
@@ -697,6 +686,35 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
           @click="open()"
           ><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton
         >
+        <details class="page-more">
+          <summary class="secondary small-button" aria-label="More service actions" data-tour="tour-services-import">More <AppIcon name="chevron" :size="15" /></summary>
+          <div class="page-more-menu">
+            <GmButton
+              data-tour="tour-services-import"
+              variant="ghost"
+              size="sm"
+              :disabled-reason="importDisabledReason"
+              @click="importOpen = true"
+              ><template #leading><AppIcon name="copy" :size="16" /></template>Import services</GmButton
+            >
+            <GmButton
+              variant="ghost"
+              size="sm"
+              :disabled-reason="exportReason"
+              @click="exportCsv"
+              ><template #leading><AppIcon name="download" :size="16" /></template>Export services</GmButton
+            >
+            <GmButton
+              v-if="showTeam"
+              variant="ghost"
+              size="sm"
+              data-tour="tour-services-bulk-team"
+              :disabled-reason="bulkReason"
+              @click="bulkOpen = true"
+              ><template #leading><AppIcon name="team" :size="16" /></template>Set team choices</GmButton
+            >
+          </div>
+        </details>
       </div>
     </div>
 
@@ -723,7 +741,6 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
           <AppIcon name="search" :size="18" />
           <input v-model="search" type="search" aria-label="Search services" placeholder="Search services or categories" />
         </div>
-        <GmButton v-if="showTeam" variant="secondary" size="sm" data-tour="tour-services-bulk-team" :disabled-reason="bulkReason" @click="bulkOpen = true"><template #leading><AppIcon name="team" :size="16" /></template>Let guests choose a team member for…</GmButton>
         <span class="muted tnum" role="status">{{ groups.reduce((sum, group) => sum + group.entries.length, 0) }} of {{ baseEntries.length }} {{ baseEntries.length === 1 ? 'service' : 'services' }}</span>
       </div>
 
@@ -747,43 +764,37 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
         :key="service.id"
         class="card service-card"
       >
-        <div class="service-card-top">
-          <span class="icon-tile"
-            ><AppIcon
-              name="services"
-              :size="20"
-          /></span>
-          <div class="service-badges"
-            ><span
-              class="chip"
-              :class="service.active !== false ? 'active' : 'paused'"
-              >{{ service.active !== false ? 'Active' : 'Paused' }}</span
-            ><span
-              class="chip"
-              :class="service.visibility"
-              :title="service.visibility === 'private' ? 'Hidden from your booking page; bookable only through its direct link.' : 'Listed on your public booking page'"
-              >{{ service.visibility === 'private' ? 'Private' : 'Public' }}</span
-            ></div
+        <div class="service-summary">
+          <div class="service-copy">
+            <div class="service-name-row">
+              <h3 class="service-name">{{ displayName(service.name) }}</h3>
+              <span class="chip" :class="service.active !== false ? 'active' : 'paused'">{{ service.active !== false ? 'Active' : 'Paused' }}</span>
+              <span v-if="service.visibility === 'private'" class="chip private">Private</span>
+            </div>
+            <p>{{ meta.text }}</p>
+          </div>
+          <div class="service-facts">
+            <span><AppIcon name="clock" :size="16" />{{ service.duration_minutes }} min</span>
+            <strong class="tnum">{{ priceLabel(service) }}</strong>
+          </div>
+          <GmButton
+            variant="secondary"
+            size="sm"
+            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
+            :disabled="saving || deleting"
+            @click="open(service)"
+            ><template #leading><AppIcon name="edit" :size="16" /></template>Edit</GmButton
           >
         </div>
-        <div class="service-copy"
-          ><h3 class="service-name">{{ displayName(service.name) }}</h3
-          ><p>{{ meta.text }}</p></div
-        >
-        <div v-if="meta.prepNotes || meta.rebookAfterDays" class="service-chips">
-          <span v-if="meta.prepNotes" class="chip info" :title="`Prep notes: ${meta.prepNotes}`"><AppIcon name="info" :size="13" />Prep notes</span>
-          <span v-if="meta.rebookAfterDays" class="chip neutral" :title="`Clients are listed under Rebook in Messages ${meta.rebookAfterDays} days after a finished visit.`"><AppIcon name="refresh" :size="13" />Rebook after {{ meta.rebookAfterDays }} {{ meta.rebookAfterDays === 1 ? 'day' : 'days' }}</span>
-        </div>
-        <p v-if="service.visibility === 'private'" class="private-note">Private — hidden from your booking page; bookable only through its direct link.</p>
-        <p v-if="upcomingCount(service)" class="private-note">{{ upcomingCount(service) }} upcoming {{ upcomingCount(service) === 1 ? 'booking' : 'bookings' }}</p>
-        <div class="service-facts"
-          ><span
-            ><AppIcon
-              name="clock"
-              :size="16"
-            />{{ service.duration_minutes }} min</span
-          ><strong class="tnum">{{ priceLabel(service) }}</strong></div
-        >
+        <details class="service-more">
+          <summary :aria-label="`More actions for ${displayName(service.name)}`">More <AppIcon name="chevron" :size="15" /></summary>
+          <div class="service-more-body">
+            <div v-if="meta.prepNotes || meta.rebookAfterDays" class="service-chips">
+              <span v-if="meta.prepNotes" class="chip info" :title="`Prep notes: ${meta.prepNotes}`"><AppIcon name="info" :size="13" />Prep notes</span>
+              <span v-if="meta.rebookAfterDays" class="chip neutral" :title="`Clients are listed under Rebook in Messages ${meta.rebookAfterDays} days after a finished visit.`"><AppIcon name="refresh" :size="13" />Rebook after {{ meta.rebookAfterDays }} {{ meta.rebookAfterDays === 1 ? 'day' : 'days' }}</span>
+            </div>
+            <p v-if="service.visibility === 'private'" class="private-note">Hidden from your booking page. Guests can use its direct link.</p>
+            <p v-if="upcomingCount(service)" class="private-note">{{ upcomingCount(service) }} upcoming {{ upcomingCount(service) === 1 ? 'booking' : 'bookings' }}</p>
         <div v-if="copiesOf(service).length" class="team-copies">
           <p class="copies-title">
             Team copies
@@ -823,25 +834,20 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
             <p v-if="linkError[service.id]" class="field-error private-note" role="alert">{{ linkError[service.id] }}</p>
           </div>
         </details>
-        <div class="service-actions"
-          ><GmButton
-            variant="secondary"
-            size="sm"
-            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
-            :disabled="saving || deleting"
-            @click="open(service)"
-            ><template #leading><AppIcon name="edit" :size="16" /></template>Edit service</GmButton
-          ><GmButton
+            <div class="service-secondary-actions">
+              <GmButton
             variant="ghost"
             size="sm"
-            class="icon-delete delete-link"
+            class="delete-link"
             :aria-label="`Delete ${displayName(service.name)}`"
             :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
             :disabled="saving || deleting"
             @click="askDelete(service)"
-            ><AppIcon name="trash" :size="18" /></GmButton
-          ></div
-        >
+            ><template #leading><AppIcon name="trash" :size="16" /></template>Delete service</GmButton
+              >
+            </div>
+          </div>
+        </details>
       </article>
         </div>
       </section>
@@ -885,7 +891,7 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 
     <GmDialog
       :open="show"
-      :title="editing ? 'Update this service' : 'What can people book?'"
+      :title="editing ? 'Edit service' : 'New service'"
       content-class="card modal bookins-service-dialog"
       overlay-class="modal-backdrop bookins-modal-backdrop"
       :busy="saving"
@@ -898,12 +904,9 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
       >
         <div class="modal-header"
           ><div
-            ><p class="eyebrow">{{ editing ? 'Edit service' : 'New service' }}</p
             ><h2>{{
-              editing ? 'Update this service' : 'What can people book?'
+              editing ? 'Edit service' : 'New service'
             }}</h2
-            ><p class="muted"
-              >Keep the offer specific. Guests will see this copy before choosing a time.</p
             ></div
           ><button
             class="icon-button"
@@ -938,16 +941,6 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
               :aria-invalid="Boolean(nameConflict)"
               placeholder="30-minute discovery call"
           /><p v-if="nameConflict" class="field-hint field-error" role="alert">{{ nameConflict }}</p></div>
-          <div class="field"
-            ><label for="service-category">Category (optional) <GmHint text="Groups services under a heading on your booking page and in this list, for example Braids, Nails or Lashes. Pick one you already use or type a new one." label="About categories" /></label
-            ><input
-              id="service-category"
-              v-model.trim="form.category"
-              :disabled="isDemo || saving || deleting"
-              list="service-category-options"
-              maxlength="80"
-              autocomplete="off"
-              placeholder="Braids, Nails, Consultations…" /><datalist id="service-category-options"><option v-for="item in categories" :key="item" :value="item" /></datalist></div>
           <div class="field"
             ><label for="service-description">Description <span class="req">(required)</span></label
             ><textarea
@@ -999,7 +992,7 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
                   step="1"
                   aria-label="Price" /></div
               ><p class="field-hint"
-                >Guests pay you directly. Online payment is not active yet.</p
+                >Clients pay your business directly.</p
               ></div
             ></div
           >
@@ -1007,6 +1000,17 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
         <details class="form-section advanced-form-section" :open="Boolean(sortOrderError || rebookError) || undefined">
           <summary>Order, reminders and preparation <span>Optional</span></summary>
           <div class="advanced-form-content">
+          <div class="field"
+            ><label for="service-category">Category (optional) <GmHint text="Groups services under a heading on your booking page and in this list. Pick one you already use or type a new one." label="About categories" /></label
+            ><GmTextSuggest
+              id="service-category"
+              v-model.trim="form.category"
+              :options="categories"
+              label="Category"
+              :disabled="isDemo || saving || deleting"
+              maxlength="80"
+              autocomplete="off"
+              placeholder="Braids, Nails, Consultations…" /></div>
           <div class="grid grid-2 form-grid"
             ><div class="field"
               ><label for="service-sort">Sort order <GmHint text="Lower numbers come first inside the category, on your booking page and in this list. Leave it blank to sort by name. Once a number is set it can be changed but not cleared." label="About sort order" /></label
@@ -1211,6 +1215,12 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 <style scoped>
 .field-error { color: var(--danger); }
 .req { color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
+.page-more { position: relative; }
+.page-more > summary { min-height: var(--control-h); display: inline-flex; align-items: center; gap: 5px; list-style: none; cursor: pointer; }
+.page-more > summary::-webkit-details-marker { display: none; }
+.page-more[open] > summary svg { transform: rotate(90deg); }
+.page-more-menu { position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; width: max-content; min-width: 210px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; box-shadow: var(--shadow-lg); }
+.page-more-menu :deep(.gm-button) { justify-content: flex-start; width: 100%; }
 .availability-first { margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-4); border-color: var(--accent); background: var(--accent-soft); }
 .availability-first > div { min-width: 0; flex: 1; }
 .availability-first h2 { margin: 0 0 4px; font-size: var(--text-lg); }
@@ -1241,32 +1251,30 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 .direct-actions a { display: inline-flex; align-items: center; text-decoration: none; }
 .service-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 .service-card {
-  display: flex;
-  flex-direction: column;
+  padding: 0;
   min-width: 0;
+  overflow: visible;
+  box-shadow: none;
 }
-.service-card-top {
-  display: flex;
+.service-summary {
+  min-height: 82px;
+  padding: var(--space-3) var(--space-4);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.service-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-4);
 }
 .service-copy {
-  margin: var(--space-4) 0 var(--space-3);
+  min-width: 0;
 }
 .service-copy h3 {
-  margin: 0 0 4px;
-  font-size: var(--text-lg);
+  margin: 0;
+  font-size: var(--text-md);
 }
+.service-name-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .services-toolbar { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
 .services-toolbar .search-field { flex: 1 1 260px; }
 .category-group { margin-bottom: var(--space-5); }
@@ -1290,21 +1298,19 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 .orphan-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
 .orphan-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .service-copy p {
+  margin: 4px 0 0;
   display: -webkit-box;
   overflow: hidden;
   color: var(--muted);
   font-size: var(--text-sm);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 1;
 }
 .service-facts {
-  margin-top: auto;
-  padding: var(--space-3) 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-top: 1px solid var(--line);
+  gap: var(--space-3);
+  white-space: nowrap;
 }
 .service-facts span {
   display: flex;
@@ -1316,16 +1322,12 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 .service-facts strong {
   font-size: var(--text-md);
 }
-.service-actions {
-  padding-top: var(--space-3);
-  display: flex;
-  gap: var(--space-2);
-}
-.service-actions :deep(.gm-button--secondary) {
-  flex: 1;
-}
-.service-actions :deep(.icon-delete) { --button-fg: var(--danger); }
-.icon-delete { width: var(--control-h-sm); padding: 0; display: inline-grid; place-items: center; flex: none; }
+.service-more { border-top: 1px solid var(--line); }
+.service-more > summary { min-height: 38px; padding: 0 var(--space-4); display: flex; align-items: center; justify-content: flex-end; gap: 4px; list-style: none; cursor: pointer; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
+.service-more > summary::-webkit-details-marker { display: none; }
+.service-more[open] > summary svg { transform: rotate(90deg); }
+.service-more-body { padding: 0 var(--space-4) var(--space-4); }
+.service-secondary-actions { margin-top: var(--space-3); display: flex; justify-content: flex-end; }
 .delete-link {
   color: var(--danger);
 }
@@ -1371,9 +1373,17 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
   justify-content: center;
 }
 @media (max-width: 700px) {
-  .service-grid {
-    grid-template-columns: 1fr;
-  }
+  .advanced-form-section > summary { padding-block: var(--space-2); flex-direction: column; align-items: flex-start; gap: 2px; line-height: 1.35; }
+  .advanced-form-section + .advanced-form-section { margin-top: 8px; }
+  :global(.bookins-service-dialog .modal-footer .gm-button) { width: 100%; min-width: 0; }
+  .advanced-form-section > summary span { margin: 2px 0 0; max-width: none; text-align: left; line-height: 1.35; }
+  :global(.bookins-service-dialog .modal-footer) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+  :global(.bookins-service-dialog .modal-footer > .gm-confirm),
+  :global(.bookins-service-dialog .modal-footer > .gm-confirm > .gm-button),
+  :global(.bookins-service-dialog .modal-footer > .gm-confirm > button) { width: 100%; min-width: 0; }
+  .service-summary { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
+  .service-summary > :deep(.gm-button) { grid-column: 2; grid-row: 1 / span 2; }
+  .service-facts { grid-column: 1; }
   .availability-first { align-items: stretch; flex-direction: column; }
   :global(.bookins-service-dialog .form-grid) {
     grid-template-columns: 1fr;

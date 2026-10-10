@@ -5,7 +5,10 @@ import { computed, inject, nextTick, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmDialog from '../components/ui/GmDialog.vue'
 import GmHint from '../components/ui/GmHint.vue'
+import GmSelect from '../components/ui/GmSelect.vue'
+import GmTextSuggest from '../components/ui/GmTextSuggest.vue'
 import { useSetupState } from '../setup.js'
 import { contactTags, hasRealEmail, isTimeOff, recordOffer, saveContact, setMarketingOptOut } from '../booking.js'
 import { contactOffers, isOptedOut } from '../records.js'
@@ -25,7 +28,7 @@ const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
 const records = computed(() => state.contacts || [])
 const gmailFor = (mailto) => gmailComposeUrl(mailto)
 
-const contacts = computed(() => {
+const allContacts = computed(() => {
   const byEmail = new Map()
   const blank = (email, name = '', phone = '') => ({
     email,
@@ -86,8 +89,16 @@ const contacts = computed(() => {
     }
     byEmail.set(email, current)
   }
-  const search = query.value.trim().toLowerCase()
   return [...byEmail.values()]
+    .sort((left, right) => {
+      const l = Date.parse(left.nextAt || left.lastAt) || 0
+      const r = Date.parse(right.nextAt || right.lastAt) || 0
+      return r - l
+    })
+})
+const contacts = computed(() => {
+  const search = query.value.trim().toLowerCase()
+  return allContacts.value
     .filter((contact) => !tagFilter.value || contact.tags.includes(tagFilter.value))
     .filter((contact) => !optFilter.value || contact.optedOut)
     .filter(
@@ -97,11 +108,6 @@ const contacts = computed(() => {
           String(value || '').toLowerCase().includes(search),
         ),
     )
-    .sort((left, right) => {
-      const l = Date.parse(left.nextAt || left.lastAt) || 0
-      const r = Date.parse(right.nextAt || right.lastAt) || 0
-      return r - l
-    })
 })
 
 const optedOutCount = computed(() => records.value.filter(isOptedOut).length)
@@ -110,6 +116,10 @@ const allTags = computed(() => {
   for (const record of records.value) for (const tag of contactTags(record)) set.add(tag)
   return [...set].sort((a, b) => a.localeCompare(b))
 })
+const tagFilterOptions = computed(() => [
+  { value: '', label: 'All contacts' },
+  ...allTags.value.map((tag) => ({ value: tag, label: tag })),
+])
 
 function initials(name) {
   return String(name || '?')
@@ -150,6 +160,8 @@ function followUp(contact) {
 
 // Notes and tags editor.
 const editingEmail = ref('')
+const selectedEmail = ref('')
+const selectedContact = computed(() => allContacts.value.find((item) => item.email === selectedEmail.value) || null)
 const draft = ref({ notes: '', tags: [], tagInput: '' })
 const saving = ref(false)
 const saveError = ref('')
@@ -157,6 +169,10 @@ const editTriggers = new Map()
 function setEditTrigger(email, element) {
   if (element) editTriggers.set(email, element)
   else editTriggers.delete(email)
+}
+function editRefFor(contact) {
+  const email = contact.email
+  return element => setEditTrigger(email, element)
 }
 function focusEditTrigger(email) {
   nextTick(() => {
@@ -173,6 +189,7 @@ function startEdit(contact) {
   nextTick(() => document.getElementById(`notes-${contact.email}`)?.focus({ preventScroll: true }))
 }
 const discardOpen = ref(false)
+const closeDiscardOpen = ref(false)
 const editing = computed(() => contacts.value.find((item) => item.email === editingEmail.value) || null)
 const dirty = computed(() => {
   const contact = editing.value
@@ -185,18 +202,41 @@ const dirty = computed(() => {
     tags.some((tag, index) => tag !== contact.tags[index])
   )
 })
+const closeAfterDiscard = ref(false)
 function cancelEdit() {
   if (saving.value) return
   const email = editingEmail.value
   discardOpen.value = false
+  closeDiscardOpen.value = false
   editingEmail.value = ''
   saveError.value = ''
+  if (closeAfterDiscard.value) selectedEmail.value = ''
+  closeAfterDiscard.value = false
   focusEditTrigger(email)
 }
 function requestCancel() {
   if (saving.value) return
+  closeAfterDiscard.value = false
   if (dirty.value) discardOpen.value = true
   else cancelEdit()
+}
+function viewContact(contact) {
+  selectedEmail.value = contact.email
+}
+function requestCloseDetails() {
+  if (saving.value) return
+  if (editingEmail.value && dirty.value) {
+    closeAfterDiscard.value = true
+    closeDiscardOpen.value = true
+    return
+  }
+  editingEmail.value = ''
+  selectedEmail.value = ''
+  saveError.value = ''
+}
+function discardAndClose() {
+  closeAfterDiscard.value = true
+  cancelEdit()
 }
 function addTag() {
   const raw = draft.value.tagInput.split(',').map((tag) => tag.trim()).filter(Boolean)
@@ -319,9 +359,9 @@ function exportCsv() {
   <section>
     <div class="page-header contacts-header">
       <div
-        ><p class="eyebrow">Client records</p><h1>Contacts</h1
+        ><h1>Contacts</h1
         ><p class="lede"
-          >Every client appears once (matched by email), with booking history, private notes, and tags kept together. Clients without an email are grouped by phone number.</p
+          >Find a client and open their details.</p
         ></div
       >
       <div class="header-tools page-header-actions">
@@ -348,27 +388,12 @@ function exportCsv() {
     </div>
 
     <div class="toolbar contact-toolbar">
-      <p class="contact-count"
-        ><strong>{{ contacts.length }} {{ contacts.length === 1 ? 'contact' : 'contacts' }}</strong
-        ><span>Built from booking history plus your private notes and tags. Dates shown in {{ zone }}.</span
-        ><GmHint text="Contacts are built automatically from your bookings: everyone who booked appears once, matched by email (phone for clients without one). Time off is not counted. Notes and tags are the only things you add yourself." label="How contacts are built" /></p
-      >
-    </div>
-
-    <div v-if="allTags.length || optedOutCount" class="tag-filter" role="group" aria-label="Filter contacts">
-      <button class="chip-button" type="button" :class="{ on: !tagFilter && !optFilter }" :aria-pressed="!tagFilter && !optFilter" @click="tagFilter = ''; optFilter = false">All</button>
-      <button
-        v-for="tag in allTags"
-        :key="tag"
-        class="chip-button"
-        type="button"
-        :class="{ on: tagFilter === tag }"
-        :aria-pressed="tagFilter === tag"
-        @click="tagFilter = tagFilter === tag ? '' : tag"
-        >{{ tag }}</button
-      >
-      <button v-if="optedOutCount" class="chip-button opt" type="button" :class="{ on: optFilter }" :aria-pressed="optFilter" @click="optFilter = !optFilter">Opted out ({{ optedOutCount }})</button>
-      <GmHint v-if="optedOutCount" text="Contacts who asked to stop hearing from you. They are never included in a campaign, email batch or export." label="About opted-out contacts" />
+      <strong>{{ contacts.length }} {{ contacts.length === 1 ? 'contact' : 'contacts' }}</strong>
+      <div v-if="allTags.length" class="field compact-filter">
+        <label for="contact-tag-filter">Filter by tag</label>
+        <GmSelect id="contact-tag-filter" v-model="tagFilter" :options="tagFilterOptions" label="Filter contacts by tag" />
+      </div>
+      <label v-if="optedOutCount" class="filter-check"><input v-model="optFilter" type="checkbox" />Opted out ({{ optedOutCount }})</label>
     </div>
 
     <div data-tour="tour-contacts-list">
@@ -387,119 +412,16 @@ function exportCsv() {
           <div class="contact-id">
             <h2 class="truncate">{{ contact.name }}</h2>
             <p class="contact-line">
-              <a v-if="hasRealEmail(contact.email)" :href="`mailto:${contact.email}`" class="truncate">{{ contact.email }}</a>
+              <span v-if="hasRealEmail(contact.email)" class="truncate">{{ contact.email }}</span>
               <span v-else class="no-email">No email</span>
               <span class="contact-phone"><AppIcon name="phone" :size="14" />{{ contact.phone || 'No phone supplied' }}</span>
             </p>
-            <div v-if="contact.tags.length || contact.noShowCount || contact.optedOut" class="tag-row">
-              <span v-if="contact.optedOut" class="chip warning">Opted out of marketing</span>
-              <span v-if="contact.noShowCount" class="chip danger">{{ contact.noShowCount }} no-show{{ contact.noShowCount === 1 ? '' : 's' }}</span>
-              <GmHint v-if="contact.noShowCount" text="A no-show is a booking you marked 'No-show' in Bookings after the client did not turn up. Cancelled bookings are not counted." label="What a no-show count means" />
-              <span v-for="tag in contact.tags" :key="tag" class="chip accent">{{ tag }}</span>
-            </div>
           </div>
           <div class="contact-stats">
-            <span class="chip neutral tnum">{{ contact.bookingCount }} {{ contact.bookingCount === 1 ? 'booking' : 'bookings' }}</span>
             <span class="stat-line">Last: {{ dateLabel(contact.lastAt) }}</span>
             <span class="stat-line">Next: {{ dateLabel(contact.nextAt) }}</span>
-            <span v-if="contact.lastCampaignAt" class="stat-line">Last campaign: {{ dateLabel(contact.lastCampaignAt) }}</span>
           </div>
-        </div>
-        <p class="outcomes tnum">{{ contact.confirmedCount }} confirmed · {{ contact.completedCount }} completed · {{ contact.noShowCount }} no-show · {{ contact.cancelledCount }} cancelled</p>
-        <p v-if="contact.notes && editingEmail !== contact.email" class="notes-preview"><strong>Private notes</strong>{{ contact.notes }}</p>
-
-        <div class="marketing">
-          <div class="marketing-row">
-            <GmHint wrap :text="isDemo ? demoReason : ''" :disabled="!isDemo" v-slot="{ describedby }">
-              <label class="switch" :class="{ off: isDemo || marketingBusy === contact.email }">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  :checked="contact.optedOut"
-                  :disabled="isDemo || marketingBusy === contact.email"
-                  :aria-describedby="isDemo ? describedby : undefined"
-                  :aria-label="`${contact.name} opted out of campaign messages`"
-                  @change="toggleOptOut(contact)"
-                />
-                <span>Opted out of campaign messages</span>
-              </label>
-            </GmHint>
-            <GmHint text="Bookins does not record consent. Who you message is your decision. Turn this on when a client replies STOP or asks not to hear from you: they are then left out of every campaign list, email batch and CSV export. Normal booking messages, like a reminder for their own appointment, are not affected." label="About marketing opt-out" />
-          </div>
-          <ul v-if="contact.offers.length" class="offers" :aria-label="`Offers for ${contact.name}`">
-            <li v-for="offer in contact.offers" :key="offer.code">
-              <span class="chip mono" :class="offer.status === 'redeemed' ? 'info' : 'accent'">{{ offer.code }}</span>
-              <span class="offer-status">{{ offer.status === 'redeemed' ? 'Redeemed' : 'Offered' }}{{ offer.at ? ` ${dateLabel(offer.at)}` : '' }}</span>
-              <GmButton v-if="offer.status !== 'redeemed'" variant="secondary" size="sm" :disabled-reason="isDemo ? demoReason : ''" :pending="offerBusy === `${contact.email}|${offer.code}`" @click="markRedeemed(contact, offer)">Mark redeemed</GmButton>
-            </li>
-          </ul>
-        </div>
-
-        <form v-if="editingEmail === contact.email" class="edit-panel" @submit.prevent="saveEdit(contact)">
-          <div class="field">
-            <label :for="`notes-${contact.email}`">Private notes <GmHint text="Only you can see these notes. Guests never do, and Bookins does not send them anywhere." label="About private notes" /></label>
-            <textarea :id="`notes-${contact.email}`" v-model="draft.notes" maxlength="4000" :disabled="isDemo || saving" placeholder="Only you see these notes."></textarea>
-          </div>
-          <div class="field">
-            <label :for="`tags-${contact.email}`">Tags <GmHint text="Tags are your own labels, such as VIP or Referral. Only you see them. Use them to filter this list; separate several with commas." label="About tags" /></label>
-            <div v-if="draft.tags.length" class="tag-row">
-              <button v-for="tag in draft.tags" :key="tag" class="chip accent removable" type="button" :disabled="isDemo || saving" :aria-label="`Remove tag ${tag}`" @click="removeTag(tag)">{{ tag }} ×</button>
-            </div>
-            <div class="tag-input">
-              <input
-                :id="`tags-${contact.email}`"
-                v-model="draft.tagInput"
-                :list="`tag-suggestions-${contact.email}`"
-                maxlength="40"
-                :disabled="isDemo || saving"
-                placeholder="Add a tag, e.g. VIP"
-                @keydown.enter.prevent="addTag" />
-              <button class="secondary small-button" type="button" :disabled="isDemo || saving || !draft.tagInput.trim()" @click="addTag">Add</button>
-            </div>
-            <datalist :id="`tag-suggestions-${contact.email}`"><option v-for="tag in tagSuggestions" :key="tag" :value="tag" /></datalist>
-          </div>
-          <p v-if="saveError" class="notice error" role="alert">{{ saveError }}</p>
-          <div class="form-actions">
-            <button class="primary small-button" :disabled="isDemo || saving">{{ saving ? 'Saving…' : 'Save' }}</button>
-            <GmConfirm
-              v-model:open="discardOpen"
-              title="Discard your changes?"
-              message="Your notes and tags for this contact have not been saved."
-              confirm-label="Discard changes"
-              align="start"
-              cancel-label="Keep editing"
-              tone="danger"
-              @confirm="cancelEdit"
-            >
-              <button class="secondary small-button" type="button" :disabled="saving" @click="requestCancel">Cancel</button>
-            </GmConfirm>
-          </div>
-        </form>
-        <div v-else class="card-actions">
-          <GmHint wrap :text="isDemo ? 'Demo is read-only. Exit Demo to edit contacts.' : 'Save or discard the notes you are editing first.'" :disabled="!(isDemo || (editingEmail && dirty))" v-slot="{ describedby }">
-            <button :ref="(element) => setEditTrigger(contact.email, element)" class="secondary small-button" type="button" :aria-disabled="(isDemo || (!!editingEmail && dirty)) || undefined" :aria-describedby="(isDemo || (editingEmail && dirty)) ? describedby : undefined" @click="!(isDemo || (editingEmail && dirty)) && startEdit(contact)"><AppIcon name="edit" :size="16" />{{ contact.notes || contact.tags.length ? 'Edit notes and tags' : 'Add notes and tags' }}</button>
-          </GmHint>
-          <details v-if="followUp(contact)" class="message-menu">
-            <summary class="secondary small-button" :aria-label="`Message ${contact.name}`">Message</summary>
-            <div class="message-links">
-              <a v-if="followUp(contact).whatsapp" :href="followUp(contact).whatsapp" target="_blank" rel="noreferrer" :aria-label="`Open WhatsApp to message ${contact.name}`">Open WhatsApp</a>
-              <a v-if="followUp(contact).sms" :href="followUp(contact).sms" :aria-label="`Open SMS to message ${contact.name}`">Open SMS</a>
-              <a v-if="followUp(contact).email" :href="followUp(contact).email" :aria-label="`Open mail app to message ${contact.name}`">Open mail app</a>
-              <a v-if="gmailFor(followUp(contact).email)" :href="gmailFor(followUp(contact).email)" target="_blank" rel="noopener noreferrer" :aria-label="`Open Gmail to message ${contact.name}`">Open Gmail</a>
-              <small>Choose Gmail or this device's mail app. Bookins fills in the message but does not send it.</small>
-            </div>
-          </details>
-          <GmHint v-if="contact.optedOut" wrap text="Opted-out contacts are never added to a campaign. Turn off the opt-out switch first." v-slot="{ describedby }">
-            <button class="secondary small-button" type="button" aria-disabled="true" :aria-describedby="describedby"><AppIcon name="campaigns" :size="16" />Add to campaign</button>
-          </GmHint>
-          <RouterLink v-else class="secondary small-button add-campaign" :to="{ path: '/campaigns', query: campaignQuery(contact) }" :title="campaignHint(contact)" :aria-label="`Add ${contact.name} to a campaign. ${campaignHint(contact)}`"><AppIcon name="campaigns" :size="16" />Add to campaign</RouterLink>
-          <RouterLink
-            class="contact-action"
-            :to="{ path: '/bookings', query: { email: contact.email } }"
-            >View history<AppIcon
-              name="chevron"
-              :size="16"
-          /></RouterLink>
+          <button class="secondary small" type="button" @click="viewContact(contact)">View details</button>
         </div>
       </article>
     </div>
@@ -528,15 +450,148 @@ function exportCsv() {
       </template>
     </div>
     </div>
+
+    <GmDialog
+      :open="Boolean(selectedContact)"
+      :title="selectedContact ? selectedContact.name : 'Contact details'"
+      content-class="card modal contact-drawer"
+      :busy="saving"
+      @update:open="$event || requestCloseDetails()"
+    >
+      <div v-if="selectedContact" class="drawer-shell">
+        <header class="drawer-head drawer-sticky-head">
+          <div class="drawer-person">
+            <span class="avatar large" :style="avatarStyle(selectedContact.name)" aria-hidden="true">{{ initials(selectedContact.name) }}</span>
+            <div>
+              <h2>{{ selectedContact.name }}</h2>
+              <p>{{ hasRealEmail(selectedContact.email) ? selectedContact.email : 'No email' }} · {{ selectedContact.phone || 'No phone supplied' }}</p>
+            </div>
+          </div>
+          <GmConfirm
+            v-model:open="closeDiscardOpen"
+            title="Discard your changes?"
+            message="Your notes and tags have not been saved."
+            confirm-label="Discard and close"
+            cancel-label="Keep editing"
+            tone="danger"
+            @confirm="discardAndClose"
+          >
+            <button class="ghost small-button" type="button" :disabled="saving" @click="requestCloseDetails">Close</button>
+          </GmConfirm>
+        </header>
+
+        <section class="detail-section booking-summary" aria-labelledby="booking-summary-title">
+          <h3 id="booking-summary-title">Bookings</h3>
+          <div class="summary-grid">
+            <span><strong>{{ selectedContact.bookingCount }}</strong> total</span>
+            <span><strong>{{ dateLabel(selectedContact.lastAt) }}</strong> last booking</span>
+            <span><strong>{{ dateLabel(selectedContact.nextAt) }}</strong> next booking</span>
+          </div>
+          <p class="outcomes tnum">{{ selectedContact.confirmedCount }} confirmed · {{ selectedContact.completedCount }} completed · {{ selectedContact.noShowCount }} no-show · {{ selectedContact.cancelledCount }} cancelled</p>
+          <RouterLink class="contact-action" :to="{ path: '/bookings', query: { email: selectedContact.email } }">View booking history<AppIcon name="chevron" :size="16" /></RouterLink>
+        </section>
+
+        <section class="detail-section" aria-labelledby="notes-title">
+          <div class="section-head">
+            <h3 id="notes-title">Private notes and tags</h3>
+            <GmHint wrap :text="isDemo ? 'Demo is read-only. Exit Demo to edit contacts.' : ''" :disabled="!isDemo" v-slot="{ describedby }">
+              <button
+                v-if="editingEmail !== selectedContact.email"
+                :ref="editRefFor(selectedContact)"
+                class="secondary small-button"
+                type="button"
+                :aria-disabled="isDemo || undefined"
+                :aria-describedby="isDemo ? describedby : undefined"
+                @click="!isDemo && startEdit(selectedContact)"
+              ><AppIcon name="edit" :size="16" />Edit</button>
+            </GmHint>
+          </div>
+
+          <form v-if="editingEmail === selectedContact.email" class="edit-panel" @submit.prevent="saveEdit(selectedContact)">
+            <div class="field">
+              <label :for="`notes-${selectedContact.email}`">Private notes</label>
+              <textarea :id="`notes-${selectedContact.email}`" v-model="draft.notes" maxlength="4000" :disabled="isDemo || saving" placeholder="Only you see these notes."></textarea>
+            </div>
+            <div class="field">
+              <label :for="`tags-${selectedContact.email}`">Tags</label>
+              <div v-if="draft.tags.length" class="tag-row">
+                <button v-for="tag in draft.tags" :key="tag" class="chip accent removable" type="button" :disabled="isDemo || saving" :aria-label="`Remove tag ${tag}`" @click="removeTag(tag)">{{ tag }} ×</button>
+              </div>
+              <div class="tag-input">
+                <GmTextSuggest :id="`tags-${selectedContact.email}`" v-model="draft.tagInput" :options="tagSuggestions" label="Tags" maxlength="40" :disabled="isDemo || saving" placeholder="Add a tag" @enter="addTag" />
+                <button class="secondary small-button" type="button" :disabled="isDemo || saving || !draft.tagInput.trim()" @click="addTag">Add</button>
+              </div>
+            </div>
+            <p v-if="saveError" class="notice error" role="alert">{{ saveError }}</p>
+            <div class="form-actions">
+              <button class="primary small-button" :disabled="isDemo || saving">{{ saving ? 'Saving…' : 'Save changes' }}</button>
+              <GmConfirm
+                v-model:open="discardOpen"
+                title="Discard your changes?"
+                message="Your notes and tags have not been saved."
+                confirm-label="Discard changes"
+                cancel-label="Keep editing"
+                tone="danger"
+                @confirm="cancelEdit"
+              >
+                <button class="secondary small-button" type="button" :disabled="saving" @click="requestCancel">Cancel</button>
+              </GmConfirm>
+            </div>
+          </form>
+          <template v-else>
+            <p v-if="selectedContact.notes" class="notes-preview">{{ selectedContact.notes }}</p>
+            <p v-else class="empty-copy">No private notes yet.</p>
+            <div v-if="selectedContact.tags.length" class="tag-row"><span v-for="tag in selectedContact.tags" :key="tag" class="chip accent">{{ tag }}</span></div>
+          </template>
+        </section>
+
+        <section class="detail-section" aria-labelledby="marketing-title">
+          <h3 id="marketing-title">Marketing</h3>
+          <div class="marketing-row">
+            <GmHint wrap :text="isDemo ? demoReason : ''" :disabled="!isDemo" v-slot="{ describedby }">
+              <label class="switch" :class="{ off: isDemo || marketingBusy === selectedContact.email }">
+                <input type="checkbox" role="switch" :checked="selectedContact.optedOut" :disabled="isDemo || marketingBusy === selectedContact.email" :aria-describedby="isDemo ? describedby : undefined" @change="toggleOptOut(selectedContact)" />
+                <span>Opted out of campaign messages</span>
+              </label>
+            </GmHint>
+            <GmHint text="Turn this on when a client asks to stop. They are left out of every campaign list, email batch and CSV export." label="About marketing opt-out" />
+          </div>
+          <p v-if="selectedContact.lastCampaignAt" class="field-hint">Last campaign opened by you {{ dateLabel(selectedContact.lastCampaignAt) }}</p>
+          <ul v-if="selectedContact.offers.length" class="offers" :aria-label="`Offers for ${selectedContact.name}`">
+            <li v-for="offer in selectedContact.offers" :key="offer.code">
+              <span class="chip mono" :class="offer.status === 'redeemed' ? 'info' : 'accent'">{{ offer.code }}</span>
+              <span class="offer-status">{{ offer.status === 'redeemed' ? 'Redeemed' : 'Offered' }}{{ offer.at ? ` ${dateLabel(offer.at)}` : '' }}</span>
+              <GmButton v-if="offer.status !== 'redeemed'" variant="secondary" size="sm" :disabled-reason="isDemo ? demoReason : ''" :pending="offerBusy === `${selectedContact.email}|${offer.code}`" @click="markRedeemed(selectedContact, offer)">Mark redeemed</GmButton>
+            </li>
+          </ul>
+        </section>
+
+        <section class="detail-section" aria-labelledby="contact-actions-title">
+          <h3 id="contact-actions-title">Actions</h3>
+          <div class="drawer-actions">
+            <details v-if="followUp(selectedContact)" class="message-menu">
+              <summary class="secondary" :aria-label="`Message ${selectedContact.name}`">Message</summary>
+              <div class="message-links">
+                <a v-if="followUp(selectedContact).whatsapp" :href="followUp(selectedContact).whatsapp" target="_blank" rel="noreferrer">Open WhatsApp</a>
+                <a v-if="followUp(selectedContact).sms" :href="followUp(selectedContact).sms">Open SMS</a>
+                <a v-if="followUp(selectedContact).email" :href="followUp(selectedContact).email">Open mail app</a>
+                <a v-if="gmailFor(followUp(selectedContact).email)" :href="gmailFor(followUp(selectedContact).email)" target="_blank" rel="noopener noreferrer">Open Gmail</a>
+                <small>Bookins fills in the message. You press send in your own app.</small>
+              </div>
+            </details>
+            <GmHint v-if="selectedContact.optedOut" wrap text="Opted-out contacts are never added to a campaign. Turn off the opt-out switch first." v-slot="{ describedby }">
+              <button class="secondary" type="button" aria-disabled="true" :aria-describedby="describedby"><AppIcon name="campaigns" :size="16" />Add to campaign</button>
+            </GmHint>
+            <RouterLink v-else class="secondary add-campaign" :to="{ path: '/campaigns', query: campaignQuery(selectedContact) }" :title="campaignHint(selectedContact)"><AppIcon name="campaigns" :size="16" />Add to campaign</RouterLink>
+          </div>
+        </section>
+
+      </div>
+    </GmDialog>
   </section>
 </template>
 
 <style scoped>
-.tag-filter { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.chip-button { min-height: var(--control-h-sm); padding: 0 14px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
-.chip-button.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.chip-button.opt { color: #8a4b00; }
-.chip-button.opt.on { color: #8a4b00; border-color: #c97a00; background: #fff4e0; }
 .contact-row.is-opted-out { background: #fafafc; }
 .marketing { display: grid; gap: var(--space-2); }
 .marketing-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
@@ -549,20 +604,21 @@ function exportCsv() {
 a.add-campaign { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .card-actions [aria-disabled='true'],
 .header-tools [aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
-.contact-toolbar { margin-bottom: var(--space-3); }
-.contact-count { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); }
-.contact-count strong { font-size: var(--text-md); }
-.contact-count span { color: var(--muted); font-size: var(--text-sm); }
+.contact-toolbar { margin-bottom: var(--space-3); display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
+.contact-toolbar > strong { margin-right: auto; align-self: center; }
+.compact-filter { width: 210px; margin: 0; }
+.filter-check { min-height: var(--control-h); display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-sm); font-weight: 650; }
+.filter-check input { width: 18px; height: 18px; accent-color: var(--accent); }
 .header-tools { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .header-tools .search-field { width: 280px; max-width: 100%; }
 .contact-list { display: grid; gap: var(--space-3); }
-.contact-row { padding: var(--space-4); display: grid; gap: var(--space-3); min-width: 0; }
-.contact-main { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: start; gap: var(--space-3); }
+.contact-row { padding: var(--space-3) var(--space-4); min-width: 0; }
+.contact-main { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); }
 .avatar { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; font-size: var(--text-sm); font-weight: 750; }
 .contact-id { min-width: 0; }
 .contact-id h2 { margin: 0; font-size: var(--text-md); font-weight: 650; }
 .contact-line { margin: 2px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-3); color: var(--muted); font-size: var(--text-sm); }
-.contact-line a { max-width: 100%; color: var(--accent); font-weight: 600; }
+.contact-line > span { max-width: 100%; }
 .contact-phone { display: inline-flex; align-items: center; gap: 6px; }
 .no-email { color: var(--muted); font-weight: 650; }
 .tag-row { margin: var(--space-2) 0 0; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -584,10 +640,33 @@ a.add-campaign { display: inline-flex; align-items: center; gap: 6px; text-decor
 .message-links a { min-height: 32px; display: inline-flex; align-items: center; color: var(--accent); font-size: var(--text-sm); font-weight: 650; text-decoration: none; }
 .message-links small { color: var(--muted); font-size: var(--text-xs); }
 .contact-action { min-height: var(--control-h-sm); margin-left: auto; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); text-decoration: none; font-size: var(--text-sm); font-weight: 650; }
+.drawer-shell { min-height: 100%; display: grid; gap: var(--space-4); align-content: start; }
+.drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.drawer-person { min-width: 0; display: flex; align-items: center; gap: var(--space-3); }
+.drawer-person > div { min-width: 0; }
+.drawer-head > :last-child { flex: none; }
+.drawer-sticky-head { position: sticky; top: calc(var(--space-5) * -1); z-index: 12; margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-4); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--line); background: var(--surface); }
+.avatar.large { width: 52px; height: 52px; flex: 0 0 auto; }
+.drawer-head h2 { margin: 0; font-size: var(--text-xl); overflow-wrap: anywhere; }
+.drawer-head p { margin: 3px 0 0; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.detail-section { padding-top: var(--space-4); display: grid; gap: var(--space-3); border-top: 1px solid var(--line); }
+.detail-section h3 { margin: 0; font-size: var(--text-md); }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+.summary-grid span { padding: var(--space-3); display: grid; gap: 3px; border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--muted); font-size: var(--text-xs); }
+.summary-grid strong { color: var(--ink); font-size: var(--text-md); overflow-wrap: anywhere; }
+.booking-summary .contact-action { margin-left: 0; justify-self: start; }
+.empty-copy { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.drawer-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); }
+.drawer-actions .message-links { position: relative; }
 @media (max-width: 700px) {
+  .drawer-sticky-head { top: calc(var(--space-4) * -1); margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) var(--space-4); padding: max(var(--space-4), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right)) var(--space-4) max(var(--space-4), env(safe-area-inset-left)); }
   .header-tools .search-field { width: 100%; }
-  .contact-main { grid-template-columns: 44px minmax(0, 1fr); }
-  .contact-stats { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-items: start; gap: var(--space-2) var(--space-3); }
+  .compact-filter { width: 100%; }
+  .contact-main { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .contact-stats { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-items: start; gap: var(--space-2) var(--space-3); }
+  .contact-main > button { grid-column: 2 / -1; width: 100%; justify-self: stretch; }
+  .summary-grid { grid-template-columns: 1fr; }
   .message-links a { min-height: 44px; }
 }
 </style>

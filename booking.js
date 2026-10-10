@@ -969,9 +969,120 @@ export async function copyText(value) {
   input.remove()
 }
 
+let guestGrant = ''
+let privateManagementFragment = ''
+
+export function readGuestManagementLink() {
+  const fragment = window.location.hash.slice(1)
+  if (!fragment.startsWith('bm=')) {
+    if (fragment) guestGrant = fragment
+    return null
+  }
+  try {
+    if (fragment.length > 2048) throw new Error('Invalid link')
+    const encoded = fragment.slice(3).replace(/-/g, '+').replace(/_/g, '/')
+    const value = JSON.parse(atob(encoded))
+    if (!value || typeof value.bookingId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(value.bookingId)
+      || !/^[a-f0-9]{64}$/.test(value.managementToken || '')
+      || !( /^[A-Za-z0-9_-]{43}$/.test(value.grant || '') || (isLocalPreview() && value.grant === 'local-preview'))) throw new Error('Invalid link')
+    guestGrant = value.grant
+    privateManagementFragment = fragment
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${guestGrant}`)
+    return { bookingId: value.bookingId, managementToken: value.managementToken }
+  } catch {
+    return { bookingId: '', managementToken: '' }
+  }
+}
+
+export function buildGuestManagementLink(receipt, theme = 'indigo') {
+  if (!guestGrant || !receipt?.bookingId || !/^[a-f0-9]{64}$/.test(receipt.managementToken || '')) return ''
+  const encoded = btoa(JSON.stringify({ grant: guestGrant, bookingId: receipt.bookingId, managementToken: receipt.managementToken }))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const appearance = ['indigo', 'sage', 'sand', 'midnight'].includes(theme) ? theme : 'indigo'
+  return `${window.location.origin}/book?theme=${appearance}#bm=${encoded}`
+}
+
+export function clearGuestManagementLink() {
+  privateManagementFragment = ''
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${guestGrant ? '#' + guestGrant : ''}`)
+}
+
+function restoreManagementFragment() {
+  if (privateManagementFragment) window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${privateManagementFragment}`)
+}
+
+async function managementTokenHash(token) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function localManagedBooking(input) {
+  const booking = localTable(TABLES.bookings).find(item => item.id === input?.bookingId)
+  if (!booking || !/^[a-f0-9]{64}$/.test(input?.managementToken || '')
+    || booking.management_token_hash !== await managementTokenHash(input.managementToken)
+    || Date.parse(booking.management_expires_at) <= Date.now()) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  const service = localTable(TABLES.services).find(item => item.id === booking.service_id)
+  const subject = localGuestSubject()
+  if (!subject || !service || !serviceAllowed(service, subject)) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  return booking
+}
+
+function managementReceipt(booking) {
+  return { bookingId: booking.id, reference: booking.reference, serviceId: booking.service_id, serviceName: booking.service_name,
+    startsAt: booking.starts_at, endsAt: booking.ends_at, timezone: booking.timezone, status: booking.status,
+    managementExpiresAt: booking.management_expires_at, calendarSync: booking.calendar_sync_status || 'none' }
+}
+
+async function managementCall(action, input, key) {
+  if (!input?.bookingId || !/^[a-f0-9]{64}$/.test(input?.managementToken || '')) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  try {
+    await window.GoalmaticGuest.ready()
+    return key ? await window.GoalmaticGuest.command(action, input, { idempotencyKey: key }) : await window.GoalmaticGuest.query(action, input)
+  } finally { restoreManagementFragment() }
+}
+
+export async function loadGuestBookingManagement(input) {
+  if (!isLocalPreview()) return managementCall('booking-manage-get', input)
+  try { return managementReceipt(await localManagedBooking(input)) } finally { restoreManagementFragment() }
+}
+
+export async function loadGuestManagementOpenings(input) {
+  if (!isLocalPreview()) return managementCall('booking-manage-openings', input)
+  const booking = await localManagedBooking(input)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  return listServiceOpenings({ services: localTable(TABLES.services), schedules: localTable(TABLES.schedules),
+    bookings: localTable(TABLES.bookings).filter(item => item.id !== booking.id), serviceId: booking.service_id,
+    fromDate: input.fromDate, throughDate: input.throughDate, now: new Date(), subject: localGuestSubject() })
+}
+
+export async function rescheduleGuestBooking(input, idempotencyKey) {
+  if (!isLocalPreview()) return managementCall('booking-reschedule', input, idempotencyKey)
+  const booking = await localManagedBooking(input)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  const localDate = localFields(new Date(input.startsAt), booking.timezone).date
+  const result = await loadGuestManagementOpenings({ ...input, fromDate: localDate, throughDate: localDate })
+  const opening = result.openings.find(item => item.startsAt === input.startsAt)
+  if (!opening) throw new BookingError(409, 'BOOKING_SLOT_TAKEN', 'This time is no longer available. Choose another time.')
+  const updated = await update(TABLES.bookings, booking.id, { starts_at: opening.startsAt, ends_at: opening.endsAt,
+    reservation_key: `${booking.schedule_id}|${opening.startsAt}`, updated_at: new Date().toISOString(),
+    ...(booking.calendar_event_id ? { calendar_sync_status: 'pending' } : {}) })
+  return managementReceipt({ ...booking, ...updated })
+}
+
+export async function cancelGuestBooking(input, idempotencyKey) {
+  if (!isLocalPreview()) return managementCall('booking-cancel', input, idempotencyKey)
+  const booking = await localManagedBooking(input)
+  if (booking.status === 'cancelled') return managementReceipt(booking)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  const updated = await update(TABLES.bookings, booking.id, { status: 'cancelled', reservation_key: `released:${booking.id}`,
+    cancelled_at: new Date().toISOString(), cancellation_reason: 'Cancelled by guest',
+    ...(booking.calendar_event_id ? { calendar_sync_status: 'pending' } : {}) })
+  return managementReceipt({ ...booking, ...updated })
+}
+
 // Local stand-in for the hosted grant subject: the profile link or one service's direct link.
 function localGuestSubject() {
-  const token = window.location.hash.slice(1)
+  const token = guestGrant || window.location.hash.slice(1)
   const tokenOf = (url) => String(url || '').split('#')[1] || ''
   if (!token) return null
   if (tokenOf(localTable(TABLES.profiles)[0]?.public_link_url) === token) return { kind: 'profile' }
@@ -1005,6 +1116,7 @@ export async function loadGuestPage() {
     }
   }
   await window.GoalmaticGuest.ready()
+  restoreManagementFragment()
   return window.GoalmaticGuest.query('page-get', {})
 }
 
@@ -1024,8 +1136,14 @@ export async function loadGuestOpenings(serviceId, fromDate, throughDate) {
 }
 
 export async function submitGuestBooking(input, idempotencyKey) {
-  if (!isLocalPreview())
-    return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
+  if (!isLocalPreview()) {
+    try { return await window.GoalmaticGuest.command('booking-create-managed', input, { idempotencyKey }) }
+    catch (error) {
+      const missing = errorChain(error).some(item => Number(item.status ?? item.statusCode) === 404 && (item.code === 'APP_PUBLIC_ACTION_NOT_FOUND' || item.message === 'Public App action not found'))
+      if (!missing) throw error
+      return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
+    }
+  }
   const bookings = localTable(TABLES.bookings)
   const request = resolveBookingRequest({
     services: localTable(TABLES.services),
@@ -1042,8 +1160,13 @@ export async function submitGuestBooking(input, idempotencyKey) {
     throw new BookingError(409, 'BOOKING_SLOT_TAKEN', 'This time was booked by someone else. Choose another slot.')
   const reference = `LOCAL-${String(idempotencyKey || crypto.randomUUID()).slice(0, 8).toUpperCase()}`
   const { service, opening } = request
+  const managementToken = [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  const managementExpiresAt = new Date(Date.now() + 365 * 86400000).toISOString()
+  const tokenHash = await managementTokenHash(managementToken)
   const booking = await create(TABLES.bookings, {
     reference,
+    management_token_hash: tokenHash,
+    management_expires_at: managementExpiresAt,
     service_id: service.id,
     service_name: service.name,
     schedule_id: request.scheduleId,
@@ -1061,6 +1184,9 @@ export async function submitGuestBooking(input, idempotencyKey) {
   return {
     bookingId: booking.id,
     reference,
+    managementToken,
+    managementExpiresAt,
+    serviceId: service.id,
     serviceName: service.name,
     startsAt: opening.startsAt,
     endsAt: opening.endsAt,
