@@ -359,8 +359,8 @@ const reactivateMessage = (member) =>
       <ul class="member-list" aria-label="Team members">
         <li v-for="row in activeRows" :key="row.member.id" class="card member-card">
           <span class="member-avatar" :style="{ background: row.color }" aria-hidden="true">
+            <span>{{ row.initial }}</span>
             <img v-if="row.member.photo_url" :src="row.member.photo_url" alt="" loading="lazy" referrerpolicy="no-referrer" @error="(event) => (event.target.style.display = 'none')" />
-            <span v-else>{{ row.initial }}</span>
           </span>
           <div class="member-main">
             <div class="member-title">
@@ -483,6 +483,9 @@ const reactivateMessage = (member) =>
           <label for="member-name">Name</label>
           <input id="member-name" v-model="form.name" maxlength="120" autocomplete="off" required :aria-invalid="formError && !form.name.trim() ? 'true' : undefined" />
         </div>
+        <details class="member-advanced">
+          <summary>Profile and contact details <span>Optional</span></summary>
+          <div class="member-advanced__content">
         <div class="field-row">
           <div class="field">
             <label for="member-role">Role <span class="optional">(optional)</span></label>
@@ -513,7 +516,12 @@ const reactivateMessage = (member) =>
             </label>
           </div>
         </fieldset>
+          </div>
+        </details>
 
+        <details class="member-advanced">
+          <summary>Services offered <span>{{ form.allServices ? 'All services' : `${form.serviceIds.length} selected` }}</span></summary>
+          <div class="member-advanced__content">
         <fieldset class="field services-field">
           <legend>Services they offer <GmHint text="The services you can assign to this person. It does not publish anything: what guests can pick is set per service in Services." label="About services offered" /></legend>
           <div class="segmented" role="group" aria-label="Services they offer">
@@ -524,8 +532,12 @@ const reactivateMessage = (member) =>
           <TeamServicePicker v-else-if="!form.allServices" v-model:selected="form.serviceIds" :services="baseServices" :estimate="pickEstimate" :disabled="saving" />
           <p v-else class="field-hint">Offers all {{ baseServices.length }} of your services, including ones you add later.</p>
         </fieldset>
+          </div>
+        </details>
 
-        <section v-if="hoursReady" class="hours-box" aria-labelledby="member-hours-title">
+        <details v-if="hoursReady" class="member-advanced hours-box" :open="Boolean(hoursIssue) || undefined">
+          <summary>Working hours <span>{{ weeklyHours }} hours a week</span></summary>
+          <section aria-labelledby="member-hours-title">
           <div class="hours-head">
             <div>
               <h3 id="member-hours-title">Working hours <GmHint text="Their own calendar. Guests and assignments only use these hours; time off is added per person in Availability. Times are in the same timezone as your own schedule." label="About working hours" /></h3>
@@ -544,7 +556,8 @@ const reactivateMessage = (member) =>
             class="hours-interval"
           />
           <WeeklyHoursEditor :days="days" compact :disabled="saving" @notice="onEditorNotice" />
-        </section>
+          </section>
+        </details>
         <p v-else class="field-hint form-hint">Your own hours and time off: <router-link to="/availability" @click="closeDialog">open Availability</router-link>.</p>
 
         <section v-if="editing && !editing.implicit && !editingOwner" class="status-box" aria-labelledby="member-status-title">
@@ -593,8 +606,8 @@ const reactivateMessage = (member) =>
 .member-card { padding: var(--space-4); display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: start; gap: var(--space-4); box-shadow: none; }
 .member-card.is-inactive { background: #fafafc; }
 .member-card.is-inactive .member-avatar { opacity: 0.55; }
-.member-avatar { width: 56px; height: 56px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-xl); font-weight: 750; }
-.member-avatar img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.member-avatar { position: relative; width: 56px; height: 56px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-xl); font-weight: 750; }
+.member-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
 .member-main { min-width: 0; display: grid; gap: var(--space-2); }
 .member-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 .member-title h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
@@ -617,6 +630,11 @@ const reactivateMessage = (member) =>
 
 .form-hint { margin: 0 0 var(--space-4); }
 .optional { color: var(--muted); font-weight: 400; }
+.member-advanced { margin: 0 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); overflow: hidden; }
+.member-advanced > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: 650; }
+.member-advanced > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
+.member-advanced__content { padding: var(--space-3); border-top: 1px solid var(--line); background: #fff; }
+.member-advanced__content > :last-child { margin-bottom: 0; }
 .modal .field { min-width: 0; }
 .modal .field-row .field { margin-bottom: var(--space-4); }
 .colour-field, .services-field { margin: 0 0 var(--space-4); padding: 0; border: 0; min-width: 0; }
@@ -628,7 +646,8 @@ const reactivateMessage = (member) =>
 .swatch input:checked + .swatch-dot { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--swatch); }
 .swatch input:focus-visible + .swatch-dot { outline: 3px solid rgba(35, 54, 220, 0.4); outline-offset: 4px; }
 .services-field .segmented { margin-bottom: var(--space-2); }
-.hours-box { margin: 0 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+.hours-box { margin: 0 0 var(--space-4); }
+.hours-box > section { border-top: 1px solid var(--line); background: #fff; }
 .hours-head { padding: var(--space-3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); background: var(--surface-soft); }
 .hours-head h3 { margin: 0; display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
 .hours-head .field-hint { margin: 2px 0 0; }

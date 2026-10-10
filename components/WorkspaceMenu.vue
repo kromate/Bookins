@@ -22,11 +22,18 @@ const switchingId = ref('')
 const error = ref('')
 
 const accounts = computed(() => (props.isDemo ? [] : workspaceAccounts.value))
+const currentAccount = computed(() => accounts.value.find((account) => account.current) || null)
 const initials = computed(
   () => props.label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'G',
 )
 const subtitle = computed(() =>
-  props.isDemo ? 'Demo · Read-only' : props.localPreview ? 'Local preview' : props.userLabel || 'Goalmatic workspace',
+  props.isDemo
+    ? 'Demo · Read-only'
+    : props.localPreview
+      ? 'Local preview'
+      : currentAccount.value?.name
+        ? `${currentAccount.value.name}${props.userLabel ? ` · ${props.userLabel}` : ''}`
+        : props.userLabel || 'Goalmatic workspace',
 )
 const menuId = computed(() => `${props.idPrefix}-menu`)
 const shown = computed(() => props.inline || open.value)
@@ -69,11 +76,13 @@ function keydown(event) {
     close({ restoreFocus: true })
     return
   }
-  if (!open.value || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return
+  if (event.key === 'Tab') { close(); return }
+  if (!open.value || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
   const items = [...root.value.querySelectorAll('[role^="menuitem"]:not(:disabled)')]
   const index = items.indexOf(document.activeElement)
   event.preventDefault()
-  items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus()
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
+  items[next]?.focus()
 }
 function outside(event) {
   if (open.value && !root.value?.contains(event.target)) close()
@@ -97,9 +106,10 @@ defineExpose({ close })
       :aria-expanded="inline ? undefined : open"
       :aria-controls="inline ? undefined : menuId"
       :disabled="inline ? undefined : busy"
+      :aria-busy="busy || undefined"
       @click="inline ? undefined : toggle()"
     >
-      <span class="ws-avatar"><img v-if="avatarUrl && !isDemo" :src="avatarUrl" alt="" referrerpolicy="no-referrer" /><template v-else>{{ initials }}</template></span>
+      <span class="ws-avatar"><img v-if="avatarUrl && !isDemo" :src="avatarUrl" alt="" width="36" height="36" referrerpolicy="no-referrer" /><template v-else>{{ initials }}</template></span>
       <span class="ws-copy"><strong>{{ label }}</strong><small>{{ subtitle }}</small></span>
       <AppIcon v-if="!inline" name="chevron" :size="16" class="ws-chevron" />
     </component>

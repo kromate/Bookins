@@ -1,4 +1,5 @@
 <script setup>
+import AgendaSettings from '../components/AgendaSettings.vue'
 import { formatDay } from '../format-date.js'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
@@ -44,6 +45,8 @@ const linkHeading = ref(null)
 const copied = ref(false)
 const error = ref('')
 const form = reactive({ displayName: '', bio: '', timezone: 'Africa/Lagos', photoUrl: '' })
+const profilePhotoFailed = ref(false)
+watch(() => form.photoUrl, () => { profilePhotoFailed.value = false })
 const profileBaseline = ref('')
 const leavePrompt = ref(false)
 const pendingRoute = ref('')
@@ -636,7 +639,7 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.6.0 candidate</span>
+      <span class="chip accent version-chip">Bookins v0.7.0</span>
     </div>
 
     <div v-if="error" class="notice error" role="alert"><AppIcon name="info" :size="18" />{{ error }}</div>
@@ -674,13 +677,14 @@ async function saveTemplates() {
           >
           <div class="profile-identity"
             ><span
-              v-if="!form.photoUrl"
+              v-if="!form.photoUrl || profilePhotoFailed"
               class="profile-avatar"
               >{{ initials }}</span
             ><img
               v-else
               :src="form.photoUrl"
               alt="Profile preview"
+              @error="profilePhotoFailed = true"
             /><div
               ><strong>{{ form.displayName || 'Your display name' }}</strong
               ><small>{{ form.timezone }}</small></div
@@ -724,7 +728,8 @@ async function saveTemplates() {
                 :disabled="isDemo || busy"
                 type="url"
                 placeholder="https://example.com/photo.jpg"
-              /><p class="field-hint">Use a square image with a public HTTPS URL.</p></div
+                :aria-describedby="profilePhotoFailed ? 'profile-photo-error' : 'profile-photo-hint'"
+              /><p v-if="profilePhotoFailed" id="profile-photo-error" class="field-hint field-error" role="status">This image could not be loaded. Check that the link is public and starts with https://.</p><p v-else id="profile-photo-hint" class="field-hint">Use a square image with a public HTTPS URL.</p></div
             >
           </div>
           <div class="profile-actions stack-sm">
@@ -982,10 +987,11 @@ async function saveTemplates() {
           <ul>
             <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>On-screen booking confirmation</strong><small>Guests see their confirmation right after booking.</small></div></li>
             <li><span class="status-icon ready"><AppIcon name="check" :size="14" /></span><div><strong>Guest messages from your own apps</strong><small>Bookins prepares the message and opens WhatsApp, SMS or email with it filled in. You press send. Nothing is sent to guests automatically, and Bookins cannot tell whether a message was sent.</small></div></li>
-            <li><span class="status-icon pending">·</span><div><strong>Google Calendar</strong><small>Optional, per booking, needs your approval each time, and never invites guests. Needs a connected Google account.</small></div></li>
-            <li><span class="status-icon pending">·</span><div><strong>Daily agenda email to you</strong><small>A scheduled workflow can email your day's bookings to your own account address only, never to guests. It is off until you turn it on, and it is not yet proven on a real account.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Google Calendar</strong><small>Optional. Add bookings when you choose; linked events follow moves and cancellations. Goalmatic applies your workspace approval policy. Clients are never invited.</small></div></li>
+            <li><span class="status-icon pending">·</span><div><strong>Daily agenda email to you</strong><small>A scheduled workflow can email your day's bookings to your own account address only, never to guests. Manage its schedule and send a test below. A queued run is not confirmation that the email arrived.</small></div></li>
             <li><span class="status-icon pending">·</span><div><strong>Automatic guest emails and online payments</strong><small>Not available. Bookins sends nothing automatically to guests, and prices are arranged with you.</small></div></li>
           </ul>
+          <AgendaSettings />
         </article>
       </div>
     </div>
@@ -1015,6 +1021,7 @@ async function saveTemplates() {
 
 <style scoped>
 .notice-action { margin-left: auto; flex: none; }
+.field-error { color: var(--danger); }
 .version-chip { flex: none; }
 .settings-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--space-5); align-items: start; }
 .settings-nav { position: sticky; top: calc(var(--topbar-h) + var(--space-3)); display: grid; gap: 4px; }

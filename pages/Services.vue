@@ -1004,8 +1004,9 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
             ></div
           >
         </section>
-        <section class="form-section">
-          <h3>Order and reminders</h3>
+        <details class="form-section advanced-form-section" :open="Boolean(sortOrderError || rebookError) || undefined">
+          <summary>Order, reminders and preparation <span>Optional</span></summary>
+          <div class="advanced-form-content">
           <div class="grid grid-2 form-grid"
             ><div class="field"
               ><label for="service-sort">Sort order <GmHint text="Lower numbers come first inside the category, on your booking page and in this list. Leave it blank to sort by name. Once a number is set it can be changed but not cleared." label="About sort order" /></label
@@ -1045,9 +1046,11 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
               placeholder="Arrive with washed, detangled hair. Bring a reference photo."
               aria-describedby="service-prep-hint"
             ></textarea><p id="service-prep-hint" class="field-hint tnum">{{ form.prepNotes.length }}/400</p></div>
-        </section>
-        <section class="form-section">
-          <h3>Who can book, and where</h3>
+          </div>
+        </details>
+        <details class="form-section advanced-form-section" :open="Boolean(teamEnabled && teamSelected.some((id) => memberIssues[id])) || undefined">
+          <summary>Booking options <span>Visibility, status, location and team</span></summary>
+          <div class="advanced-form-content">
           <div class="grid grid-2 form-grid"
             ><div class="field"
               ><label for="service-visibility">Visibility <GmHint text="Public services are listed on your booking page. Private services are hidden there and can only be booked through their own direct link, which suits one-to-one or invite-only offers." label="About visibility" /></label
@@ -1076,7 +1079,6 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
               :disabled="isDemo || saving || deleting"
               maxlength="300"
               placeholder="Address, phone call, or a video meeting URL" /></div>
-        </section>
         <ServiceTeamFields
           v-if="showTeam"
           v-model:selected="teamSelected"
@@ -1089,6 +1091,8 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
           :estimate="teamEstimate"
           :disabled="isDemo || saving || deleting"
         />
+          </div>
+        </details>
         <p v-if="submitReason && !isDemo" class="submit-reason" role="status">{{ submitReason }}</p>
         <div class="form-actions modal-footer"
           ><GmConfirm
@@ -1218,6 +1222,11 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 .availability-note a { margin-left: 4px; color: var(--accent); font-weight: 700; text-decoration: underline; }
 .submit-reason { margin: 0 0 var(--space-2); color: var(--danger); font-size: var(--text-sm); line-height: 1.45; }
 :global(.bookins-service-dialog .form-grid) { align-items: start; }
+.advanced-form-section { padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.advanced-form-section > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); cursor: pointer; color: var(--ink); font-size: var(--text-sm); font-weight: 650; }
+.advanced-form-section > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; text-align: right; }
+.advanced-form-content { padding: var(--space-3); border-top: 1px solid var(--line); background: #fff; }
+.advanced-form-content > :last-child { margin-bottom: 0; }
 :global(.bookins-service-dialog .modal-footer .gm-button) { min-width: 140px; }
 .private-note { margin: 0 0 var(--space-2); color: var(--muted); font-size: var(--text-xs); line-height: 1.45; }
 .direct-link { margin: var(--space-3) 0 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-soft, #fafbfd); }
@@ -1324,15 +1333,12 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
   gap: 12px;
 }
 :global(.bookins-modal-backdrop) {
-  padding: 22px;
   background: rgba(16, 25, 40, 0.52);
   backdrop-filter: blur(4px);
 }
 :global(.bookins-service-dialog),
 :global(.bookins-delete-dialog) {
   width: min(620px, 100%);
-  max-height: calc(100vh - 44px);
-  overflow: auto;
   box-shadow: var(--shadow-lg);
 }
 :global(.bookins-service-dialog .price-field > div) {
@@ -1372,15 +1378,9 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
   :global(.bookins-service-dialog .form-grid) {
     grid-template-columns: 1fr;
   }
-  :global(.bookins-modal-backdrop) {
-    padding: 10px;
-    align-items: end;
-  }
   :global(.bookins-service-dialog),
   :global(.bookins-delete-dialog) {
     width: 100%;
-    max-height: 94vh;
-    border-radius: 20px 20px 12px 12px;
   }
 }
 </style>

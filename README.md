@@ -55,22 +55,23 @@ preview data.
 
 Bookins does not take payments, send guest emails or SMS, or let guests reschedule themselves yet.
 
-## Google Calendar (optional, v0.4.0)
+## Google Calendar
 
-Owners can connect Google Calendar from **Bookings**. Bookins uses only the declared Goalmatic operations in the `calendar-sync` capability:
+Owners connect Google Calendar from Bookings through the declared `calendar-sync` capability. Bookins creates an event only when the owner selects Add to Google Calendar. It never invites clients. Goalmatic applies the workspace approval policy.
 
-- **Owner, installed runtime:** `integrations.connection-start` / `connection-complete` (connect popup), `google-calendar.events-list` (connection check and clash flags for upcoming bookings, next 93 days, timed events only), `event-create` ("Add to Google Calendar" per booking or "Add all upcoming"; no attendees; the booking id is the idempotency key; the event id is saved in the booking's `calendar_event_id`), and `event-update` (renames the event "Cancelled: ..." when the booking is cancelled). Every write needs the platform's per-write approval (`app.calendar-write`).
-- **Cancel** always succeeds first. If the Calendar update then fails, the owner is told and must fix the event in Google Calendar. The update operation has no free/transparent field, so only the title changes. There is no delete operation.
-- **Guest `/book`:** the guest action `calendar-busy` (`google-calendar.availability`, busy ranges only, no titles) lets the booking page hide openings that overlap the owner's busy times. This is a **non-authoritative convenience filter**: `booking.create` does not check Calendar, and if the call fails or Calendar is not connected the page silently shows unfiltered openings.
-- **Local preview and Demo** show "not available" for Calendar; nothing is simulated. Hosted without a connection shows a connect prompt.
+Linked events follow rescheduling. Cancellation keeps the event as a labelled history item, marks it as free time, and disables reminders. The booking is saved first. Calendar failure is recorded in `calendar_sync_status` and `calendar_sync_error`, and the booking details offer Retry Calendar update after reload.
 
-Not provided: guest invites or email, payments, rescheduling, deleting events, and any Calendar enforcement at booking time. Calendar behavior is unproven until it is tested on a real connected Google account.
+The public booking page checks busy ranges through the declared `calendar-busy` guest action. Reads have bounded deadlines and visible recovery states. A known-connected Calendar check must succeed before confirming a slot; an unavailable optional connection is identified separately. The browser check is not an atomic cross-provider reservation: `booking.create` remains authoritative for Bookins records only.
 
-## Owner daily agenda (optional, v0.5.0; reminder links v0.6.0)
+Local sample preview and Demo do not simulate Calendar writes. Provider behavior requires a connected-account check of the released artifact.
 
-The `owner-daily-agenda` workflow emails the account owner at 07:00 Africa/Lagos time with today's appointments, today's time off, and bookings received in the last 24 hours, with times in each booking's timezone. It is installed switched off; turn it on from the workflow in Goalmatic. It comes from noreply@goalmatic.io, goes only to the owner's registered Goalmatic email, reads the 200 most recently created bookings, and uses Goalmatic workflow runs. From v0.6.0 it also reads Profiles and Services and adds a section "Reminders to open for tomorrow": one line per confirmed booking tomorrow (in each booking's timezone) with the same prefilled WhatsApp, SMS, or email link the Messages page would build from your 24-hour template (including per-service overrides and `{{prep_notes}}`). Links are prepared when the email is built; bookings moved or cancelled afterwards are not reflected, so the email says to check Messages. It is still one plain-text email to you; Bookins sends nothing to guests. **Unproven:** the digest, including the reminder links, has not been run end to end on a real account; treat it as off until a manual and a scheduled run have been checked. Instant per-booking emails and guest emails are not available.
+## Owner daily agenda
 
-`scripts/sync-agenda-workflow.mjs` writes `scripts/agenda-transform.src.js` into the manifest; run it after editing the source (a test fails if they drift). The platform rewrites text between angle brackets and double braces in step props, so the source avoids both.
+Settings > Delivery status shows the installed agenda schedule through `workflows.schedule-status`. Owners can enable or pause the schedule, choose a daily time in the profile timezone, open workflow history, and queue a test to their own Goalmatic email through the declared workflow. A queued run is not a delivery receipt. The workflow must be enabled before the platform accepts a manual run.
+
+The workflow is installed paused. It reads the 200 newest bookings, the profile and services, and emails today's appointments, recent bookings and tomorrow's reminder links to the account owner. It does not email guests. Links reflect the records at execution time; check Messages after moving or cancelling a booking.
+
+`scripts/sync-agenda-workflow.mjs` synchronizes `scripts/agenda-transform.src.js` into the manifest. The source avoids characters rewritten by the platform's workflow importer.
 
 ## Data and manifest
 

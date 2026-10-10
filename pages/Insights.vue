@@ -51,6 +51,12 @@ const timeOff = computed(() =>
 const inRange = (item, from, to) => item.start > from && item.start <= to
 const periodStart = computed(() => (period.value ? now.value - period.value * DAY : -Infinity))
 const prevStart = computed(() => (period.value ? now.value - 2 * period.value * DAY : -Infinity))
+const periodDates = computed(() => period.value ? {
+  from: localFields(periodStart.value, zone.value).date,
+  to: localFields(now.value, zone.value).date,
+} : {})
+const pastBookingsLink = computed(() => ({ path: '/bookings', query: { tab: 'past', ...periodDates.value } }))
+const upcomingBookingsLink = { path: '/bookings', query: { tab: 'upcoming' } }
 
 // Everything that started in the period, up to now (future bookings are not "performance" yet).
 const inPeriod = computed(() => all.value.filter(item => inRange(item, periodStart.value, now.value)))
@@ -375,11 +381,12 @@ const percent = value => (value === null ? '—' : `${value}%`)
 
       <div class="stat-grid kpis" data-tour="tour-insights-summary">
         <div class="card stat-tile kpi">
-          <span class="label">Bookings <GmHint text="Appointments that have already started in this period and were not cancelled; upcoming appointments are not counted until they start. Time off is never counted. The line below compares with the period just before." label="About bookings" /></span>
+          <span class="label">Past appointments <GmHint text="Appointments whose start time falls in the selected period and has already passed. Cancelled appointments and time off are excluded. The line below compares with the period just before." label="About past appointments" /></span>
           <p class="metric tnum">{{ count }}</p>
           <p class="sub" :class="changeTone">{{ change }}</p>
-          <p v-if="period" class="sub">Past appointments, not cancelled, {{ periodLabel }}</p>
+          <p v-if="period" class="sub">By appointment start date, {{ periodLabel }}</p>
           <p v-if="upcomingCount" class="sub">{{ upcomingCount }} upcoming not counted yet</p>
+          <RouterLink class="metric-link" :to="pastBookingsLink">View matching past appointments</RouterLink>
         </div>
         <div class="card stat-tile kpi">
           <span class="label">Share of open hours booked, next 14 days <GmHint text="Utilization: of the hours you and your active team members are open over the next 14 days (after time off), how many already have a confirmed booking. 100% means fully booked." label="About utilization" /></span>
@@ -387,16 +394,19 @@ const percent = value => (value === null ? '—' : `${value}%`)
           <p v-if="utilization && utilization.pct !== null" class="sub">{{ hoursText(utilization.booked) }} booked of {{ hoursText(utilization.open) }} open</p>
           <p v-else class="sub">Add weekly hours in Availability to measure this.</p>
           <div v-if="utilization && utilization.pct !== null" class="bar" aria-hidden="true"><span :style="{ width: `${utilization.pct}%` }" /></div>
+          <RouterLink class="metric-link" :to="upcomingBookingsLink">View upcoming appointments</RouterLink>
         </div>
         <div class="card stat-tile kpi">
           <span class="label">Cancellation rate <GmHint text="Cancelled bookings as a share of all bookings that started in this period." label="About cancellation rate" /></span>
           <p class="metric tnum">{{ percent(cancellationRate) }}</p>
-          <p class="sub">{{ cancelledCount }} of {{ inPeriod.length }} bookings, {{ periodLabel }}</p>
+          <p class="sub">{{ cancelledCount }} of {{ inPeriod.length }} appointments by start date, {{ periodLabel }}</p>
+          <RouterLink class="metric-link" :to="pastBookingsLink">View appointments in this period</RouterLink>
         </div>
         <div class="card stat-tile kpi">
           <span class="label">No-show rate <GmHint text="Of appointments that are over (completed, no-show, or past and not yet marked), the share you marked No-show. Mark past appointments in Bookings to keep this accurate." label="About no-show rate" /></span>
           <p class="metric tnum">{{ percent(outcome.rate) }}</p>
           <p class="sub">{{ outcome.noShow }} of {{ outcome.total }} finished appointments were no-shows</p>
+          <RouterLink class="metric-link" :to="pastBookingsLink">View finished appointments in this period</RouterLink>
         </div>
       </div>
 
@@ -408,6 +418,7 @@ const percent = value => (value === null ? '—' : `${value}%`)
         </ul>
         <p v-else class="muted">No priced appointments completed or past due in {{ periodLabel }}.</p>
         <p class="muted small">Counts completed and past confirmed appointments, using each service's current price.</p>
+        <RouterLink class="metric-link" :to="pastBookingsLink">View appointments in this period</RouterLink>
       </article>
 
       <article v-if="teamOn" class="card block" data-testid="staff-insights">
@@ -523,13 +534,13 @@ const percent = value => (value === null ? '—' : `${value}%`)
 
       <div class="grid grid-2 pair">
         <article class="card block">
-          <h2>Lead time <GmHint text="How far ahead clients book on average: the time from when they booked online to the appointment. Bookings you add yourself are excluded." label="About lead time" /></h2>
+          <h2>Lead time for bookings created in this period <GmHint text="How far ahead clients book on average: the time from when each online booking was created to its appointment. Bookings you add yourself are excluded." label="About lead time" /></h2>
           <div v-if="leadTime" class="metric tnum">{{ leadTime.text }}</div>
           <p v-if="leadTime" class="muted">Average time between a client booking online and the appointment, from {{ leadTime.count }} online {{ leadTime.count === 1 ? 'booking' : 'bookings' }} made {{ madeIn }}.</p>
           <p v-else class="muted">No online bookings were made {{ madeIn }}.</p>
         </article>
         <article class="card block">
-          <h2>Added by you</h2>
+          <h2>Bookings created in this period that you added</h2>
           <div v-if="ownerShare" class="metric tnum">{{ ownerShare.pct }}%</div>
           <p v-if="ownerShare" class="muted">{{ ownerShare.count }} of {{ ownerShare.total }} bookings made {{ madeIn }} were added by you rather than booked online.</p>
           <p v-else class="muted">No bookings were made {{ madeIn }}.</p>
@@ -554,6 +565,8 @@ const percent = value => (value === null ? '—' : `${value}%`)
 .kpi .sub { grid-column: 1 / -1; margin: 2px 0 0; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .kpi .sub.up { color: var(--success); }
 .kpi .sub.down { color: var(--danger); }
+.metric-link { grid-column: 1 / -1; min-height: 32px; display: inline-flex; align-items: center; justify-self: start; color: var(--accent); font-size: var(--text-xs); font-weight: 650; text-decoration: none; }
+.metric-link:hover { text-decoration: underline; }
 .bar { grid-column: 1 / -1; height: 6px; margin-top: var(--space-2); border-radius: 999px; background: var(--accent-soft); overflow: hidden; }
 .bar span { display: block; height: 100%; background: var(--accent); }
 .block { min-width: 0; }

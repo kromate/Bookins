@@ -30,7 +30,7 @@ import {
   touchCampaign,
 } from '../booking.js'
 import { CAMPAIGN_CAP, EMAIL_BATCH_SIZE, normalizeCampaign } from '../campaigns.js'
-import { DEFAULT_TEMPLATES } from '../messaging.js'
+import { DEFAULT_TEMPLATES, gmailComposeUrl } from '../messaging.js'
 
 const state = inject('bookingState')
 const refresh = inject('refreshBookings', async () => true)
@@ -93,12 +93,13 @@ const blankFilters = () => ({
 const formFromFilters = (filters) => ({ ...blankFilters(), ...normalizeFilters(filters) })
 
 const defaultTemplate = DEFAULT_TEMPLATES.campaign
+const CAMPAIGN_DEFAULT_SUBJECT = 'A note from {{business}}'
 const draft = reactive({
   id: '',
   name: '',
   filters: blankFilters(),
   channel: 'whatsapp',
-  subject: defaultTemplate.subject,
+  subject: CAMPAIGN_DEFAULT_SUBJECT,
   body: defaultTemplate.body,
   offerText: '',
   offerCode: '',
@@ -144,7 +145,7 @@ function resetDraft() {
     name: '',
     filters: blankFilters(),
     channel: 'whatsapp',
-    subject: defaultTemplate.subject,
+    subject: CAMPAIGN_DEFAULT_SUBJECT,
     body: defaultTemplate.body,
     offerText: '',
     offerCode: '',
@@ -272,6 +273,9 @@ function onCodeInput(event) {
 // The campaign object handed to the data layer. {{offer_expires}} is filled here (the data layer leaves it blank),
 // and when the template does not place it the expiry is appended to the offer text instead.
 const usesExpiryVariable = computed(() => /\{\{\s*offer_expires\s*\}\}/.test(`${draft.subject} ${draft.body}`))
+const effectiveSubject = computed(() =>
+  draft.subject === defaultTemplate.subject && !draft.offerText.trim() ? CAMPAIGN_DEFAULT_SUBJECT : draft.subject,
+)
 const effective = computed(() => {
   const expires = expiryLabel(draft.offerExpires)
   const fill = (text) => (expires ? text.replace(/\{\{\s*offer_expires\s*\}\}/g, expires) : text)
@@ -279,7 +283,7 @@ const effective = computed(() => {
     id: draft.id,
     name: draft.name,
     segment: filtersNow.value,
-    template: { channel: draft.channel, subject: fill(draft.subject), body: fill(draft.body) },
+    template: { channel: draft.channel, subject: fill(effectiveSubject.value), body: fill(draft.body) },
     offerText: joinOffer(draft.offerText, usesExpiryVariable.value ? '' : draft.offerExpires),
     offerCode: cleanCode(draft.offerCode),
     created_at: savedRecord.value?.created_at || '',
@@ -295,10 +299,14 @@ const warnings = computed(() => {
 })
 const previewQueue = computed(() => campaignQueue(state, effective.value, 'any', { timezone: zone.value }))
 const preview = computed(() => {
+  if (draft.channel === 'email') {
+    const batch = previewQueue.value.recipients.broadcast
+    return { text: batch.text, subject: batch.subject, who: '', batch: true }
+  }
   const first = previewQueue.value.recipients[0]
   return first
-    ? { text: first.text, subject: first.subject, who: first.contact.name }
-    : { text: previewQueue.value.recipients.broadcast.text, subject: previewQueue.value.recipients.broadcast.subject, who: '' }
+    ? { text: first.text, subject: first.subject, who: first.contact.name, batch: false }
+    : { text: previewQueue.value.recipients.broadcast.text, subject: previewQueue.value.recipients.broadcast.subject, who: '', batch: false }
 })
 
 // ---------------------------------------------------------------- save, duplicate, delete
@@ -314,7 +322,7 @@ function campaignInput(extra = {}) {
   return {
     name: draft.name,
     segment: filtersNow.value,
-    template: { channel: draft.channel, subject: draft.subject, body: draft.body },
+    template: { channel: draft.channel, subject: effectiveSubject.value, body: draft.body },
     offerText: joinOffer(draft.offerText, draft.offerExpires),
     offerCode: cleanCode(draft.offerCode),
     audienceCount: segment.value.total,
@@ -544,6 +552,7 @@ const back = () => {
 }
 
 const batches = computed(() => (sendTab.value === 'email' ? emailBatches(recipients.value) : []))
+const gmailFor = (mailto) => gmailComposeUrl(mailto)
 const batchRecipients = (batch) => batch.emails.map((email) => recipients.value.find((item) => item.contact.email.toLowerCase() === email)).filter(Boolean)
 const batchOpened = (batch) => batchRecipients(batch).length > 0 && batchRecipients(batch).every(isOpened)
 function onOpenBatch(batch) {
@@ -744,6 +753,8 @@ async function copyBookingLink() {
           </div>
           <p v-if="activePreset" class="field-hint">{{ SEGMENT_PRESETS.find((item) => item.id === activePreset).description }}</p>
 
+          <details class="advanced-section" :open="filterCount ? true : undefined">
+            <summary>Audience filters <span v-if="filterCount" class="count-pill">{{ filterCount }}</span><span v-else class="summary-note">Optional</span></summary>
           <fieldset class="filters">
             <legend class="visually-hidden">Audience filters</legend>
             <div class="field">
@@ -789,11 +800,12 @@ async function copyBookingLink() {
               <label class="check"><input v-model="draft.filters.newThisMonth" type="checkbox" /> New this month <GmHint text="Their first booking was made this calendar month. A nice fit for a thank-you." label="About new this month" /></label>
             </div>
           </fieldset>
+          </details>
 
           <div class="audience-bar" role="status" aria-live="polite" :class="{ empty: !segment.total }">
             <p class="audience-count">
               <strong class="tnum">{{ segment.total }}</strong>
-              <span>{{ segment.total === 1 ? 'person' : 'people' }} will get this message<template v-if="filterCount"> ({{ filterCount }} {{ filterCount === 1 ? 'filter' : 'filters' }})</template></span>
+              <span>{{ segment.total === 1 ? 'person' : 'people' }} in this audience<template v-if="filterCount"> ({{ filterCount }} {{ filterCount === 1 ? 'filter' : 'filters' }})</template></span>
             </p>
             <p v-if="segment.optedOut.length" class="audience-note"><span class="chip warning">{{ segment.optedOut.length }} opted out</span> always left out</p>
             <p v-if="segment.unreachable" class="audience-note"><span class="chip neutral">{{ segment.unreachable }} unreachable</span> have no phone or real email</p>
@@ -866,6 +878,8 @@ async function copyBookingLink() {
           <p class="field-hint">A "Reply STOP to opt out" footer is always added if your message does not already have one.</p>
         </div>
 
+        <details class="advanced-section offer-section" :open="Boolean(draft.offerText || draft.offerCode || draft.offerExpires) || undefined">
+          <summary>Offer details <span class="summary-note">Optional</span></summary>
         <div class="field-row">
           <div class="field">
             <label for="offer-text">Offer text (optional) <GmHint text="A discount is just words, such as '10% off if you book before 30 Nov, mention HAIR10'. Bookins cannot apply discounts at booking, so you honour the offer by hand." label="About offers" /></label>
@@ -881,10 +895,11 @@ async function copyBookingLink() {
           </div>
         </div>
         <p class="field-hint">Offers are words only. Bookins cannot apply a discount for you, so you honour it by hand when the client books.</p>
+        </details>
         <p v-for="warning in warnings" :key="warning" class="notice warning" role="status"><AppIcon name="alert" :size="18" />{{ warning }}</p>
 
         <div class="message-preview" aria-live="polite">
-          <p class="preview-label">Preview<template v-if="preview.who"> for {{ preview.who }}</template><template v-else> (no one to preview yet)</template></p>
+          <p class="preview-label"><template v-if="preview.batch">Email batch preview (the exact name-free text opened in your mail app)</template><template v-else>Preview<template v-if="preview.who"> for {{ preview.who }}</template><template v-else> (no one to preview yet)</template></template></p>
           <p v-if="draft.channel === 'email'" class="preview-subject"><strong>Subject:</strong> {{ preview.subject }}</p>
           <p class="preview-text">{{ preview.text }}</p>
         </div>
@@ -962,7 +977,7 @@ async function copyBookingLink() {
 
           <!-- Email batches -->
           <template v-else-if="sendTab === 'email'">
-            <p class="field-hint">Opens your own mail app with up to {{ EMAIL_BATCH_SIZE }} people in BCC, so nobody sees anyone else's address. It sends from your own address; Bookins does not send it.</p>
+            <p class="field-hint">Choose Gmail or this device's mail app. Both open a draft with up to {{ EMAIL_BATCH_SIZE }} people in BCC, so nobody sees anyone else's address. It sends from your own address; Bookins does not send it.</p>
             <ul class="batches">
               <li v-for="batch in batches" :key="batch.index" class="batch" :class="{ done: batchOpened(batch) }">
                 <div>
@@ -970,7 +985,10 @@ async function copyBookingLink() {
                   <span class="meta tnum">{{ batch.count }} {{ batch.count === 1 ? 'person' : 'people' }} in BCC</span>
                   <span v-if="batchOpened(batch)" class="chip success">Opened by you</span>
                 </div>
-                <a v-if="batch.url" class="primary" :href="batch.url" @click="onOpenBatch(batch)"><AppIcon name="mail" :size="16" />Open email app</a>
+                <div v-if="batch.url" class="batch-actions">
+                  <a class="primary" :href="batch.url" @click="onOpenBatch(batch)"><AppIcon name="mail" :size="16" />Open mail app</a>
+                  <a class="secondary" :href="gmailFor(batch.url)" target="_blank" rel="noopener noreferrer" @click="onOpenBatch(batch)"><AppIcon name="external" :size="16" />Open Gmail</a>
+                </div>
                 <p v-else class="field-error">{{ batch.error }}</p>
               </li>
             </ul>
@@ -1105,6 +1123,13 @@ table.preview td .chip + .chip { margin-left: 4px; }
 .send-tabs { max-width: 100%; justify-self: start; overflow-x: auto; }
 .queue-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .queue-summary strong { font-size: var(--text-lg); }
+.advanced-section { margin: var(--space-3) 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.advanced-section > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: 650; }
+.advanced-section > summary .summary-note { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
+.advanced-section .filters, .offer-section > .field-row, .offer-section > .field-hint { margin-inline: var(--space-3); }
+.advanced-section .filters { margin-bottom: var(--space-3); }
+.offer-section > .field-row { margin-top: var(--space-2); }
+.offer-section > .field-hint { margin-bottom: var(--space-3); }
 .progress { display: grid; gap: 6px; font-size: var(--text-sm); }
 .progress .bar { height: 6px; border-radius: 999px; background: var(--accent-soft); overflow: hidden; }
 .progress .bar span { display: block; height: 100%; background: var(--accent); transition: width var(--dur-panel) var(--ease); }
@@ -1119,8 +1144,9 @@ table.preview td .chip + .chip { margin-left: 4px; }
 .batches { margin: 0; padding: 0; display: grid; gap: var(--space-2); list-style: none; }
 .batch { padding: var(--space-3); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
 .batch > div { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); }
+.batch > .batch-actions { justify-content: flex-end; }
 .batch.done { background: #f6fbf8; }
-.batch a.primary { min-height: var(--control-h-sm); padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; border-radius: var(--radius-sm); text-decoration: none; }
+.batch a:is(.primary, .secondary) { min-height: var(--control-h-sm); padding: 0 16px; display: inline-flex; align-items: center; gap: 8px; border-radius: var(--radius-sm); text-decoration: none; }
 .offer-stats { padding: var(--space-3); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); border-radius: var(--radius-sm); background: var(--accent-soft); font-size: var(--text-sm); }
 .recipients summary { min-height: var(--control-h-sm); display: flex; align-items: center; color: var(--accent); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
 .recipient-list { margin: var(--space-2) 0 0; padding: 0; display: grid; gap: 6px; list-style: none; }
@@ -1140,5 +1166,7 @@ table.preview td .chip + .chip { margin-left: 4px; }
   table.preview td[colspan] { display: block; }
   .row-actions { width: 100%; }
   .step-actions > * { flex: 1 1 auto; justify-content: center; }
+  .batch > .batch-actions { width: 100%; justify-content: flex-start; }
+  .batch > .batch-actions a { flex: 1 1 auto; justify-content: center; }
 }
 </style>

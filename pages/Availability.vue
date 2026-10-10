@@ -66,6 +66,10 @@ const days = reactive(makeDays())
 // Single-owner installs never see the switcher and edit the owner's schedule exactly as before.
 const team = computed(() => hasTeam(state))
 const members = computed(() => teamMembers(state, { includeInactive: true }))
+const memberOptions = computed(() => members.value.map((member) => ({
+  value: member.id,
+  label: `${memberName(member)}${isStaffActive(member) ? '' : ' (inactive)'}`,
+})))
 const selectedStaffId = ref('')
 const currentMember = computed(() => {
   if (!team.value) return ownerStaff(state)
@@ -506,7 +510,7 @@ function flash(message, options) {
   toast?.(message, options)
 }
 const hasActiveService = computed(() => activeServices.value.length > 0)
-const needsFirstService = computed(() => scheduleReady.value && !hasActiveService.value && !isDemo.value)
+const needsFirstService = computed(() => scheduleReady.value && !dirty.value && !hasActiveService.value && !isDemo.value)
 
 async function reloadChecked() {
   return (await refresh()) === true
@@ -576,18 +580,18 @@ async function submit() {
       >
     </div>
 
-    <div v-if="team" class="member-switch" data-tour="tour-availability-member" role="group" aria-label="Whose calendar to edit">
-      <span class="switch-label">Editing <GmHint text="Hours and time off are saved per person. Switching person never changes anyone else's calendar." label="About editing per person" /></span>
-      <div class="segmented switch-list">
-        <button
-          v-for="member in members"
-          :key="member.id"
-          type="button"
-          :class="{ 'is-active': member.id === currentMember.id }"
-          :aria-pressed="member.id === currentMember.id"
+    <div v-if="team" class="member-switch" data-tour="tour-availability-member">
+      <div class="member-picker field">
+        <label for="availability-member">Editing calendar <GmHint text="Hours and time off are saved per person. Switching person never changes anyone else's calendar." label="About editing per person" /></label>
+        <GmSelect
+          id="availability-member"
+          :model-value="currentMember.id"
+          :options="memberOptions"
+          label="Calendar to edit"
           :disabled="saving"
-          @click="requestMember(member.id)"
-        ><i class="switch-dot" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ memberName(member) }}<small v-if="!isStaffActive(member)" class="switch-inactive">inactive</small></button>
+          @update:model-value="requestMember"
+        />
+        <p class="field-hint"><i class="switch-dot" :style="{ background: memberColor(currentMember) }" aria-hidden="true" />{{ isOwnerView ? 'Your schedule' : `${memberFirstName(currentMember)}'s schedule` }}<template v-if="!isStaffActive(currentMember)"> · inactive team member</template></p>
       </div>
       <router-link class="ghost small-button" to="/team">Manage team</router-link>
     </div>
@@ -860,12 +864,11 @@ async function submit() {
 .schedule-heading .muted, .timeoff-card .muted { margin: 0; font-size: var(--text-sm); }
 .days { margin: 0 calc(var(--space-5) * -1) calc(var(--space-5) * -1); }
 
-.member-switch { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
-.switch-label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
-.switch-list { max-width: 100%; display: flex; flex-wrap: wrap; }
-.switch-list button { display: inline-flex; align-items: center; gap: 8px; }
+.member-switch { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: minmax(240px, 420px) auto; align-items: end; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.member-picker { margin: 0; }
+.member-picker label { display: inline-flex; align-items: center; gap: 4px; }
+.member-picker .field-hint { display: flex; align-items: center; gap: 7px; }
 .switch-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; }
-.switch-inactive { color: var(--muted); font-size: var(--text-xs); }
 
 .timeoff-card { display: grid; gap: var(--space-3); }
 .timeoff-form { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
@@ -923,5 +926,7 @@ async function submit() {
   .save-reason { text-align: left; }
   .notice { flex-wrap: wrap; }
   .notice-action { margin-left: 0; flex-basis: 100%; justify-content: center; text-align: center; }
+  .member-switch { grid-template-columns: 1fr; align-items: stretch; }
+  .member-switch > .small-button { justify-self: start; }
 }
 </style>

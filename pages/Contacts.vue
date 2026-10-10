@@ -9,7 +9,7 @@ import GmHint from '../components/ui/GmHint.vue'
 import { useSetupState } from '../setup.js'
 import { contactTags, hasRealEmail, isTimeOff, recordOffer, saveContact, setMarketingOptOut } from '../booking.js'
 import { contactOffers, isOptedOut } from '../records.js'
-import { composeMessage } from '../messaging.js'
+import { composeMessage, gmailComposeUrl } from '../messaging.js'
 import { isDemo } from '../runtime.js'
 import { displayTimeZone } from '../time-display.js'
 
@@ -23,6 +23,7 @@ const optFilter = ref(false)
 const now = Date.now()
 const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
 const records = computed(() => state.contacts || [])
+const gmailFor = (mailto) => gmailComposeUrl(mailto)
 
 const contacts = computed(() => {
   const byEmail = new Map()
@@ -467,8 +468,9 @@ function exportCsv() {
             <div class="message-links">
               <a v-if="followUp(contact).whatsapp" :href="followUp(contact).whatsapp" target="_blank" rel="noreferrer" :aria-label="`Open WhatsApp to message ${contact.name}`">Open WhatsApp</a>
               <a v-if="followUp(contact).sms" :href="followUp(contact).sms" :aria-label="`Open SMS to message ${contact.name}`">Open SMS</a>
-              <a v-if="followUp(contact).email" :href="followUp(contact).email" :aria-label="`Open email to message ${contact.name}`">Open email</a>
-              <small>Opens a follow-up message in your own app. Bookins does not send it.</small>
+              <a v-if="followUp(contact).email" :href="followUp(contact).email" :aria-label="`Open mail app to message ${contact.name}`">Open mail app</a>
+              <a v-if="gmailFor(followUp(contact).email)" :href="gmailFor(followUp(contact).email)" target="_blank" rel="noopener noreferrer" :aria-label="`Open Gmail to message ${contact.name}`">Open Gmail</a>
+              <small>Choose Gmail or this device's mail app. Bookins fills in the message but does not send it.</small>
             </div>
           </details>
           <GmHint v-if="contact.optedOut" wrap text="Opted-out contacts are never added to a campaign. Turn off the opt-out switch first." v-slot="{ describedby }">
@@ -570,5 +572,6 @@ a.add-campaign { display: inline-flex; align-items: center; gap: 6px; text-decor
   .header-tools .search-field { width: 100%; }
   .contact-main { grid-template-columns: 44px minmax(0, 1fr); }
   .contact-stats { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; justify-items: start; gap: var(--space-2) var(--space-3); }
+  .message-links a { min-height: 44px; }
 }
 </style>

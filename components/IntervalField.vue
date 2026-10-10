@@ -37,15 +37,18 @@ defineExpose({ el: root })
       <template v-else-if="!strict">How often this person's appointments can start. It needs to be at least as long as the longest service they offer.</template>
       <template v-else>You have no services yet, so any interval works. Once you add one, the interval must be at least as long as it.</template>
     </p>
-    <p class="interval-explain">
-      Every service on this schedule must be no longer than the interval, and bookings can only start every {{ model }} minutes ({{ words }}). For a 4-hour service use a 4-hour interval, but then short services on the same schedule also start only every 4 hours. Give long services their own team member/calendar if you also need short ones.
-    </p>
+    <details class="interval-explain">
+      <summary>How this affects start times</summary>
+      <p>Every service on this schedule must be no longer than the interval. Bookings can start every {{ model }} minutes ({{ words }}). A 4-hour interval also limits short services on this schedule to 4-hour start times. Use a separate team calendar if long and short services need different start times.</p>
+    </details>
     <slot />
   </div>
 </template>
 
 <style scoped>
 .interval-explain { margin: var(--space-2) 0 0; padding: var(--space-2) var(--space-3); color: var(--ink-soft, var(--muted)); border-left: 3px solid var(--line-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: var(--surface-soft); font-size: var(--text-xs); line-height: 1.55; }
+.interval-explain summary { min-height: 28px; display: flex; align-items: center; color: var(--accent); cursor: pointer; font-weight: 650; }
+.interval-explain p { margin: var(--space-1) 0 0; }
 .interval-field { border-radius: var(--radius-sm); transition: box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
 .interval-field.highlight { margin: calc(var(--space-2) * -1); padding: var(--space-2); background: rgb(35 54 220 / 6%); box-shadow: 0 0 0 2px var(--accent); }
 </style>
