@@ -1,7 +1,7 @@
 {
   "name": "@goalmatic/bookings",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Configure services and availability, share a secure booking page, and manage appointments through Goalmatic.",
   "packageManager": "yarn@1.22.22",
   "type": "module",

@@ -639,7 +639,7 @@ async function saveTemplates() {
           >Update your public profile and manage the link guests use to book with you.</p
         ></div
       >
-      <span class="chip accent version-chip">Bookins v0.6.1</span>
+      <span class="chip accent version-chip">Bookins v0.7.0</span>
     </div>
 
     <div v-if="error" class="notice error" role="alert"><AppIcon name="info" :size="18" />{{ error }}</div>
