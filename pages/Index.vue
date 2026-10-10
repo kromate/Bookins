@@ -83,6 +83,7 @@ const nextStep = computed(() => {
 })
 const newService = () => router.push({ path: '/services', query: { new: '1' } })
 
+const todayLabel = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', timeZone: scheduleZone.value }).format(now.value))
 const todayKey = computed(() => zonedDateKey(now.value, scheduleZone.value))
 const tomorrowKey = computed(() => {
   const [year, month, day] = todayKey.value.split('-').map(Number)
@@ -180,9 +181,8 @@ async function copyLink() {
   <section class="overview">
     <div class="page-header">
       <div>
-        <p class="eyebrow">Workspace overview</p>
-        <h1>Run your booking day with less back-and-forth.</h1>
-        <p class="lede">{{ isDemo ? 'Review the prepared owner workspace, then open a labelled guest preview.' : 'Set your hours, share one link, and keep every confirmed appointment in view.' }}</p>
+        <h1>Your booking day</h1>
+        <p class="lede">{{ isDemo ? 'Explore your schedule and services with read-only sample data.' : 'Appointments, availability, and the people you’re seeing next.' }}</p>
       </div>
       <div class="page-header-actions">
         <RouterLink v-if="isDemo" class="secondary" to="/services">
@@ -231,9 +231,8 @@ async function copyLink() {
       <article class="card day-card">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Today</p>
-            <h2>Today's bookings</h2>
-            <p class="tz-label muted">{{ todayKey }} · {{ scheduleZone }}</p>
+                        <h2>Today's bookings</h2>
+            <p class="tz-label muted">{{ todayLabel }} · {{ scheduleZone }}</p>
           </div>
         </div>
         <p v-if="statusError" class="notice error" role="alert">{{ statusError }}</p>
@@ -258,8 +257,7 @@ async function copyLink() {
       <article class="card day-card messages-card" data-tour="tour-overview-messages">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Messages</p>
-            <h2>Messages due <span class="count-pill tnum">{{ dueMessages.length }}</span> <GmHint text="Reminders, prep notes, thank-yous and rebook nudges that are ready now. Bookins prepares each message and opens it in your own WhatsApp, SMS or email app. You press send; nothing is sent automatically." label="About messages due" /></h2>
+                        <h2>Messages due <span class="count-pill tnum">{{ dueMessages.length }}</span> <GmHint text="Reminders, prep notes, thank-yous and rebook nudges that are ready now. Bookins prepares each message and opens it in your own WhatsApp, SMS or email app. You press send; nothing is sent automatically." label="About messages due" /></h2>
             <p class="tz-label muted">Opened in your own app. Bookins does not send.</p>
           </div>
         </div>
@@ -282,7 +280,7 @@ async function copyLink() {
           <div>
             <p class="eyebrow">Team</p>
             <h2>Today by staff</h2>
-            <p class="tz-label muted">{{ todayKey }} · {{ scheduleZone }}</p>
+            <p class="tz-label muted">{{ todayLabel }} · {{ scheduleZone }}</p>
           </div>
           <RouterLink to="/team">Team <AppIcon name="chevron" :size="14" /></RouterLink>
         </div>
@@ -305,8 +303,7 @@ async function copyLink() {
       <article class="card next-card">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">Up next</p>
-            <h2>Upcoming bookings</h2>
+                        <h2>Upcoming bookings</h2>
             <p class="tz-label muted">Times shown in {{ scheduleZone }}</p>
           </div>
           <RouterLink to="/bookings">View all <AppIcon name="chevron" :size="14" /></RouterLink>

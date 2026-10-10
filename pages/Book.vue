@@ -6,10 +6,11 @@ import BookinsLogo from '../components/BookinsLogo.vue'
 import { demoGuestApi } from '../demo/guest.js'
 import {
   isLocalPreview,
-  loadGuestCalendarBusy,
+  loadGuestCalendarCheck,
   loadGuestOpenings,
   loadGuestPage,
   openingOverlapsBusy,
+  readWithDeadline,
   submitGuestBooking,
 } from '../booking.js'
 import { filterGroups, LAYOUTS, parseBio, readPageParams, slugify, teamRows } from '../guest-page.js'
@@ -32,6 +33,7 @@ initLocale()
 const MAX_RANGE_DAYS = 31
 const RESULT_CAP = 100 // smallest per-call cap across hosted (200), local and demo engines
 const SEARCH_AHEAD_DAYS = 366
+const SEARCH_DEADLINE_MS = 20_000
 const COLUMN_DAYS = 5
 const SESSION_TTL = 5 * 60_000
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
@@ -81,10 +83,12 @@ const openingStore = shallowRef(new Map())
 let covered = new Set()
 // Per-service session cache of loaded openings (5 min), so returning to a service is instant.
 const sessionCache = new Map()
-// Convenience filter only: hides openings that overlap the owner's Google Calendar busy times.
-// It is not checked when the booking is created, and silently stops after the first failure.
-let calendarBusyOff = props.demoPreview
+// Calendar remains a declared guest capability separate from Bookins' authoritative slot record.
+// A failed check degrades visibly, and a selected slot is checked again before confirmation.
+const calendarCheck = ref({ state: props.demoPreview ? 'unavailable' : 'idle' })
+let calendarCheckDisabled = props.demoPreview
 let requestSeq = 0
+let nextSearchSeq = 0
 const rangeLoading = ref(false)
 const rangeError = ref('') // i18n key; empty when there is no error
 let rangeRetried = false
@@ -98,6 +102,7 @@ const sheetOpen = ref(false)
 // Idempotency: one key per booking attempt (service + slot + contact + notes).
 let attemptKey = null
 let attemptSignature = ''
+const allowUncheckedSubmit = ref(false)
 // Key of an attempt whose outcome is unknown (lost response). A later SLOT_TAKEN for the
 // same key may be the guest's own booking, so it must not be reported as someone else's.
 let uncertainKey = null
@@ -238,6 +243,7 @@ const nextWhen = computed(() => {
 
 function resetAvailability() {
   requestSeq += 1
+  nextSearchSeq += 1
   openingStore.value = new Map()
   covered = new Set()
   rangeLoading.value = false
@@ -246,13 +252,22 @@ function resetAvailability() {
   selectedDate.value = ''
   pendingSlot.value = null
   sheetOpen.value = false
+  allowUncheckedSubmit.value = false
+  calendarCheck.value = { state: props.demoPreview ? 'unavailable' : 'idle' }
+  calendarCheckDisabled = props.demoPreview
 }
 
 function rememberAvailability() {
   const id = selectedService.value?.id
   if (!id) return
   const entry = sessionCache.get(id)
-  sessionCache.set(id, { store: openingStore.value, covered, at: entry?.at ?? Date.now() })
+  sessionCache.set(id, {
+    store: openingStore.value,
+    covered,
+    calendarCheck: calendarCheck.value,
+    calendarCheckDisabled,
+    at: entry?.at ?? Date.now(),
+  })
 }
 function restoreAvailability(id) {
   const entry = sessionCache.get(id)
@@ -262,6 +277,8 @@ function restoreAvailability(id) {
   }
   openingStore.value = entry.store
   covered = entry.covered
+  calendarCheck.value = entry.calendarCheck || { state: props.demoPreview ? 'unavailable' : 'idle' }
+  calendarCheckDisabled = entry.calendarCheckDisabled ?? props.demoPreview
 }
 
 async function fetchSpan(serviceId, from, to) {
@@ -276,17 +293,42 @@ async function fetchSpan(serviceId, from, to) {
   return list
 }
 
-async function withoutBusy(list) {
-  if (calendarBusyOff || !list.length) return list
+function markCalendarCheck(state) {
+  calendarCheck.value = { state }
+}
+
+async function withoutBusy(list, seq = requestSeq, force = false) {
+  if ((calendarCheckDisabled && !force) || !list.length) return list
   const starts = list.map(item => Date.parse(item.startsAt)).filter(Number.isFinite)
   const ends = list.map(item => Date.parse(item.endsAt) || Date.parse(item.startsAt)).filter(Number.isFinite)
   if (!starts.length) return list
-  const busy = await loadGuestCalendarBusy(Math.min(...starts), Math.max(...ends) + 1)
-  if (!busy) {
-    calendarBusyOff = true
+  if (seq === requestSeq) markCalendarCheck('checking')
+  const result = await loadGuestCalendarCheck(Math.min(...starts), Math.max(...ends) + 1)
+  if (result.state !== 'checked') {
+    calendarCheckDisabled = true
+    if (seq === requestSeq) markCalendarCheck(result.state === 'unavailable' ? 'unavailable' : 'degraded')
     return list
   }
-  return list.filter(item => !openingOverlapsBusy(item, busy))
+  calendarCheckDisabled = false
+  if (seq === requestSeq) markCalendarCheck('checked')
+  return list.filter(item => !openingOverlapsBusy(item, result.busy))
+}
+
+async function retryCalendarCheck() {
+  if (calendarCheck.value.state === 'checking') return
+  allowUncheckedSubmit.value = false
+  const seq = ++requestSeq
+  const current = [...openingStore.value.values()]
+  calendarCheckDisabled = false
+  const filtered = await withoutBusy(current, seq, true)
+  if (seq !== requestSeq) return
+  openingStore.value = new Map(filtered.map(opening => [opening.startsAt, opening]))
+  if (selectedSlot.value && !openingStore.value.has(selectedSlot.value.startsAt)) {
+    selectedSlot.value = null
+    pendingSlot.value = null
+    showBanner('slot', 'banner.calendarBusy')
+  }
+  rememberAvailability()
 }
 
 /** Load [from, through] (schedule-zone dates, at most 31 days per call). Returns false when superseded. */
@@ -307,7 +349,7 @@ async function ensureRange(from, through, seq) {
     }
     const fetched = await fetchSpan(serviceId, chunkStart, chunkEnd)
     if (seq !== requestSeq) return false
-    const list = await withoutBusy(fetched)
+    const list = await withoutBusy(fetched, seq)
     if (seq !== requestSeq) return false
     const next = new Map(openingStore.value)
     for (const opening of list) next.set(opening.startsAt, opening)
@@ -325,22 +367,34 @@ function firstDayOnOrAfter(key) {
 }
 
 /** Scans forward in <=31-day calls until a day with openings is found (or the search window ends). */
-async function findNextAvailable(fromKey, seq) {
+async function findNextAvailable(fromKey, seq, searchSeq) {
   const start = fromKey < todayKey.value ? todayKey.value : fromKey
   const limit = addDays(todayKey.value, SEARCH_AHEAD_DAYS)
   for (let cursor = start; cursor <= limit; cursor = addDays(cursor, MAX_RANGE_DAYS)) {
+    if (searchSeq !== nextSearchSeq) return null
     const through = addDays(cursor, MAX_RANGE_DAYS - 1)
     // One day of padding covers guest-zone/schedule-zone date differences.
     if (!(await ensureRange(addDays(cursor, -1), addDays(through, 1), seq))) return null
+    if (searchSeq !== nextSearchSeq) return null
     const found = firstDayOnOrAfter(start)
     if (found) return found
   }
   return ''
 }
 
+async function boundedNextAvailable(fromKey, seq) {
+  const searchSeq = ++nextSearchSeq
+  try {
+    return await readWithDeadline(() => findNextAvailable(fromKey, seq, searchSeq), SEARCH_DEADLINE_MS)
+  } catch (error) {
+    if (searchSeq === nextSearchSeq) nextSearchSeq += 1
+    throw error
+  }
+}
+
 async function searchNext(fromKey, seq = requestSeq) {
   nextHint.value = { state: 'searching', key: '' }
-  const found = await findNextAvailable(fromKey, seq)
+  const found = await boundedNextAvailable(fromKey, seq)
   if (found === null || seq !== requestSeq) return
   nextHint.value = { state: found ? 'found' : 'none', key: found }
 }
@@ -349,6 +403,7 @@ function errorKeyFor(reason, fallback) {
   const code = errorCode(reason)
   if (code === 'BOOKING_SERVICE_NOT_FOUND') return 'err.serviceGone'
   if (code === 'BOOKING_SCHEDULE_UNAVAILABLE') return 'err.noSchedule'
+  if (code === 'BOOKING_READ_TIMEOUT') return 'err.timeoutRange'
   if (isNetworkError(reason)) return 'err.networkRange'
   return fallback
 }
@@ -420,7 +475,7 @@ async function initialJump() {
   setViewFromKey(todayKey.value)
   alignWindow(todayKey.value)
   try {
-    const found = await findNextAvailable(todayKey.value, seq)
+    const found = await boundedNextAvailable(todayKey.value, seq)
     if (found === null || seq !== requestSeq) return
     if (found) {
       selectedDate.value = found
@@ -730,6 +785,7 @@ function commitSlot(slot) {
   selectedDate.value = zonedDateKey(slot.startsAt, displayedTimezone.value)
   pendingSlot.value = null
   banner.value = null
+  allowUncheckedSubmit.value = false
 }
 function selectSlot(slot) {
   interacted = true
@@ -925,16 +981,43 @@ async function submit() {
     document.querySelector('.guest-form [aria-invalid="true"]')?.focus()
     return
   }
-  const payload = {
-    serviceId: selectedService.value.id,
-    startsAt: selectedSlot.value.startsAt,
-    contact: { name: contact.name.trim(), email: contact.email.trim(), phone: contact.phone.trim() },
-    notes: notes.value.trim(),
-  }
-  const key = keyForAttempt(payload)
   submitting.value = true
   banner.value = null
+  let key = ''
   try {
+    const slot = selectedSlot.value
+    if (!allowUncheckedSubmit.value) {
+      const previousCalendarState = calendarCheck.value.state
+      const result = await loadGuestCalendarCheck(Date.parse(slot.startsAt), Date.parse(slot.endsAt))
+      if (result.state === 'checked') {
+        allowUncheckedSubmit.value = false
+        calendarCheckDisabled = false
+        markCalendarCheck('checked')
+        if (openingOverlapsBusy(slot, result.busy)) {
+          await refreshAfterSlotTaken()
+          showBanner('slot', 'banner.calendarBusy')
+          return
+        }
+      } else if (result.state === 'unavailable' && previousCalendarState === 'unavailable') {
+        calendarCheckDisabled = true
+        markCalendarCheck('unavailable')
+        rememberAvailability()
+      } else if (!props.demoPreview) {
+        calendarCheckDisabled = true
+        markCalendarCheck('degraded')
+        allowUncheckedSubmit.value = true
+        rememberAvailability()
+        showBanner('retry', 'banner.calendarUnchecked')
+        return
+      }
+    }
+    const payload = {
+      serviceId: selectedService.value.id,
+      startsAt: slot.startsAt,
+      contact: { name: contact.name.trim(), email: contact.email.trim(), phone: contact.phone.trim() },
+      notes: notes.value.trim(),
+    }
+    key = keyForAttempt(payload)
     confirmation.value = await submitGuestBooking(payload, key)
     sessionCache.clear() // the booked time must not come back from the cache
     resetAttempt()
@@ -1329,6 +1412,12 @@ onBeforeUnmount(() => {
                   </div>
                   <button v-else ref="sheetTrigger" type="button" class="bk-btn small" :aria-label="t('cal.pickDateAria')" aria-haspopup="dialog" @click="openSheet"><AppIcon name="calendar" :size="14" />{{ t('cal.pickDate') }}</button>
                 </div>
+                <div v-if="calendarCheck.state === 'checking'" class="bk-calendar-status" role="status">{{ t('cal.checking') }}</div>
+                <div v-else-if="calendarCheck.state === 'degraded'" class="bk-calendar-status warning" role="alert">
+                  <span>{{ t('cal.degraded') }}</span>
+                  <button class="bk-btn small" type="button" @click="retryCalendarCheck">{{ t('cal.retry') }}</button>
+                </div>
+                <div v-else-if="calendarCheck.state === 'unavailable' && !demoPreview" class="bk-calendar-status" role="status">{{ t('cal.unavailable') }}</div>
 
                 <!-- Month grid: the desktop month view, or the bottom sheet on small screens -->
                 <div v-if="sheetOpen && dateView !== 'month'" class="bk-backdrop" @click="closeSheet" />
@@ -1499,6 +1588,12 @@ onBeforeUnmount(() => {
               <div v-else key="details" class="bk-details">
                 <h2 ref="stepHeading" tabindex="-1" class="bk-form-title">{{ demoPreview ? t('form.titleDemo') : t('form.title') }}</h2>
                 <p class="bk-muted">{{ demoPreview ? t('form.textDemo') : t('form.text') }}</p>
+                <div v-if="calendarCheck.state === 'checking'" class="bk-calendar-status details" role="status">{{ t('cal.checking') }}</div>
+                <div v-else-if="calendarCheck.state === 'degraded'" class="bk-calendar-status details warning" role="alert">
+                  <span>{{ t('cal.degraded') }}</span>
+                  <button class="bk-btn small" type="button" :disabled="submitting" @click="retryCalendarCheck">{{ t('cal.retry') }}</button>
+                </div>
+                <div v-else-if="calendarCheck.state === 'unavailable' && !demoPreview" class="bk-calendar-status details" role="status">{{ t('cal.unavailable') }}</div>
                 <form class="bk-form" novalidate @submit.prevent="submit">
                   <div class="bk-field">
                     <label for="booking-guest-name">{{ t('form.name') }}</label>
@@ -1573,7 +1668,7 @@ onBeforeUnmount(() => {
                   <div class="bk-actions">
                     <button class="bk-btn" type="button" :disabled="submitting" @click="back">{{ t('back') }}</button>
                     <button class="bk-btn primary" :disabled="submitting || demoPreview">
-                      {{ demoPreview ? t('form.submitDemo') : submitting ? t('form.submitting') : t('form.submit') }}
+                      {{ demoPreview ? t('form.submitDemo') : submitting ? t('form.submitting') : allowUncheckedSubmit ? t('form.submitUnchecked') : t('form.submit') }}
                     </button>
                   </div>
                   <p class="bk-fine">{{ demoPreview ? t('form.fineDemo') : t('form.fine') }}</p>
@@ -1819,6 +1914,9 @@ onBeforeUnmount(() => {
 .bk-schedule { display: grid; grid-template-columns: minmax(0, 1fr) 216px; grid-template-rows: auto 1fr; min-width: 0; }
 .bk-schedule.dv-week, .bk-schedule.dv-column { grid-template-columns: minmax(0, 1fr); }
 .bk-viewbar { grid-column: 1 / -1; padding: 16px 20px 0 24px; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.bk-calendar-status { grid-column: 1 / -1; margin: 8px 20px 0 24px; color: var(--muted); font-size: 13px; }
+.bk-calendar-status.warning { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--warn); border: 1px solid var(--warn-bd); border-radius: 8px; background: var(--warn-bg); }
+.bk-calendar-status.details { margin: 12px 0 0; }
 .bk-range { min-width: 0; display: flex; align-items: center; gap: 10px; }
 .bk-range h3, .bk-sheet-bar h3 { font-size: 15px; text-transform: capitalize; }
 .bk-range h3 span, .bk-sheet-bar h3 span { color: var(--muted); font-weight: 500; }

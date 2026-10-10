@@ -51,9 +51,12 @@ onMounted(() => {
   navigationMedia.addEventListener('change', updateNavigationMedia)
 })
 onBeforeUnmount(() => navigationMedia?.removeEventListener('change', updateNavigationMedia))
-watch(narrowScreen, narrow => { if (!narrow) moreOpen.value = false })
+watch(narrowScreen, narrow => {
+  if (!narrow) { moreOpen.value = false; menuOpen.value = false }
+})
 watch(menuOpen, async open => {
   if (!narrowScreen.value) return
+  if (open) moreOpen.value = false
   await nextTick()
   document.querySelector(open ? '.sidebar-close' : '.mobile-menu')?.focus()
 })
@@ -73,6 +76,22 @@ function navigationKeydown(event) {
     ;(event.shiftKey ? last : first)?.focus()
   }
 }
+const sessionWarning = ref('')
+const savingConnection = ref(false)
+const syncSessionWarning = () => { sessionWarning.value = window.GoalmaticAuth?.config?.sessionPersistenceWarning || '' }
+async function retryRememberConnection() {
+  if (savingConnection.value) return
+  savingConnection.value = true
+  try { await window.GoalmaticAuth?.retrySessionPersistence?.() }
+  finally { savingConnection.value = false; syncSessionWarning() }
+}
+let unsubscribeSessionWarning
+onMounted(() => {
+  syncSessionWarning()
+  unsubscribeSessionWarning = window.GoalmaticAuth?.onAuthChange?.(syncSessionWarning)
+  window.addEventListener('focus', syncSessionWarning)
+})
+onBeforeUnmount(() => { unsubscribeSessionWarning?.(); window.removeEventListener('focus', syncSessionWarning) })
 const loading = ref(false)
 const loaded = ref(false)
 const error = ref('')
@@ -161,16 +180,33 @@ const navItems = [
   },
 ]
 
-const primaryNav = navItems.filter((item) => item.section === 'WORKSPACE')
-const manageNav = navItems.filter((item) => item.section === 'MANAGE')
+const primaryNav = ['/', '/bookings', '/availability', '/services', '/messages', '/insights'].map(path => navItems.find(item => item.to === path))
+const manageNav = navItems.filter((item) => item.section === 'MANAGE' && item.to !== '/settings')
 const mobileNav = navItems.filter((item) => ['/', '/services', '/availability', '/bookings'].includes(item.to))
 const moreNav = navItems.filter((item) => !mobileNav.includes(item))
 const moreOpen = ref(false)
+const navigationOverlay = computed(() => narrowScreen.value && (menuOpen.value || moreOpen.value))
+let originalBodyOverflow = null
+watch(navigationOverlay, open => {
+  if (open) {
+    originalBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  } else if (originalBodyOverflow !== null) {
+    document.body.style.overflow = originalBodyOverflow
+    originalBodyOverflow = null
+  }
+})
+onBeforeUnmount(() => {
+  if (originalBodyOverflow !== null) document.body.style.overflow = originalBodyOverflow
+})
 const moreCurrent = computed(() => moreNav.some((item) => route.path.startsWith(item.to)))
 async function toggleMore(open = !moreOpen.value) {
   moreOpen.value = open
   await nextTick()
-  if (open) document.querySelector('.more-sheet .more-item, .more-sheet a')?.focus()
+  if (open) {
+    menuOpen.value = false
+    document.querySelector('.more-close')?.focus()
+  }
   else document.querySelector('.more-button')?.focus()
 }
 function moreKeydown(event) {
@@ -447,11 +483,14 @@ async function changeMode(enabled) {
 
 async function copyPublicLink() {
   if (!publicUrl.value) return
-  await copyText(publicUrl.value)
-  copied.value = true
-  window.setTimeout(() => {
-    copied.value = false
-  }, 1600)
+  try {
+    await copyText(publicUrl.value)
+    copied.value = true
+    toast.success('Booking link copied')
+    window.setTimeout(() => { copied.value = false }, 1600)
+  } catch {
+    toast.error('Could not copy the link. Open Settings to copy it manually.')
+  }
 }
 
 provide('bookingState', state)
@@ -463,7 +502,7 @@ provide('startTour', startTour)
 
 watch(
   () => route.path,
-  (path, previous) => {
+  async (path, previous) => {
     menuOpen.value = false
     moreOpen.value = false
     dropStaleToasts()
@@ -472,6 +511,8 @@ watch(
       // Arriving from the public /book route (or after a failed load) with no workspace yet: load it now instead of showing an empty page.
       if (!isPublicRoute.value && !loaded.value && !loading.value && !modeRequesting.value) void refresh()
       else backgroundRefresh({ force: true })
+      await nextTick()
+      if (!route.hash) window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
     }
   },
 )
@@ -556,6 +597,7 @@ onMounted(async () => {
   >
     <a class="skip-link" href="#main-content" @click.prevent="focusMain">Skip to content</a>
     <aside
+      id="app-navigation"
       class="sidebar"
       :class="{ open: menuOpen }"
       :inert="narrowScreen && !menuOpen"
@@ -568,9 +610,9 @@ onMounted(async () => {
       <div class="sidebar-brand">
         <RouterLink
           to="/"
+          class="sidebar-identity"
           aria-label="Bookins home"
-          ><BookinsLogo
-        /></RouterLink>
+          ><BookinsLogo compact /><span>Bookins<small>by Goalmatic</small></span></RouterLink>
         <button
           class="sidebar-close"
           type="button"
@@ -583,8 +625,8 @@ onMounted(async () => {
       <WorkspaceMenu
         ref="sideMenu"
         id-prefix="sidebar-workspace"
-        :label="accountLabel"
-        :user-label="userLabel"
+        :label="isDemo ? accountLabel : loaded ? profileName : accountLabel"
+        :user-label="accountLabel"
         :avatar-url="avatarUrl"
         :is-demo="isDemo"
         :local-preview="localPreview"
@@ -595,7 +637,8 @@ onMounted(async () => {
         <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="menuOpen = false; closeWorkspaceMenus()">Guest preview</RouterLink>
       </WorkspaceMenu>
 
-      <p class="nav-section-label">WORKSPACE</p>
+      <div class="sidebar-navigation">
+      <p class="nav-section-label">Workspace</p>
       <nav
         class="side-nav"
         aria-label="Primary navigation"
@@ -604,6 +647,7 @@ onMounted(async () => {
           v-for="item in primaryNav"
           :key="item.to"
           :to="item.to"
+          @click="menuOpen = false"
         >
           <AppIcon
             :name="item.icon"
@@ -614,7 +658,7 @@ onMounted(async () => {
       </nav>
 
       <div class="sidebar-divider" />
-      <p class="nav-section-label">MANAGE</p>
+      <p class="nav-section-label">Business</p>
       <nav
         class="side-nav"
         aria-label="Management navigation"
@@ -623,6 +667,7 @@ onMounted(async () => {
           v-for="item in manageNav"
           :key="item.to"
           :to="item.to"
+          @click="menuOpen = false"
         >
           <AppIcon
             :name="item.icon"
@@ -632,7 +677,7 @@ onMounted(async () => {
         </RouterLink>
       </nav>
 
-      <div class="sidebar-spacer" />
+      </div>
       <div class="sidebar-footer">
         <div
           v-if="publicUrl"
@@ -667,11 +712,11 @@ onMounted(async () => {
               >
             </div>
           </div>
-          <p>{{ publicUrl }}</p>
           <span class="visually-hidden" role="status">{{ copied ? 'Booking link copied' : '' }}</span>
         </div>
         <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
         <div class="sidebar-links">
+          <RouterLink class="sidebar-link" to="/settings" @click="menuOpen = false"><AppIcon name="settings" :size="18" />Settings</RouterLink>
           <button
             class="sidebar-link"
             type="button"
@@ -706,13 +751,15 @@ onMounted(async () => {
       @click="menuOpen = false"
     />
 
-    <div class="workspace" :inert="narrowScreen && menuOpen" :aria-hidden="narrowScreen && menuOpen ? 'true' : undefined">
+    <div class="workspace" :inert="navigationOverlay" :aria-hidden="navigationOverlay ? 'true' : undefined">
       <header class="topbar">
         <div class="topbar-actions">
           <button
             class="icon-button mobile-menu"
             type="button"
             aria-label="Open navigation"
+            aria-controls="app-navigation"
+            :aria-expanded="menuOpen"
             @click="menuOpen = true"
             ><AppIcon name="menu"
           /></button>
@@ -759,6 +806,10 @@ onMounted(async () => {
         </div>
       </header>
 
+      <div v-if="sessionWarning" class="mode-banner warning" role="status">
+        <span>{{ sessionWarning }}</span>
+        <button type="button" :disabled="savingConnection" @click="retryRememberConnection">{{ savingConnection ? 'Saving connection…' : 'Retry saving connection' }}</button>
+      </div>
       <p v-if="demoSwitchError || modeActionError" role="alert" class="mode-banner error">{{ demoSwitchError || modeActionError }}</p>
       <div
         v-if="error && loaded"
@@ -805,9 +856,7 @@ onMounted(async () => {
           >
         </div>
         <RouterView v-else-if="!transitioning" v-slot="{ Component }">
-          <Transition name="page" mode="out-in">
-            <component :is="Component" :key="`${routeKey}:${route.path}`" />
-          </Transition>
+          <component :is="Component" :key="`${routeKey}:${route.path}`" />
         </RouterView>
         <p v-if="transitioning" class="mode-transition" role="status">Loading your workspace…</p>
       </main>
@@ -816,7 +865,7 @@ onMounted(async () => {
 
     <nav
       class="mobile-bottom-nav"
-      :inert="narrowScreen && menuOpen"
+      :inert="navigationOverlay"
       aria-label="Mobile navigation"
     >
       <RouterLink
@@ -849,12 +898,19 @@ onMounted(async () => {
     <template v-if="moreOpen">
       <button class="more-sheet-scrim" type="button" aria-label="Close more menu" tabindex="-1" @click="toggleMore(false)" />
       <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-label="More pages" @keydown="moreKeydown">
+        <div class="more-heading"><h2>More</h2><button class="icon-button more-close" type="button" aria-label="Close more menu" @click="toggleMore(false)"><AppIcon name="close" :size="20" /></button></div>
+        <nav class="more-pages" aria-label="More pages">
+          <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to" @click="toggleMore(false)">
+            <AppIcon :name="item.icon" :size="20" />{{ item.label }}
+          </RouterLink>
+        </nav>
+        <hr />
         <h2>Workspace</h2>
         <WorkspaceMenu
           inline
           id-prefix="sheet-workspace"
-          :label="accountLabel"
-          :user-label="userLabel"
+          :label="isDemo ? accountLabel : loaded ? profileName : accountLabel"
+          :user-label="accountLabel"
           :avatar-url="avatarUrl"
           :is-demo="isDemo"
           :local-preview="localPreview"
@@ -870,11 +926,6 @@ onMounted(async () => {
         <button type="button" class="more-item" @click="startTour"><AppIcon name="help" :size="20" />Take a walkthrough</button>
         <a class="more-item" :href="APPS_URL" target="_blank" rel="noopener" @click="moreOpen = false"><AppIcon name="back" :size="20" />Back to Apps</a>
         <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="20" />Contact support</a>
-        <hr />
-        <h2>More</h2>
-        <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to">
-          <AppIcon :name="item.icon" :size="20" />{{ item.label }}
-        </RouterLink>
       </div>
     </template>
 

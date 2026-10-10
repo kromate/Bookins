@@ -360,6 +360,28 @@ export function mailtoUrl(email, subject, body) {
   return `mailto:${encodeURIComponent(address)}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body || '')}`
 }
 
+/** Converts a constructed mailto link into Gmail's web compose URL, preserving to, cc, bcc, subject and body. */
+export function gmailComposeUrl(mailto) {
+  const source = String(mailto || '').trim()
+  if (!/^mailto:/i.test(source)) return ''
+  const separator = source.indexOf('?')
+  const rawRecipient = source.slice(7, separator < 0 ? undefined : separator)
+  const rawQuery = separator < 0 ? '' : source.slice(separator + 1)
+  try {
+    const mail = new URLSearchParams(rawQuery)
+    const gmail = new URLSearchParams({ view: 'cm', fs: '1' })
+    const to = [decodeURIComponent(rawRecipient), ...mail.getAll('to')].filter(Boolean).join(',')
+    if (to) gmail.set('to', to)
+    for (const [from, target] of [['cc', 'cc'], ['bcc', 'bcc'], ['subject', 'su'], ['body', 'body']]) {
+      const values = mail.getAll(from).filter(Boolean)
+      if (values.length) gmail.set(target, values.join(','))
+    }
+    return `https://mail.google.com/mail/?${gmail.toString()}`
+  } catch {
+    return ''
+  }
+}
+
 export function whatsappShareUrl(text) {
   return `https://wa.me/?text=${encodeURIComponent(text || '')}`
 }

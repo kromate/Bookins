@@ -30,7 +30,8 @@ import {
   isTimeOff,
   listCalendarEvents,
   ownerStaff,
-  rescheduleBooking,
+  rescheduleBookingWithCalendar,
+  syncBookingCalendar,
   saveBookingNotes,
   servicesForStaff,
   setBookingStatus,
@@ -38,7 +39,7 @@ import {
   teamMembers,
 } from '../booking.js'
 import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.js'
-import { composeMessage } from '../messaging.js'
+import { composeMessage, gmailComposeUrl } from '../messaging.js'
 import { localFields, wallClockInstant } from '../scheduling.js'
 import { displayTimeZone } from '../time-display.js'
 import { isDemo, registerDemoGuard } from '../runtime.js'
@@ -118,7 +119,7 @@ const calendarHint = computed(() => {
   if (state === 'preview') return 'Not available in local preview. Launch Bookins from Goalmatic to connect Google Calendar.'
   if (state === 'demo') return 'Not available in the demo. Exit Demo and open Bookins from Goalmatic to connect Google Calendar.'
   if (state === 'unavailable') return message
-  if (state === 'not-connected') return 'Connect Google Calendar to see clashes and add bookings to your calendar. Nothing is written without your approval.'
+  if (state === 'not-connected') return 'Connect Google Calendar to see clashes and add bookings to your calendar.'
   if (state === 'error') return message || 'Google Calendar could not be checked right now.'
   return ''
 })
@@ -180,6 +181,7 @@ onMounted(loadCalendarStatus)
 watch(isDemo, loadCalendarStatus)
 
 const onCalendar = (booking) => Boolean(booking.calendar_event_id)
+const calendarNeedsSync = booking => onCalendar(booking) && ['pending', 'failed'].includes(booking.calendar_sync_status)
 const conflictTitles = (booking) => conflicts.value.get(booking.id) || []
 const needsCalendar = computed(() => realBookings.value.filter((item) => isUpcoming(item) && item.status === 'confirmed' && !onCalendar(item)))
 
@@ -210,6 +212,22 @@ async function addToCalendar(booking) {
   } finally {
     calendarBusy.value = false
   }
+}
+
+async function retryCalendarSync() {
+  if (!selected.value || calendarBusy.value || isDemo.value) return
+  clearBad()
+  calendarBusy.value = true
+  error.value = ''
+  detailNotice.value = ''
+  try {
+    const result = await syncBookingCalendar(selected.value)
+    await refresh()
+    if (result.state === 'updated') detailNotice.value = 'Google Calendar is up to date.'
+    else error.value = result.message || 'Google Calendar still needs updating.'
+  } catch (reason) {
+    error.value = describeError(reason, 'The Calendar update could not be retried.')
+  } finally { calendarBusy.value = false }
 }
 
 async function addAllToCalendar() {
@@ -281,14 +299,18 @@ const isPast = (booking) => !isCancelled(booking) && endMs(booking) <= now.value
 const canCancel = (booking) => isUpcoming(booking)
 
 watch(
-  () => [route.query.q, route.query.email, route.query.staff],
-  ([q, email, staff]) => {
+  () => [route.query.q, route.query.email, route.query.staff, route.query.tab, route.query.from, route.query.to],
+  ([q, email, staff, tab, from, to]) => {
     const text = (value) => (Array.isArray(value) ? value[0] : value) || ''
     if (route.path !== '/bookings') return
     query.value = String(text(q))
     emailFilter.value = String(text(email)).trim().toLowerCase()
     staffFilter.value = String(text(staff))
-    if (q || email || staff) activeTab.value = 'all'
+    const requestedTab = String(text(tab))
+    if (['upcoming', 'past', 'completed', 'no_show', 'cancelled', 'all'].includes(requestedTab)) activeTab.value = requestedTab
+    else if (q || email || staff) activeTab.value = 'all'
+    fromDate.value = /^\d{4}-\d{2}-\d{2}$/.test(String(text(from))) ? String(text(from)) : ''
+    toDate.value = /^\d{4}-\d{2}-\d{2}$/.test(String(text(to))) ? String(text(to)) : ''
   },
   { immediate: true },
 )
@@ -642,6 +664,7 @@ const phoneProblem = computed(() =>
   selected.value?.guest_phone ? 'This phone number could not be read as an international number. Edit it in your phone app, or copy the message.' : 'No phone on this booking, so WhatsApp and SMS are not available.',
 )
 const emailUsable = computed(() => Boolean(composed.value?.email) && hasRealEmail(selected.value?.guest_email))
+const gmailUrl = computed(() => gmailComposeUrl(composed.value?.email))
 function openMessage(kind) {
   messageKind.value = kind
   messageNotice.value = ''
@@ -855,12 +878,12 @@ async function submitReschedule() {
   try {
     const id = selected.value.id
     const hadEvent = onCalendar(selected.value)
-    await rescheduleBooking(state, selected.value, when.at)
+    const outcome = await rescheduleBookingWithCalendar(state, selected.value, when.at)
     await refresh()
     reselect(id)
     rescheduling.value = false
     messageKind.value = 'reschedule'
-    detailNotice.value = `Booking moved. The old time is free again.${hadEvent ? ' Its Google Calendar event was not moved. Change or delete it in Google Calendar yourself.' : ''} Message the client below so they know. Bookins does not send it for you.`
+    detailNotice.value = `Booking moved. The old time is free again.${hadEvent ? outcome.calendar.state === 'updated' ? ' Google Calendar was updated too.' : ' Google Calendar still needs updating. Use Retry Calendar update below.' : ''} Message the client below so they know. Bookins does not send it for you.`
     scrollDetailTop()
   } catch (reason) {
     rescheduleError.value = describeError(reason, 'The booking could not be moved.')
@@ -1023,7 +1046,7 @@ function discardDialog() {
 }
 const cancelMessage = computed(() => {
   const base = 'The appointment stays in history and the slot reopens. Bookins does not send a cancellation message; afterwards you can open one in your own WhatsApp, SMS, or email.'
-  return selected.value && onCalendar(selected.value) ? `${base} Its Google Calendar event will be renamed "Cancelled: ..." (needs your approval); if that fails the booking is still cancelled and you will be told.` : base
+  return selected.value && onCalendar(selected.value) ? `${base} Its Google Calendar event will be marked cancelled, shown as free time, and have reminders disabled. If that fails, the booking stays cancelled and you can retry the Calendar update.` : base
 })
 
 async function cancel() {
@@ -1041,9 +1064,9 @@ async function cancel() {
     const calendarState = outcome.calendar.state
     detailNotice.value =
       calendarState === 'updated'
-        ? 'Booking cancelled and the slot reopened. The Google Calendar event is marked as cancelled.'
+        ? 'Booking cancelled and the slot reopened. The Google Calendar event is marked cancelled, shows free time, and has no reminders.'
         : calendarState === 'failed'
-          ? `Booking cancelled and the slot reopened, but the Google Calendar event was not updated (${outcome.calendar.message}). Update or delete it in Google Calendar.`
+          ? `Booking cancelled and the slot reopened, but the Google Calendar event was not updated (${outcome.calendar.message}). Use Retry Calendar update below.`
           : calendarState === 'skipped'
             ? 'Booking cancelled and the slot reopened. Its Google Calendar event was not changed because Calendar is unavailable here; update it in Google Calendar.'
             : 'Booking cancelled and the slot reopened.'
@@ -1098,10 +1121,10 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
         <strong>
           <AppIcon name="calendar" :size="18" /> Google Calendar
           <span class="chip dot" :class="calendarConnected ? 'confirmed' : 'neutral'">{{ calendarConnected ? 'Connected' : calendar.state === 'loading' ? 'Checking' : 'Not connected' }}</span>
-          <GmHint text="Optional. Bookins reads your calendar only to flag clashes, and adds a booking as an event only when you ask, with your approval each time. It never invites the client." label="About Google Calendar" />
+          <GmHint text="Optional. Add a booking to Google Calendar when you choose. Later moves and cancellations update its linked event. Goalmatic may request approval according to your workspace policy. Clients are never invited." label="About Google Calendar" />
         </strong>
         <p v-if="calendarHint" class="muted">{{ calendarHint }}</p>
-        <p v-else-if="calendarConnected" class="muted">Add confirmed bookings to your calendar yourself. Each write asks for your approval and invites no one. Bookings that clash with other events are flagged.</p>
+        <p v-else-if="calendarConnected" class="muted">Add bookings to Google Calendar when you choose. Linked events follow moves and cancellations. Clients are never invited.</p>
       </div>
       <div class="calendar-actions">
         <button v-if="calendar.state === 'not-connected'" class="primary small-button" type="button" :disabled="calendarBusy" @click="connectCalendar">{{ calendarBusy ? 'Connecting…' : 'Connect Google Calendar' }}</button>
@@ -1265,7 +1288,8 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
               <span v-if="team" class="chip staff-chip" :title="`With ${staffName(booking)}`"><i class="staff-dot" :style="{ background: staffColor(booking) }" aria-hidden="true" />{{ staffName(booking) }}</span>
               <span v-if="booking.source === 'owner'" class="chip accent">Added by you</span>
               <span v-if="isSeries(booking)" class="chip accent">Repeats weekly</span>
-              <span v-if="onCalendar(booking) && !isCancelled(booking)" class="chip success">On calendar</span>
+              <span v-if="calendarNeedsSync(booking)" class="chip warning">Calendar needs updating</span>
+              <span v-else-if="onCalendar(booking) && !isCancelled(booking)" class="chip success">Linked to Calendar</span>
               <template v-if="conflictTitles(booking).length">
                 <span class="chip warning">Clashes with calendar</span>
                 <GmHint :text="`This booking overlaps another event on your Google Calendar: ${conflictTitles(booking).join(', ')}. Check it, or move one of them.`" label="About the calendar clash" />
@@ -1400,7 +1424,11 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
           Overlaps on your Google Calendar: {{ conflictTitles(selected).join(', ') }}.
           <GmHint text="Your Google Calendar has another event at the same time as this booking. Check it, or reschedule one of them." label="About the calendar clash" />
         </p>
-        <p v-if="onCalendar(selected)" class="muted">On Google Calendar{{ isCancelled(selected) ? '. The event was marked cancelled when this booking was cancelled, if Calendar was available.' : '.' }}</p>
+        <div v-if="calendarNeedsSync(selected)" class="notice warning" role="status">
+          <span>{{ selected.calendar_sync_error || 'This booking changed. Its Google Calendar event still needs updating.' }}</span>
+          <GmButton variant="secondary" :pending="calendarBusy" :disabled="isDemo" @click="retryCalendarSync">Retry Calendar update</GmButton>
+        </div>
+        <p v-else-if="onCalendar(selected)" class="muted">{{ selected.calendar_sync_status === 'synced' ? isCancelled(selected) ? 'Calendar updated: free time, with reminders disabled.' : 'Google Calendar is up to date.' : 'Linked to Google Calendar.' }}</p>
 
         <section class="detail-section" aria-labelledby="guest-heading">
           <h3 id="guest-heading">Guest</h3>
@@ -1455,8 +1483,11 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
               <GmHint v-if="composed.sms" wrap text="Opens the SMS app on this device with the message filled in. You press send there." v-slot="{ describedby }">
                 <a class="secondary small-button link-button" :href="composed.sms" :aria-describedby="describedby" @click="openedApp('SMS')">Open SMS</a>
               </GmHint>
-              <GmHint v-if="emailUsable" wrap text="Opens your own email app with the message filled in. You press send there." v-slot="{ describedby }">
-                <a class="secondary small-button link-button" :href="composed.email" :aria-describedby="describedby" @click="openedApp('your email app')">Open email</a>
+              <GmHint v-if="emailUsable" wrap text="Opens your own mail app with the message filled in. You press send there." v-slot="{ describedby }">
+                <a class="secondary small-button link-button" :href="composed.email" :aria-describedby="describedby" @click="openedApp('your mail app')">Open mail app</a>
+              </GmHint>
+              <GmHint v-if="emailUsable" wrap text="Opens Gmail in your browser with this message filled in. You press send there." v-slot="{ describedby }">
+                <a class="secondary small-button link-button" :href="gmailUrl" target="_blank" rel="noopener noreferrer" :aria-describedby="describedby" @click="openedApp('Gmail')">Open Gmail</a>
               </GmHint>
               <button class="secondary small-button" type="button" @click="copyMessage">Copy message</button>
             </div>
@@ -1469,7 +1500,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
         <form v-if="rescheduling && canMove(selected)" class="panel-box" @submit.prevent="requestMove">
           <h3>Reschedule</h3>
           <p class="muted">Times are in {{ zoneName(moveZone) }}. The booking keeps its {{ duration(selected) }} minute length. You will be warned if the new time is in the past or outside your weekly hours.</p>
-          <p v-if="onCalendar(selected)" class="muted">This booking is on your Google Calendar. Rescheduling here does not move that event; change it in Google Calendar yourself.</p>
+          <p v-if="onCalendar(selected)" class="muted">The linked Google Calendar event will move too. If Calendar cannot be updated, the booking stays saved and you can retry.</p>
           <div v-if="rescheduleError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ rescheduleError }}</div>
           <div class="field-row">
             <div class="field">

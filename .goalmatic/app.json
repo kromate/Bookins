@@ -8,9 +8,9 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, organise a small team, and keep client history together. You open prefilled WhatsApp, SMS or email messages yourself; Bookins does not send them. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "releaseType": "minor",
-  "releaseNotes": "A smoother, Cal-style booking page (month, week and column views, categories and search, team choice, WhatsApp share) and a workspace menu like Social Studio's, plus a longer guided tour. Adds Services CSV import and export with categories, sort order, rebook-after days and prep notes; team members with their own schedules and booking assignment; a message journey and a live Messages queue that you open yourself in your own WhatsApp, SMS or email app (Bookins sends nothing automatically); campaigns that build audiences from your booking history with opt-out, for you to open yourself (no delivery or open tracking; discounts are honoured by hand). New optional Tables: Team (staff) and Campaigns, with new capabilities staff-data and campaigns-data that you approve on update. New optional fields on services, bookings and contacts. The optional daily agenda email to you now also lists tomorrow's reminder links (to be proved on a real account). Guests are still not emailed and payments are unavailable. Also hides a local-development notice that appeared on hosted booking pages.",
+  "releaseNotes": "Improves workspace navigation, weekly-hours editing and mobile forms. Adds direct Gmail compose, clearer campaign previews and reporting labels, bounded availability recovery, linked Calendar reschedule/cancellation with retry, and owner agenda controls. Improves session persistence diagnostics. Calendar updates need the matching Goalmatic platform release; new schedule-status access is optional and subject to installation consent.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -334,7 +334,8 @@
       "description": "Installs one scheduled workflow (off until you turn it on) that emails the account owner today's appointments, new bookings and tomorrow's prefilled reminder links each morning. Guests are not emailed.",
       "operations": [
         "workflows.run",
-        "workflows.schedule-configure"
+        "workflows.schedule-configure",
+        "workflows.schedule-status"
       ],
       "required": false,
       "logicalResourceId": "owner-daily-agenda"
@@ -730,6 +731,21 @@
             "id": "rebook_opened_at",
             "name": "Rebook message opened at",
             "type": "date"
+          },
+          {
+            "id": "calendar_sync_status",
+            "name": "Calendar sync status",
+            "type": "select",
+            "options": [
+              "pending",
+              "synced",
+              "failed"
+            ]
+          },
+          {
+            "id": "calendar_sync_error",
+            "name": "Calendar sync error",
+            "type": "textarea"
           }
         ]
       },

@@ -17,7 +17,7 @@
   --muted: #5d6578; /* 5.9:1 on white; was #697087 */
   --muted-soft: #f1f3f8; /* a light surface tint (was a dark #6b7388 that made text on it unreadable); use --muted for text */
   --surface: #ffffff;
-  --surface-soft: #f8f9fc;
+  --surface-soft: #f7f8fa;
   --surface-blue: #f4f6ff;
   --line: #e6e8f0;
   --line-strong: #cfd4e2;
@@ -72,7 +72,7 @@
   --focus-ring: 0 0 0 3px rgba(35, 54, 220, 0.85);
 
   /* Layout */
-  --sidebar: 252px;
+  --sidebar: 248px;
   --topbar-h: 64px;
   --bottom-nav-h: 68px;
   --page-gutter: var(--space-6);
@@ -250,15 +250,16 @@ p {
   inset: 0 auto 0 0;
   z-index: 50;
   width: var(--sidebar);
-  padding: 20px 16px 0;
+  padding: 20px 14px 0;
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
-  background: var(--surface);
+  background: #fcfcfd;
   border-right: 1px solid var(--line);
 }
 .sidebar-brand {
+  flex: none;
   min-height: 44px;
   padding: 0 8px;
   display: flex;
@@ -266,6 +267,10 @@ p {
   justify-content: space-between;
   text-decoration: none;
 }
+.sidebar-identity { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.sidebar-identity > span:last-child { display: grid; gap: 3px; color: var(--ink); font-size: 18px; font-weight: 750; letter-spacing: -0.035em; line-height: 1.15; }
+.sidebar-identity small { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: 0; }
+.sidebar-navigation { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 2px 12px; scrollbar-width: thin; }
 .sidebar-close {
   display: none;
   width: 44px;
@@ -280,12 +285,12 @@ p {
   margin: 0 11px 6px;
   color: var(--muted);
   font-size: var(--text-xs);
-  font-weight: 700;
-  letter-spacing: 0.1em;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 .side-nav {
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 .side-nav a {
   position: relative;
@@ -299,7 +304,7 @@ p {
   border-radius: var(--radius-sm);
   text-decoration: none;
   font-size: var(--text-sm);
-  font-weight: 650;
+  font-weight: 500;
   transition:
     color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),
@@ -311,43 +316,31 @@ p {
 }
 .side-nav a.router-link-active {
   color: var(--accent);
-  border-color: var(--accent-line);
+  border-color: transparent;
   background: var(--accent-soft);
-}
-.side-nav a.router-link-active::before {
-  content: '';
-  position: absolute;
-  left: -17px;
-  width: 3px;
-  height: 22px;
-  border-radius: 0 4px 4px 0;
-  background: var(--accent);
+  font-weight: 650;
 }
 .sidebar-divider {
   height: 1px;
   margin: 16px 8px;
   background: var(--line);
 }
-.sidebar-spacer {
-  flex: 1;
-  min-height: 8px;
-}
-/* The bottom actions (booking link, credits, walkthrough, Back to Apps, status) stay pinned to the bottom of the
-   sidebar: only the navigation above them scrolls on short screens, so they are always reachable. */
+/* Navigation scrolls independently; utility controls stay reachable on short screens. */
 .sidebar-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  margin: 0 -16px;
-  padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
-  background: var(--surface);
+  flex: none;
+  max-height: 46dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -14px;
+  padding: 10px 14px max(10px, env(safe-area-inset-bottom));
+  background: #fcfcfd;
   border-top: 1px solid var(--line);
 }
 .share-card {
-  padding: 8px 10px 9px 12px;
-  border: 1px solid #dce1ff;
-  border-radius: var(--radius);
-  background: linear-gradient(145deg, #f7f8ff, #eef1ff);
+  padding: 0 0 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 .share-card-header {
   display: flex;
@@ -377,16 +370,16 @@ p {
 }
 .share-card-actions button,
 .share-card-actions a {
-  width: 32px;
-  min-height: 32px;
-  height: 32px;
+  width: 40px;
+  min-height: 44px;
+  height: 44px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   color: var(--accent);
-  border: 1px solid #d6dcff;
+  border: 0;
   border-radius: var(--radius-sm);
   background: #fff;
   text-decoration: none;
@@ -603,8 +596,8 @@ p {
   color: var(--accent);
   font-size: var(--text-sm);
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .lede,
 .muted {
@@ -668,8 +661,8 @@ a.card:hover,
   color: var(--muted);
   font-size: var(--text-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 .metric {
   margin-top: 8px;
@@ -690,7 +683,8 @@ a.card:hover,
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--space-4);
 }
-.stat-tile {
+.stat-tile,
+a.card.stat-tile {
   padding: var(--space-4) var(--space-5);
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1707,12 +1701,15 @@ a.list-row:hover,
     background: var(--surface);
     box-shadow: var(--shadow-lg);
   }
+  .more-heading { display: flex; align-items: center; justify-content: space-between; }
+  .more-heading h2 { color: var(--ink); font-size: var(--text-lg); margin: 0; }
+  .more-pages { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
   .more-sheet h2 {
     margin: 0 var(--space-2) var(--space-2);
     color: var(--muted);
     font-size: var(--text-xs);
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0;
+    text-transform: none;
   }
   .more-sheet a {
     min-height: 52px;
@@ -1736,14 +1733,10 @@ a.list-row:hover,
   .sticky-save-bar {
     bottom: calc(var(--bottom-nav-h) + var(--space-2) + env(safe-area-inset-bottom));
   }
-  /* Keep the feedback launcher clear of the bottom nav and page actions. */
-  /* The launcher lives inside the bottom bar (the bar keeps a free slot on its right), so it never covers page content. */
+  /* Keep every navigation destination readable; feedback sits above the navigation. */
   [data-feedback-widget] {
-    --launcher-edge-y: calc((var(--bottom-nav-h) - 56px) / 2 + env(safe-area-inset-bottom)) !important;
+    --launcher-edge-y: calc(var(--bottom-nav-h) + 12px + env(safe-area-inset-bottom)) !important;
     --launcher-edge-x: calc(8px + env(safe-area-inset-right)) !important;
-  }
-  .mobile-bottom-nav {
-    padding-right: calc(8px + 64px + env(safe-area-inset-right));
   }
 }
 
@@ -1810,10 +1803,17 @@ a.list-row:hover,
   }
 }
 
-@media (max-width: 400px) {
-  .stat-grid {
-    grid-template-columns: 1fr;
-  }
+@media (max-width: 480px) {
+  .stat-tile, a.card.stat-tile { padding: 16px; grid-template-columns: minmax(0, 1fr); }
+  .stat-tile .icon-tile { display: none; }
+  .stat-tile .label { min-height: 32px; }
+  .stat-tile .metric { margin-top: 4px; }
+  .stat-tile .metric-sub { line-height: 1.4; }
+}
+@media (max-width: 360px) {
+  .topbar { padding-inline: 8px; gap: 6px; }
+  .topbar .preview-pill { padding-inline: 7px; font-size: 11px; }
+  .topbar .preview-pill > .app-icon { display: none; }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -1993,6 +1993,7 @@ body.bookins-tour-open { padding-bottom: var(--tour-pad, 0px); }
 body:has(.gm-dialog-overlay) [data-feedback-widget],
 body:has(.more-sheet) [data-feedback-widget],
 body:has(.sidebar.open) [data-feedback-widget],
+body:has(.sticky-save-bar) [data-feedback-widget],
 body.bookins-tour-open [data-feedback-widget] { display: none !important; }
 /* Feedback launcher (fixed, bottom-right, ~56px + 24px inset) must never sit on page content.
    Desktop: reserve a right gutter so cards, "View history" links and sticky save bars end before the launcher.
@@ -2064,26 +2065,26 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
 .has-more-left.has-more-right { -webkit-mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent); }
 
 /* ---------- Shell: workspace dropdown, credits pill, sidebar links (Social Studio pattern) ---------- */
-.ws-switcher { position: relative; margin: 16px 0 18px; }
-.ws-card { width: 100%; min-height: 58px; margin: 0; padding: 8px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ws-switcher { position: relative; z-index: 3; flex: none; margin: 20px 0 18px; }
+.ws-card { width: 100%; min-height: 58px; margin: 0; padding: 8px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .ws-card:disabled { cursor: default; opacity: 0.7; }
 .ws-card:focus-visible, .ws-menu button:focus-visible, .ws-menu .ws-link:focus-visible, .sidebar-link:focus-visible, .credits-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .ws-switcher.inline .ws-card { cursor: default; }
-.ws-avatar { width: 36px; height: 36px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: 50%; background: linear-gradient(145deg, #4154ef, #2336dc); color: #fff; font-size: var(--text-xs); font-weight: 800; }
+.ws-avatar { width: 36px; height: 36px; flex: none; display: grid; place-items: center; overflow: hidden; border-radius: 50%; background: var(--accent); color: #fff; font-size: var(--text-xs); font-weight: 800; }
 .ws-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .ws-copy { min-width: 0; flex: 1; display: grid; }
-.ws-copy strong { overflow: hidden; color: var(--ink); font-size: 0.8125rem; text-overflow: ellipsis; white-space: nowrap; }
+.ws-copy strong { overflow: hidden; color: var(--ink); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
 .ws-copy small { overflow: hidden; color: var(--muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .ws-chevron { flex: none; color: var(--muted); transform: rotate(90deg); transition: transform var(--dur-fast) var(--ease); }
 .ws-card[aria-expanded='true'] .ws-chevron { transform: rotate(-90deg); }
-.ws-menu { position: absolute; z-index: 80; top: calc(100% + 6px); left: 0; right: 0; box-sizing: border-box; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); }
+.ws-menu { position: absolute; z-index: 80; top: calc(100% + 6px); left: 0; right: 0; box-sizing: border-box; max-height: min(480px, 65dvh); overflow-y: auto; overscroll-behavior: contain; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow-lg); }
 .ws-switcher.inline .ws-menu { position: static; margin-top: 6px; box-shadow: none; }
 .ws-menu button, .ws-menu .ws-link { width: 100%; min-height: 44px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 0; border-radius: 8px; background: transparent; color: var(--ink); font: inherit; font-size: var(--text-sm); text-align: left; text-decoration: none; cursor: pointer; }
 .ws-menu button:hover:not(:disabled), .ws-menu .ws-link:hover, .ws-menu button.selected { background: var(--accent-soft); color: var(--accent); }
 .ws-menu button:disabled { cursor: default; opacity: 0.6; }
 .ws-menu .app-icon { flex: none; color: var(--accent); }
 .ws-mode-copy { margin-right: auto; }
-.ws-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: #d93d48; }
+.ws-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--accent); }
 .ws-divider { height: 1px; margin: 6px 0; border: 0; background: var(--line); }
 .ws-heading { margin: 0; padding: 4px 10px; color: var(--muted); font-size: var(--text-xs); font-weight: 650; }
 .ws-options { max-height: min(280px, 40dvh); overflow-y: auto; overscroll-behavior: contain; }
@@ -2093,7 +2094,7 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
 @keyframes ws-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .ws-spinner { animation-duration: 2.4s; } }
 .credits-pill-wrap { margin-top: 12px; }
-.credits-pill { width: 100%; min-height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 6px; white-space: nowrap; border: 1px solid var(--accent-line); border-radius: 12px; background: var(--accent-soft); color: var(--accent); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.credits-pill { width: 100%; min-height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 6px; white-space: nowrap; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--accent); font: inherit; font-size: var(--text-sm); cursor: pointer; }
 .credits-pill strong { color: var(--ink); }
 .credits-pill span { margin-right: auto; color: var(--ink-soft); }
 .credits-chevron { flex: none; transform: rotate(90deg); }
@@ -2106,6 +2107,7 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
 .credits-panel a { min-height: 32px; display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 650; text-decoration: none; }
 .sidebar-links { margin-top: 8px; display: grid; gap: 2px; }
 .sidebar-link { width: 100%; min-height: 44px; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--ink-soft); font: inherit; font-size: var(--text-sm); font-weight: 600; text-align: left; text-decoration: none; cursor: pointer; }
+.sidebar-link.router-link-active { color: var(--accent); background: var(--accent-soft); }
 .sidebar-link:hover { background: var(--accent-faint); color: var(--accent); }
 @media (max-width: 900px) {
   .more-sheet { max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
@@ -2121,7 +2123,7 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
   .ws-switcher { margin: 8px 0 10px; }
   .sidebar-divider { margin: 8px 8px; }
   .side-nav { gap: 2px; }
-  .side-nav a { min-height: 38px; }
+  .side-nav a { min-height: 40px; }
   .nav-section-label { margin-bottom: 4px; }
   .sidebar-link { min-height: 38px; }
   .credits-pill { min-height: 38px; }
@@ -2146,7 +2148,7 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
    scoped `.link-button { min-height: 0 | 32px }` rules (an id in the selector) without !important. */
 @media (max-width: 900px), (pointer: coarse) {
   .sidebar .share-card-actions button,
-  .sidebar .share-card-actions a { width: 40px; height: 40px; min-height: 40px; }
+  .sidebar .share-card-actions a { width: 44px; height: 44px; min-height: 44px; }
   .runtime-retry { min-height: 40px; min-width: 40px; }
   :is(#main-content, .gm-dialog-content) :is(a, button).link-button,
   :is(#main-content, .gm-dialog-content) :is(a, button).small-button,
@@ -2174,3 +2176,9 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
 /* The local dev notice never floats over the navigation drawer or the More sheet. */
 body:has(.sidebar.open) [data-goalmatic-runtime-notice],
 body:has(.more-sheet) [data-goalmatic-runtime-notice] { display: none !important; }
+
+@media (pointer: coarse) {
+  .side-nav a, .sidebar-link, .share-card-actions button, .share-card-actions a { min-height: 44px; }
+  .share-card-actions button, .share-card-actions a { width: 44px; }
+}
+h1, h2, h3 { text-wrap: balance; }

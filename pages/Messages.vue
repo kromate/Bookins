@@ -8,7 +8,7 @@ import GmButton from '../components/ui/GmButton.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
 import { copyText, hasTeam, markMessageOpened, messageQueue, staffForBooking, teamMembers } from '../booking.js'
-import { CHANNELS, SLOT_LABELS } from '../messaging.js'
+import { CHANNELS, SLOT_LABELS, gmailComposeUrl } from '../messaging.js'
 import { isDemo } from '../runtime.js'
 import { useSetupState } from '../setup.js'
 
@@ -127,7 +127,7 @@ function dueNote(item) {
 }
 
 // ---- channels ----
-const CHANNEL_LABEL = { whatsapp: 'Open WhatsApp', sms: 'Open SMS', email: 'Open email' }
+const CHANNEL_LABEL = { whatsapp: 'Open WhatsApp', sms: 'Open SMS', email: 'Open mail app' }
 const channelsFor = (item) => [item.message.channel, ...CHANNELS.filter((channel) => channel !== item.message.channel)].filter((channel, index, list) => list.indexOf(channel) === index)
 const usableChannels = (item) => channelsFor(item).filter((channel) => item.links[channel])
 function unusableNote(item) {
@@ -141,6 +141,7 @@ function unusableNote(item) {
   return ''
 }
 const linkAttrs = (channel) => (channel === 'whatsapp' ? { target: '_blank', rel: 'noopener noreferrer' } : {})
+const gmailFor = (item) => gmailComposeUrl(item.links.email)
 
 // ---- row state ----
 const expanded = ref(new Set())
@@ -255,7 +256,7 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
       <div>
         <p class="eyebrow">Client messages</p>
         <h1>Messages</h1>
-        <p class="lede">Reminders, prep notes, thank-yous and rebook nudges for your clients, ready to open in your own WhatsApp, SMS or email app.</p>
+        <p class="lede">Reminders, prep notes, thank-yous and rebook nudges for your clients, ready to open in WhatsApp, SMS, Gmail or your mail app.</p>
       </div>
       <div class="page-header-actions">
         <RouterLink class="secondary" :to="{ path: '/settings', hash: '#settings-templates' }">
@@ -327,14 +328,16 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
             </div>
             <p class="batch-preview">{{ current.message.text }}</p>
             <div class="batch-actions">
-              <a
+              <template
                 v-for="(channel, index) in usableChannels(current)"
                 :key="channel"
+              ><a
                 :class="index === 0 ? 'primary' : 'secondary'"
                 :href="current.links[channel]"
                 v-bind="linkAttrs(channel)"
                 @click="openFromBatch(current)"
               >{{ CHANNEL_LABEL[channel] }}<AppIcon v-if="channel === 'whatsapp'" name="external" :size="15" /></a>
+              <a v-if="channel === 'email' && gmailFor(current)" class="secondary" :href="gmailFor(current)" target="_blank" rel="noopener noreferrer" @click="openFromBatch(current)">Open Gmail<AppIcon name="external" :size="15" /></a></template>
               <button class="ghost" type="button" @click="copyMessage(current)"><AppIcon name="copy" :size="16" />Copy message</button>
             </div>
             <p v-if="batch.opened.has(current.id)" class="batch-status ok"><AppIcon name="check" :size="15" />Opened by you{{ isDemo ? ' (Demo: not saved)' : '' }}. Press Next for the following message.</p>
@@ -381,13 +384,15 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
           </div>
           <div class="msg-actions">
             <template v-if="tab !== 'done'">
-              <div class="msg-channels"><a
+              <div class="msg-channels"><template
                 v-for="(channel, index) in usableChannels(item)"
                 :key="channel"
+              ><a
                 :class="index === 0 ? 'primary small' : 'secondary small'"
                 :href="item.links[channel]"
                 v-bind="linkAttrs(channel)"
-              >{{ CHANNEL_LABEL[channel] }}<AppIcon v-if="channel === 'whatsapp'" name="external" :size="14" /></a></div>
+              >{{ CHANNEL_LABEL[channel] }}<AppIcon v-if="channel === 'whatsapp'" name="external" :size="14" /></a>
+              <a v-if="channel === 'email' && gmailFor(item)" class="secondary small" :href="gmailFor(item)" target="_blank" rel="noopener noreferrer">Open Gmail<AppIcon name="external" :size="14" /></a></template></div>
               <div class="msg-tools">
               <GmButton variant="ghost" size="sm" @click="copyMessage(item)"><template #leading><AppIcon name="copy" :size="15" /></template>Copy message</GmButton>
               <GmButton
@@ -523,5 +528,6 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
   .queue-tools .field { flex: 1 1 140px; min-width: 0; }
   .batch-start { width: 100%; justify-content: center; }
   .batch-nav button { flex: 1; justify-content: center; }
+  .batch-actions a, .batch-actions button, .msg-channels a { flex: 1 1 auto; justify-content: center; }
 }
 </style>

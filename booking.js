@@ -273,13 +273,62 @@ function runtimeData() {
   throw new Error('Launch Bookins from Goalmatic to access this workspace.')
 }
 
+export async function readWithDeadline(request, milliseconds = 15000) {
+  let timeout
+  try {
+    return await Promise.race([
+      Promise.resolve().then(request),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          const error = new Error('This is taking too long. Please try again.')
+          error.code = 'BOOKING_READ_TIMEOUT'
+          reject(error)
+        }, milliseconds)
+      }),
+    ])
+  } finally { clearTimeout(timeout) }
+}
+
+const transientReadFailure = error =>
+  error?.code === 'BOOKING_READ_TIMEOUT' || error?.retryable === true || [408, 425, 429].includes(Number(error?.status)) || Number(error?.status) >= 500 ||
+  /failed to fetch|network|record loading failed|temporarily unavailable/i.test(error?.message || '')
+
+const tableReadError = (table, cause) => {
+  const labels = {
+    profiles: 'Booking profile',
+    schedules: 'Availability',
+    services: 'Services',
+    bookings: 'Bookings',
+    contacts: 'Contacts',
+    staff: 'Team',
+    campaigns: 'Campaigns',
+  }
+  const error = new Error(`${labels[table] || 'Workspace data'} could not load. ${cause?.message || 'Try again.'}`)
+  if (cause?.code) error.code = cause.code
+  if (cause?.retryable === true) error.retryable = true
+  if (cause?.status !== undefined) error.status = cause.status
+  return error
+}
+
 async function list(table) {
   const data = runtimeData()
   if (!data) return localTable(table)
   if (typeof data.fetchAll !== 'function') throw new Error('Relaunch Bookins to load complete workspace data.')
-  const result = await data.fetchAll(table, { pageSize: 200, maxPages: 50, maxRecords: 10000 })
+  const fetchRecords = () => readWithDeadline(() => data.fetchAll(table, { pageSize: 200, maxPages: 50, maxRecords: 10000 }))
+  let result
+  try {
+    result = await fetchRecords()
+  } catch (error) {
+    if (!transientReadFailure(error) || window.GoalmaticData !== data) throw tableReadError(table, error)
+    await new Promise(resolve => setTimeout(resolve, 350))
+    try {
+      result = await fetchRecords()
+    } catch (retryError) {
+      throw tableReadError(table, retryError)
+    }
+  }
   if (window.GoalmaticData !== data || result?.complete !== true || !Array.isArray(result.records)) {
-    throw new Error('Booking workspace data could not be loaded completely. Refresh before making changes.')
+    throw tableReadError(table, new Error('The runtime did not return a complete record set. Refresh before making changes.'))
   }
   return result.records
 }
@@ -429,6 +478,7 @@ export function cancelBooking(booking, reason) {
       reservation_key: `released:${booking.id}`,
       cancelled_at: new Date().toISOString(),
       cancellation_reason: reason || '',
+      ...(booking.calendar_event_id ? { calendar_sync_status: 'pending', calendar_sync_error: '' } : {}),
     }),
     [booking, reason],
   )
@@ -666,6 +716,7 @@ export function rescheduleBooking(state, booking, startsAt) {
           starts_at: begins,
           ends_at: ends,
           reservation_key: `${booking.schedule_id}|${begins}`,
+          ...(booking.calendar_event_id ? { calendar_sync_status: 'pending', calendar_sync_error: '' } : {}),
           status: 'confirmed',
           // A moved booking needs fresh reminders: forget that the old time's messages were opened.
           reminder_opened_at: '',
@@ -897,7 +948,7 @@ export async function loadGuestPage() {
 
 export async function loadGuestOpenings(serviceId, fromDate, throughDate) {
   if (!isLocalPreview())
-    return window.GoalmaticGuest.query('openings-list', { serviceId, fromDate, throughDate })
+    return readWithDeadline(() => window.GoalmaticGuest.query('openings-list', { serviceId, fromDate, throughDate }))
   return listServiceOpenings({
     services: localTable(TABLES.services),
     schedules: localTable(TABLES.schedules),
@@ -993,7 +1044,14 @@ export function calendarMode() {
 
 const NOT_CONNECTED = /CONNECTION_UNAVAILABLE|not connected|authorization expired|oauth is not configured/i
 export const isCalendarNotConnected = (error) =>
-  NOT_CONNECTED.test(`${error?.code || ''} ${error?.message || ''}`)
+  NOT_CONNECTED.test([
+    error?.code,
+    error?.data?.code,
+    error?.error?.code,
+    error?.message,
+    error?.data?.message,
+    error?.error?.message,
+  ].filter(Boolean).join(' '))
 
 function calendarErrorMessage(error, fallback) {
   if (isCalendarNotConnected(error)) return 'Google Calendar is not connected.'
@@ -1089,7 +1147,7 @@ export async function addBookingToCalendar(booking) {
     }
     if (!eventId) throw new Error('Google Calendar did not return the new event.')
     try {
-      await update(TABLES.bookings, booking.id, { calendar_event_id: eventId })
+      await update(TABLES.bookings, booking.id, { calendar_event_id: eventId, calendar_sync_status: 'synced', calendar_sync_error: '' })
     } catch {
       throw new Error(
         'The event was created in Google Calendar but Bookins could not save its link. Try again; the same event will be reused.',
@@ -1116,27 +1174,47 @@ export async function addBookingsToCalendar(bookings, onProgress) {
   return outcomes
 }
 
-/**
- * Cancels first (the authoritative step), then marks the Calendar event "Cancelled: ...".
- * The op schema has no transparency/free field, so only the title changes.
- * A Calendar failure never undoes the cancellation; it is returned as `calendar.state === 'failed'`.
- */
-export async function cancelBookingWithCalendar(booking, reason) {
-  await cancelBooking(booking, reason)
-  if (!booking.calendar_event_id) return { calendar: { state: 'none' } }
-  if (calendarMode() !== 'live') return { calendar: { state: 'skipped', message: stripNotice(calendarMode()) } }
-  try {
-    await runOwnerCall('markCalendarEventCancelled', () =>
-      window.GoalmaticApp.execute(
-        'integrations.google-calendar.event-update',
-        { eventId: booking.calendar_event_id, summary: `${CANCELLED_PREFIX}${calendarSummary(booking)}` },
-        { idempotencyKey: `bookins:calendar-cancel:${booking.id}` },
-      ),
-    )
-    return { calendar: { state: 'updated' } }
-  } catch (error) {
-    return { calendar: { state: 'failed', message: calendarErrorMessage(error, 'The Calendar event was not updated.') } }
+/** Reconcile an existing Calendar event to the saved booking. Failed writes remain retryable after reload. */
+export async function syncBookingCalendar(booking) {
+  if (!booking.calendar_event_id) return { state: 'none' }
+  if (calendarMode() !== 'live') return { state: 'skipped', message: stripNotice(calendarMode()) }
+  const cancelled = booking.status === 'cancelled'
+  const input = {
+    eventId: booking.calendar_event_id,
+    ...calendarEventInput(booking),
+    summary: `${cancelled ? CANCELLED_PREFIX : ''}${calendarSummary(booking)}`,
+    transparency: cancelled ? 'transparent' : 'opaque',
+    ...(cancelled ? { remindersEnabled: false } : {}),
   }
+  try {
+    await runOwnerCall('syncBookingCalendar', () => calendarExecute(
+      'integrations.google-calendar.event-update', input,
+      { idempotencyKey: `bookins:calendar-sync:${booking.id}:${booking.status}:${booking.starts_at}:${booking.ends_at}` },
+    ))
+  } catch (error) {
+    const message = calendarErrorMessage(error, 'Google Calendar could not be updated. Retry the Calendar update.')
+    await update(TABLES.bookings, booking.id, { calendar_sync_status: 'failed', calendar_sync_error: message }).catch(() => {})
+    return { state: 'failed', message }
+  }
+  try {
+    await update(TABLES.bookings, booking.id, { calendar_sync_status: 'synced', calendar_sync_error: '' })
+    return { state: 'updated' }
+  } catch {
+    const message = 'Google Calendar was updated, but Bookins could not save the sync result. Retry to confirm it.'
+    await update(TABLES.bookings, booking.id, { calendar_sync_status: 'failed', calendar_sync_error: message }).catch(() => {})
+    return { state: 'failed', message }
+  }
+}
+
+export async function cancelBookingWithCalendar(booking, reason) {
+  const saved = await cancelBooking(booking, reason)
+  return { calendar: await syncBookingCalendar({ ...booking, ...saved, status: 'cancelled' }) }
+}
+
+export async function rescheduleBookingWithCalendar(state, booking, startsAt) {
+  const saved = await rescheduleBooking(state, booking, startsAt)
+  const moved = { ...booking, ...saved }
+  return { booking: moved, calendar: await syncBookingCalendar(moved) }
 }
 
 /** Timed events from the owner's calendar in [from, to), in <=31-day calls, up to three calls ahead. */
@@ -1185,29 +1263,34 @@ export function findCalendarConflicts(bookings, events) {
 
 /**
  * Guest busy ranges for the booking page. NOT authoritative: it only hides openings in the browser.
- * `booking.create` does not check Calendar. Any failure (not connected, runtime, range) returns null.
+ * `booking.create` does not check Calendar. Callers must surface unavailable and failed checks.
  */
-export async function loadGuestCalendarBusy(fromMs, toMs) {
-  if (isLocalPreview() || typeof window.GoalmaticGuest?.query !== 'function') return null
+export async function loadGuestCalendarCheck(fromMs, toMs) {
+  if (isLocalPreview() || typeof window.GoalmaticGuest?.query !== 'function') return { state: 'unavailable', busy: [] }
   try {
     const busy = []
     for (let cursor = fromMs; cursor < toMs; cursor += CALENDAR_RANGE_DAYS * 86_400_000) {
-      const result = await window.GoalmaticGuest.query('calendar-busy', {
+      const result = await readWithDeadline(() => window.GoalmaticGuest.query('calendar-busy', {
         timeMin: new Date(cursor).toISOString(),
         timeMax: new Date(Math.min(toMs, cursor + CALENDAR_RANGE_DAYS * 86_400_000)).toISOString(),
-      })
+      }), 3500)
       const ranges = unwrap(result)?.busy
-      if (!Array.isArray(ranges)) return null
+      if (!Array.isArray(ranges)) return { state: 'failed', busy: [] }
       for (const range of ranges) {
         const start = Date.parse(range?.start)
         const end = Date.parse(range?.end)
         if (Number.isFinite(start) && Number.isFinite(end)) busy.push({ start, end })
       }
     }
-    return busy
-  } catch {
-    return null
+    return { state: 'checked', busy }
+  } catch (error) {
+    return { state: isCalendarNotConnected(error) ? 'unavailable' : 'failed', busy: [] }
   }
+}
+
+export async function loadGuestCalendarBusy(fromMs, toMs) {
+  const result = await loadGuestCalendarCheck(fromMs, toMs)
+  return result.state === 'checked' ? result.busy : null
 }
 
 export function openingOverlapsBusy(opening, busy) {
