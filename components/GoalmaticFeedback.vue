@@ -142,12 +142,18 @@ function mountReceiver() {
         return local || { config: effectiveConfig.value, user, onSubmit: submit, onAsk: null }
       },
     })
+    // On phones the App's More menu owns the launcher, so it cannot cover page actions.
+    const mobileStyle = document.createElement('style')
+    mobileStyle.textContent = '@media (max-width:900px){.launcher{display:none!important}.panel{bottom:calc(76px + env(safe-area-inset-bottom));max-height:calc(100dvh - 100px)}}'
+    widget.host.shadowRoot?.append(mobileStyle)
   } catch (cause) {
     widget?.destroy?.()
     widget = null
     error.value = cause?.message || 'Feedback could not open.'
   }
 }
+defineExpose({ open: () => { mountReceiver(); widget?.open() } })
+
 function refreshDiscovery() { if (visible.value) void discover({ force: true }) }
 function reset() {
   discoveryGeneration += 1

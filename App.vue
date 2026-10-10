@@ -31,6 +31,11 @@ const menuOpen = ref(false)
 const sideMenu = ref(null)
 const closeWorkspaceMenus = () => sideMenu.value?.close?.()
 const tour = ref(null)
+const feedback = ref(null)
+async function openFeedback() {
+  await toggleMore(false)
+  feedback.value?.open()
+}
 function focusMain() {
   document.getElementById('main-content')?.focus()
 }
@@ -923,6 +928,7 @@ onMounted(async () => {
         <CreditsPill v-if="!isDemo" id-prefix="sheet-credits" />
         <hr />
         <h2>Help</h2>
+        <button type="button" class="more-item" @click="openFeedback"><AppIcon name="messages" :size="20" />Feedback and help</button>
         <button type="button" class="more-item" @click="startTour"><AppIcon name="help" :size="20" />Take a walkthrough</button>
         <a class="more-item" :href="APPS_URL" target="_blank" rel="noopener" @click="moreOpen = false"><AppIcon name="back" :size="20" />Back to Apps</a>
         <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="20" />Contact support</a>
@@ -953,7 +959,7 @@ onMounted(async () => {
     </div>
   </div>
 
-  <GoalmaticFeedback v-if="!isPublicRoute" />
+  <GoalmaticFeedback v-if="!isPublicRoute" ref="feedback" />
 </template>
 
 <style scoped>
