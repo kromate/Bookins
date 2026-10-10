@@ -2148,6 +2148,12 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-info { padding: 22px; border-right: 0; border-bottom: 1px solid var(--line); }
   .bk-tz { margin-top: 10px; }
   .bk-details { max-width: none; padding: 28px; }
+  .bk-viewbar { flex-direction: column; align-items: stretch; }
+  .bk-view-heading, .bk-view-tools, .bk-range { min-width: 0; max-width: 100%; }
+  .bk-view-heading p { white-space: normal; }
+  .bk-view-tools { flex-wrap: wrap; justify-content: flex-start; }
+  .bk-range { width: 100%; flex-wrap: wrap; justify-content: space-between; }
+  .bk-range h3 { min-width: 0; overflow-wrap: anywhere; }
 }
 
 /* ---- tablet / mobile: info -> slots-first strip -> times; month in a bottom sheet ---- */
@@ -2172,12 +2178,13 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-tz-pop { bottom: auto; top: calc(100% - 2px); }
   .bk-grid.stage-details .bk-desc { display: none; }
   .bk-schedule { grid-template-columns: 1fr; grid-template-rows: none; }
-  .bk-viewbar { padding: 16px 16px 10px; min-height: 0; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+  .bk-viewbar { padding: 16px 16px 10px; min-height: 0; flex-direction: column; align-items: stretch; gap: 12px; }
   .bk-view-heading { min-width: 0; flex: 1 1 100%; }
   .bk-view-heading h2 { font-size: 20px; }
-  .bk-view-heading p { max-width: 100%; }
-  .bk-view-tools { width: 100%; justify-content: space-between; gap: 8px; }
-  .bk-range { justify-content: flex-start; }
+  .bk-view-heading p { max-width: 100%; white-space: normal; }
+  .bk-view-tools { width: 100%; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+  .bk-range { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: space-between; }
+  .bk-range h3 { min-width: 0; overflow-wrap: anywhere; }
   .bk-strip { padding: 4px 12px 12px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
   .bk-sd {
     min-height: 66px; padding: 6px 0; display: grid; justify-items: center; align-content: center; gap: 1px; color: var(--soft);
