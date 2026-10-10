@@ -1249,7 +1249,7 @@ onBeforeUnmount(() => {
       <GuestBookingManagement
         v-if="managementSession"
         :booking-id="managementSession.bookingId"
-        :management-token="managementSession.managementToken"
+        v-bind="{ managementToken: managementSession.managementToken }"
         :initial-booking="managementInitialBooking"
         :initial-mode="managementInitialMode"
         :locale="locale"
