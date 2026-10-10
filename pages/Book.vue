@@ -3,16 +3,22 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import { initLocale, intlLocale, locale, setLocale, t } from '../i18n/guest.js'
 import AppIcon from '../components/AppIcon.vue'
 import BookinsLogo from '../components/BookinsLogo.vue'
+import GuestBookingManagement from '../components/GuestBookingManagement.vue'
 import { demoGuestApi } from '../demo/guest.js'
 import {
   isLocalPreview,
+  buildGuestManagementLink,
+  copyText,
   loadGuestCalendarCheck,
   loadGuestOpenings,
   loadGuestPage,
   openingOverlapsBusy,
   readWithDeadline,
+  readGuestManagementLink,
+  clearGuestManagementLink,
   submitGuestBooking,
 } from '../booking.js'
+import { bookingTheme, normalizeBookingAppearance } from '../booking-appearance.js'
 import { filterGroups, LAYOUTS, parseBio, readPageParams, slugify, teamRows } from '../guest-page.js'
 import { groupServices, presentService } from '../service-meta.js'
 import {
@@ -28,6 +34,7 @@ import {
 } from '../time-display.js'
 
 const props = defineProps({ demoPreview: { type: Boolean, default: false } })
+const initialManagementSession = readGuestManagementLink()
 initLocale()
 
 const MAX_RANGE_DAYS = 31
@@ -39,10 +46,11 @@ const SESSION_TTL = 5 * 60_000
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 const PHONE_PATTERN = /^[+()\-.\s\d]{6,40}$/
 
-// Display options and prefill from the link: ?name=&email=&phone=&layout=month|week|column&theme=light|dark&service=
+// Display options and prefill from the link. Valid query appearance values override the owner's saved defaults.
 const params = readPageParams(typeof window === 'undefined' ? '' : window.location.search)
-const theme = params.theme || 'light'
-const layoutPref = ref(params.layout || 'month')
+const queryAppearance = normalizeBookingAppearance({ theme: params.theme || undefined, layout: params.layout || undefined })
+const theme = ref(params.theme ? queryAppearance.theme : 'indigo')
+const layoutPref = ref(params.layout ? queryAppearance.layout : 'month')
 
 const loading = ref(true)
 const pageError = ref(null) // { kind, retry }
@@ -52,6 +60,10 @@ const selectedSlot = ref(null)
 const pendingSlot = ref(null) // small screens: a tapped time waits for the sticky Continue bar
 const submitting = ref(false)
 const confirmation = ref(null)
+const managementSession = ref(initialManagementSession)
+const managementInitialBooking = ref(null)
+const managementInitialMode = ref('summary')
+const managementLinkCopied = ref(false)
 const notes = ref('')
 const contact = reactive({ name: params.name, email: params.email, phone: params.phone })
 const touched = reactive({ name: false, email: false, phone: false })
@@ -865,6 +877,9 @@ async function start() {
     }
     const result = await (props.demoPreview ? demoGuestApi.loadGuestPage() : loadGuestPage())
     page.value = { ...result, services: Array.isArray(result?.services) ? result.services : [], profile: result?.profile || {} }
+    const savedAppearance = normalizeBookingAppearance(page.value.profile.bookingAppearance)
+    theme.value = params.theme ? queryAppearance.theme : savedAppearance.theme
+    layoutPref.value = params.layout ? queryAppearance.layout : savedAppearance.layout
     // A service-subject link returns exactly one service (including private ones): skip straight to times.
     if (page.value.services.length === 1) await choose(presentService(page.value.services[0]))
     else await openFromParam()
@@ -978,7 +993,7 @@ async function submit() {
   submitAttempted.value = true
   if (fieldErrors.value.name || fieldErrors.value.email || fieldErrors.value.phone) {
     await nextTick()
-    document.querySelector('.guest-form [aria-invalid="true"]')?.focus()
+    document.querySelector('.bk-form [aria-invalid="true"]')?.focus()
     return
   }
   submitting.value = true
@@ -1066,6 +1081,7 @@ const detailsText = computed(() => {
   })
 })
 const shareUrl = computed(() => `https://wa.me/?text=${encodeURIComponent(detailsText.value)}`)
+const managementUrl = computed(() => (confirmation.value?.managementToken ? buildGuestManagementLink(confirmation.value, theme.value) : ''))
 const changeUrl = computed(() =>
   bio.value.whatsapp && confirmation.value
     ? `https://wa.me/${bio.value.whatsapp}?text=${encodeURIComponent(t('share.changeText', { reference: confirmation.value.reference }))}`
@@ -1078,6 +1094,39 @@ async function copyDetails() {
     detailsCopied.value = true
     setTimeout(() => { detailsCopied.value = false }, 2000)
   } catch { /* clipboard unavailable: the details are on screen */ }
+}
+
+async function copyManagementLink() {
+  if (!managementUrl.value) return
+  try {
+    await copyText(managementUrl.value)
+    managementLinkCopied.value = true
+    setTimeout(() => { managementLinkCopied.value = false }, 2000)
+  } catch { /* the private link remains available as an ordinary link */ }
+}
+
+function openManagement(mode = 'summary') {
+  const value = confirmation.value
+  if (!value?.bookingId || !value.managementToken) return
+  managementInitialBooking.value = value
+  managementInitialMode.value = mode
+  managementSession.value = { bookingId: value.bookingId, managementToken: value.managementToken }
+  window.scrollTo({ top: 0, behavior: reducedMotion() ? 'auto' : 'smooth' })
+}
+
+function closeManagement() {
+  managementSession.value = null
+  managementInitialBooking.value = null
+  managementInitialMode.value = 'summary'
+  clearGuestManagementLink()
+  confirmation.value = null
+  selectedService.value = null
+  selectedSlot.value = null
+  start()
+}
+
+function acceptManagedBooking(value) {
+  if (confirmation.value) confirmation.value = { ...confirmation.value, ...value }
 }
 
 async function bookAnother() {
@@ -1156,13 +1205,18 @@ const showBack = computed(() => step.value > 2 || (step.value === 2 && !singleSe
 const view = computed(() => (step.value === 1 ? 'profile' : 'book'))
 const stage = computed(() => (selectedSlot.value ? 'details' : 'schedule'))
 
-const rootBackground = { light: '', dark: '#0e0f11' }
+function syncRootBackground() {
+  document.documentElement.style.backgroundColor = bookingTheme({ theme: theme.value })?.background || ''
+}
 onMounted(() => {
   window.addEventListener('online', onOnline)
   document.addEventListener('pointerdown', onDocumentPointer)
   mobileQuery?.addEventListener?.('change', onMobileChange)
-  document.documentElement.style.backgroundColor = rootBackground[theme]
-  start()
+  syncRootBackground()
+  if (!managementSession.value) start()
+})
+watch(theme, () => {
+  if (typeof document !== 'undefined') syncRootBackground()
 })
 onBeforeUnmount(() => {
   requestSeq += 1
@@ -1177,9 +1231,9 @@ onBeforeUnmount(() => {
 <template>
   <div class="bk" :data-theme="theme" :data-demo-guest-ready="demoPreview && !loading && !pageError ? 'true' : undefined">
     <header class="bk-header">
-      <a href="/" aria-label="Bookins"><BookinsLogo :inverse="theme === 'dark'" /></a>
+      <a href="/" aria-label="Bookins"><BookinsLogo :inverse="theme === 'midnight'" /></a>
       <div class="bk-header-end">
-        <span class="bk-secure"><AppIcon name="lock" :size="14" />{{ demoPreview ? t('header.demo') : t('header.secure') }}</span>
+        <span v-if="demoPreview" class="bk-secure"><AppIcon name="lock" :size="14" />{{ t('header.demo') }}</span>
         <div class="bk-lang" role="group" :aria-label="t('lang.label')">
           <button type="button" lang="en" :aria-pressed="locale === 'en'" :class="{ active: locale === 'en' }" @click="setLocale('en')">EN</button>
           <button type="button" lang="fr" :aria-pressed="locale === 'fr'" :class="{ active: locale === 'fr' }" @click="setLocale('fr')">FR</button>
@@ -1192,7 +1246,18 @@ onBeforeUnmount(() => {
     </div>
 
     <main class="bk-main">
-      <div v-if="loading" class="bk-loading" role="status" aria-live="polite">
+      <GuestBookingManagement
+        v-if="managementSession"
+        :booking-id="managementSession.bookingId"
+        v-bind="{ managementToken: managementSession.managementToken }"
+        :initial-booking="managementInitialBooking"
+        :initial-mode="managementInitialMode"
+        :locale="locale"
+        @close="closeManagement"
+        @updated="acceptManagedBooking"
+      />
+
+      <div v-else-if="loading" class="bk-loading" role="status" aria-live="polite">
         <h1 class="bk-sr">{{ t('loading.title') }}</h1>
         <p class="bk-sr">{{ t('loading.text') }}</p>
         <div class="bk-card bk-skel-card" aria-hidden="true">
@@ -1245,7 +1310,19 @@ onBeforeUnmount(() => {
           <button class="bk-btn" type="button" @click="copyDetails"><AppIcon name="copy" :size="15" />{{ detailsCopied ? t('confirm.detailsCopied') : t('confirm.copyDetails') }}</button>
           <span class="bk-sr" role="status">{{ detailsCopied ? t('confirm.detailsCopied') : '' }}</span>
         </div>
-        <p v-if="changeUrl" class="bk-change">
+        <div v-if="confirmation.managementToken && managementUrl" class="bk-private-actions">
+          <p>{{ locale === 'fr' ? 'Gardez ce lien privé. Toute personne qui le possède peut modifier cette réservation.' : 'Keep this link private. Anyone with it can change this booking.' }}</p>
+          <div>
+            <button class="bk-btn" type="button" @click="copyManagementLink">
+              <AppIcon name="copy" :size="15" />
+              {{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : (locale === 'fr' ? 'Copier le lien privé' : 'Copy private management link') }}
+            </button>
+            <button class="bk-btn" type="button" @click="openManagement('reschedule')">{{ locale === 'fr' ? 'Reprogrammer' : 'Reschedule' }}</button>
+            <button class="bk-btn danger" type="button" @click="openManagement('cancel')">{{ locale === 'fr' ? 'Annuler la réservation' : 'Cancel booking' }}</button>
+            <span class="bk-sr" role="status">{{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : '' }}</span>
+          </div>
+        </div>
+        <p v-if="changeUrl && !confirmation.managementToken" class="bk-change">
           {{ t('confirm.change', { host: page.profile.displayName }) }}
           <a class="bk-btn small" :href="changeUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.changeCta', { host: page.profile.displayName }) }}</a>
         </p>
@@ -1257,13 +1334,24 @@ onBeforeUnmount(() => {
         <!-- Profile: host header and service list -->
         <section v-if="view === 'profile'" key="profile" class="bk-profile">
           <div class="bk-card bk-host">
-            <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
-            <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
-            <h1>{{ page.profile.displayName }}</h1>
-            <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
+            <div class="bk-host-identity">
+              <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+              <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
+              <div>
+                <p class="bk-host-eyebrow">{{ t('host.eyebrow') }}</p>
+                <h1>{{ page.profile.displayName }}</h1>
+                <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
+              </div>
+            </div>
+            <div class="bk-progress" :aria-label="t('svc.title')">
+              <i v-for="n in 3" :key="n" :class="{ active: n <= step }" />
+            </div>
           </div>
           <div v-if="page.services.length" class="bk-card bk-services">
-            <h2 ref="stepHeading" tabindex="-1" class="bk-services-title">{{ t('svc.title') }}</h2>
+            <div class="bk-services-title">
+              <h2 ref="stepHeading" tabindex="-1">{{ t('svc.title') }}</h2>
+              <p>{{ t('svc.text') }}</p>
+            </div>
             <div v-if="showSearch" class="bk-search">
               <AppIcon name="search" :size="15" />
               <input v-model="query" type="search" class="bk-input" :aria-label="t('svc.search')" :placeholder="t('svc.searchHint')" autocomplete="off" />
@@ -1281,9 +1369,12 @@ onBeforeUnmount(() => {
                     :aria-controls="row.team ? `team-${row.key}` : undefined"
                     @click="row.team ? toggleTeam(row.key) : chooseService(row.options[0].copy)"
                   >
-                    <span class="bk-service-name">{{ row.name }}</span>
-                    <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
-                    <span v-if="row.prepNotes" class="bk-service-prep">{{ t('svc.prep', { notes: row.prepNotes }) }}</span>
+                    <span class="bk-radio" aria-hidden="true" />
+                    <span class="bk-service-copy">
+                      <span class="bk-service-name">{{ row.name }}</span>
+                      <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
+                      <span v-if="row.prepNotes" class="bk-service-prep">{{ t('svc.prep', { notes: row.prepNotes }) }}</span>
+                    </span>
                     <span class="bk-chips">
                       <span class="bk-chip"><AppIcon name="clock" :size="12" />{{ t('svc.min', { count: row.durationMinutes }) }}</span>
                       <span class="bk-chip">{{ priceLabel(row) }}</span>
@@ -1292,8 +1383,9 @@ onBeforeUnmount(() => {
                   </button>
                   <div v-if="row.team && openTeam === row.key" :id="`team-${row.key}`" class="bk-team" role="group" :aria-label="t('svc.pickWho')">
                     <button v-for="(option, index) in row.options" :key="option.copy.id" type="button" class="bk-pro" @click="chooseService(option.copy)">
+                      <span class="bk-radio" aria-hidden="true" />
                       <span class="bk-avatar" aria-hidden="true">{{ initialOf(option.owner ? page.profile.displayName : option.copy.staffName || t('team.option', { n: index + 1 })) }}</span>
-                      <span>{{ optionLabel(option, index) }}</span>
+                      <span class="bk-pro-name">{{ optionLabel(option, index) }}</span>
                       <span class="bk-pro-price">{{ priceLabel(option.copy) }}</span>
                     </button>
                   </div>
@@ -1314,15 +1406,29 @@ onBeforeUnmount(() => {
             <p>{{ t(banner.key) }}</p>
           </div>
           <div class="bk-card bk-grid" :class="`stage-${stage}`">
+            <div class="bk-book-hero">
+              <div class="bk-host-identity compact">
+                <img v-if="showPhoto" class="bk-avatar big" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
+                <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
+                <div>
+                  <p>{{ t('host.eyebrow') }}</p>
+                  <h1>{{ page.profile.displayName }}</h1>
+                  <div class="bk-service-meta">
+                    <span>{{ selectedService.name }}</span><i aria-hidden="true" />
+                    <span>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</span><i aria-hidden="true" />
+                    <span>{{ priceLabel(selectedService) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="bk-progress" :aria-label="t('time.title')">
+                <i v-for="n in 3" :key="n" :class="{ active: n <= step }" />
+              </div>
+            </div>
             <aside class="bk-info">
               <button v-if="showBack" class="bk-back" :disabled="submitting" type="button" @click="back">
                 <AppIcon name="arrow-left" :size="15" />{{ t('back') }}
               </button>
-              <div class="bk-host-line">
-                <img v-if="showPhoto" class="bk-avatar" :src="safePhotoUrl" alt="" referrerpolicy="no-referrer" loading="lazy" @error="photoFailed = true" />
-                <span v-else class="bk-avatar" aria-hidden="true">{{ hostInitial }}</span>
-                <span>{{ page.profile.displayName }}</span>
-              </div>
+              <h2 class="bk-summary-title">{{ t('sum.eyebrow') }}</h2>
               <h1 class="bk-title">{{ selectedService.name }}</h1>
               <p v-if="selectedService.description" class="bk-desc">{{ selectedService.description }}</p>
               <ul class="bk-meta">
@@ -1389,28 +1495,33 @@ onBeforeUnmount(() => {
 
             <Transition name="bk-pane" mode="out-in">
               <div v-if="stage === 'schedule'" key="schedule" class="bk-schedule" :class="`dv-${dateView}`">
-                <h2 ref="stepHeading" tabindex="-1" class="bk-sr">{{ t('time.title') }}</h2>
                 <div class="bk-viewbar">
-                  <div class="bk-range">
-                    <h3 aria-live="polite">
-                      <template v-if="dateView === 'month'"><strong>{{ monthLabel.replace(/\s*\d{4}$/, '') }}</strong> <span>{{ viewMonth.year }}</span></template>
-                      <template v-else>{{ windowTitle }}</template>
-                    </h3>
-                    <div class="bk-cal-nav">
-                      <template v-if="dateView === 'month'">
-                        <button type="button" :disabled="!canGoPrev || rangeLoading" :aria-label="t('cal.prev')" @click="shiftMonth(-1)"><AppIcon name="arrow-left" :size="16" /></button>
-                        <button type="button" :disabled="!canGoNext || rangeLoading" :aria-label="t('cal.next')" @click="shiftMonth(1)"><AppIcon name="chevron" :size="16" /></button>
-                      </template>
-                      <template v-else>
-                        <button type="button" :disabled="!canWindowPrev || rangeLoading" :aria-label="t('cal.prevRange')" @click="shiftWindow(-1)"><AppIcon name="arrow-left" :size="16" /></button>
-                        <button type="button" :disabled="!canWindowNext || rangeLoading" :aria-label="t('cal.nextRange')" @click="shiftWindow(1)"><AppIcon name="chevron" :size="16" /></button>
-                      </template>
+                  <div class="bk-view-heading">
+                    <h2 ref="stepHeading" tabindex="-1">{{ t('time.title') }}</h2>
+                    <p>{{ t('time.sub', { service: selectedService.name, count: selectedService.durationMinutes }) }}</p>
+                  </div>
+                  <div class="bk-view-tools">
+                    <div class="bk-range">
+                      <h3 aria-live="polite">
+                        <template v-if="dateView === 'month'"><strong>{{ monthLabel.replace(/\s*\d{4}$/, '') }}</strong> <span>{{ viewMonth.year }}</span></template>
+                        <template v-else>{{ windowTitle }}</template>
+                      </h3>
+                      <div class="bk-cal-nav">
+                        <template v-if="dateView === 'month'">
+                          <button type="button" :disabled="!canGoPrev || rangeLoading" :aria-label="t('cal.prev')" @click="shiftMonth(-1)"><AppIcon name="arrow-left" :size="16" /></button>
+                          <button type="button" :disabled="!canGoNext || rangeLoading" :aria-label="t('cal.next')" @click="shiftMonth(1)"><AppIcon name="chevron" :size="16" /></button>
+                        </template>
+                        <template v-else>
+                          <button type="button" :disabled="!canWindowPrev || rangeLoading" :aria-label="t('cal.prevRange')" @click="shiftWindow(-1)"><AppIcon name="arrow-left" :size="16" /></button>
+                          <button type="button" :disabled="!canWindowNext || rangeLoading" :aria-label="t('cal.nextRange')" @click="shiftWindow(1)"><AppIcon name="chevron" :size="16" /></button>
+                        </template>
+                      </div>
                     </div>
+                    <div v-if="!isMobile" class="bk-switch" role="group" :aria-label="t('view.aria')">
+                      <button v-for="mode in LAYOUTS" :key="mode" type="button" :aria-pressed="layoutPref === mode" :class="{ active: layoutPref === mode }" @click="switchLayout(mode)">{{ t(`view.${mode}`) }}</button>
+                    </div>
+                    <button v-else ref="sheetTrigger" type="button" class="bk-btn small" :aria-label="t('cal.pickDateAria')" aria-haspopup="dialog" @click="openSheet"><AppIcon name="calendar" :size="14" />{{ t('cal.pickDate') }}</button>
                   </div>
-                  <div v-if="!isMobile" class="bk-switch" role="group" :aria-label="t('view.aria')">
-                    <button v-for="mode in LAYOUTS" :key="mode" type="button" :aria-pressed="layoutPref === mode" :class="{ active: layoutPref === mode }" @click="switchLayout(mode)">{{ t(`view.${mode}`) }}</button>
-                  </div>
-                  <button v-else ref="sheetTrigger" type="button" class="bk-btn small" :aria-label="t('cal.pickDateAria')" aria-haspopup="dialog" @click="openSheet"><AppIcon name="calendar" :size="14" />{{ t('cal.pickDate') }}</button>
                 </div>
                 <div v-if="calendarCheck.state === 'checking'" class="bk-calendar-status" role="status">{{ t('cal.checking') }}</div>
                 <div v-else-if="calendarCheck.state === 'degraded'" class="bk-calendar-status warning" role="alert">
@@ -1685,21 +1796,24 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .bk {
-  --ink: #111111;
-  --body: #374151;
-  --muted: #6b7280;
-  --soft: #74777d;
-  --line: #e5e7eb;
-  --line-soft: #f3f4f6;
-  --surface: #f5f5f5;
-  --bg: #fafafa;
+  --accent: #2336dc;
+  --accent-hover: #1728bb;
+  --on-accent: #ffffff;
+  --ink: #172039;
+  --body: #3f4960;
+  --muted: #606b82;
+  --soft: #737d91;
+  --line: #dce1ec;
+  --line-soft: #edf0f7;
+  --surface: #f3f5fc;
+  --bg: #f3f5fc;
   --card: #ffffff;
   --on-ink: #ffffff;
-  --ink-hover: #242424;
-  --hover: #fafafa;
-  --faint: #c4c7cd;
-  --input-line: #d1d5db;
-  --ring: rgba(17, 17, 17, 0.12);
+  --ink-hover: #29334d;
+  --hover: #f7f8fc;
+  --faint: #b7bdcb;
+  --input-line: #cbd2e1;
+  --ring: rgba(35, 54, 220, 0.18);
   --bar: rgba(255, 255, 255, 0.96);
   --skel-a: #eceef1;
   --skel-b: #f6f7f8;
@@ -1714,8 +1828,8 @@ onBeforeUnmount(() => {
   --demo-fg: #35217b;
   --demo-bg: #f5f1ff;
   --demo-bd: #d9cef9;
-  --shadow: rgba(17, 17, 17, 0.04);
-  --focus: #2336dc;
+  --shadow: rgba(30, 45, 92, 0.08);
+  --focus: var(--accent);
   --display: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   min-height: 100vh;
   display: flex;
@@ -1723,27 +1837,64 @@ onBeforeUnmount(() => {
   color: var(--ink);
   background: var(--bg);
   font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.5;
 }
-.bk[data-theme='dark'] {
+.bk[data-theme='sage'] {
+  --accent: #23644b;
+  --accent-hover: #174d39;
+  --ink: #183329;
+  --body: #3e594e;
+  --muted: #5b7065;
+  --soft: #70847a;
+  --line: #d7e3da;
+  --line-soft: #e9f0eb;
+  --surface: #f1f6f2;
+  --bg: #f1f6f2;
+  --hover: #f6faf7;
+  --input-line: #c6d6cb;
+  --ring: rgba(35, 100, 75, 0.18);
+  --shadow: rgba(24, 51, 41, 0.08);
+}
+.bk[data-theme='sand'] {
+  --accent: #995a34;
+  --accent-hover: #7c4426;
+  --ink: #38291f;
+  --body: #5f4d40;
+  --muted: #756354;
+  --soft: #8b7868;
+  --line: #e8dcd0;
+  --line-soft: #f2eae1;
+  --surface: #faf5ee;
+  --bg: #faf5ee;
+  --card: #fffcf7;
+  --bar: rgba(255, 252, 247, 0.96);
+  --hover: #fdf8f1;
+  --input-line: #dac8b8;
+  --ring: rgba(153, 90, 52, 0.18);
+  --shadow: rgba(75, 48, 30, 0.08);
+}
+.bk[data-theme='midnight'] {
   color-scheme: dark;
-  --ink: #f4f4f5;
-  --body: #d4d4d8;
-  --muted: #a1a1aa;
-  --soft: #9a9aa4;
-  --line: #2e2f35;
-  --line-soft: #25262b;
-  --surface: #26272c;
-  --bg: #0e0f11;
-  --card: #16171a;
-  --on-ink: #111113;
-  --ink-hover: #e4e4e7;
-  --hover: #1c1d21;
-  --faint: #4b4c54;
-  --input-line: #3b3c44;
-  --ring: rgba(244, 244, 245, 0.2);
-  --bar: rgba(22, 23, 26, 0.96);
+  --accent: #a8b8ff;
+  --accent-hover: #c2ccff;
+  --on-accent: #172047;
+  --ink: #f1f4fc;
+  --body: #ced5e5;
+  --muted: #aab5cc;
+  --soft: #929eb6;
+  --line: #313a4d;
+  --line-soft: #252d3d;
+  --surface: #232b3b;
+  --bg: #111621;
+  --card: #1b2231;
+  --on-ink: #111621;
+  --ink-hover: #ffffff;
+  --hover: #202839;
+  --faint: #566178;
+  --input-line: #414c62;
+  --ring: rgba(168, 184, 255, 0.24);
+  --bar: rgba(27, 34, 49, 0.96);
   --skel-a: #202126;
   --skel-b: #2b2c32;
   --err: #fda29b;
@@ -1757,8 +1908,8 @@ onBeforeUnmount(() => {
   --demo-fg: #d9ccff;
   --demo-bg: #231a3d;
   --demo-bd: #43347a;
-  --shadow: rgba(0, 0, 0, 0.4);
-  --focus: #9db0ff;
+  --shadow: rgba(0, 0, 0, 0.34);
+  --focus: var(--accent);
 }
 .bk :where(h1, h2, h3, p, ul, dl, dd) { margin: 0; padding: 0; }
 .bk :where(ul) { list-style: none; }
@@ -1768,8 +1919,8 @@ onBeforeUnmount(() => {
 
 /* ---- header / footer ---- */
 .bk-header {
-  height: 64px;
-  padding: 0 max(20px, calc((100vw - 960px) / 2));
+  width: 100%; max-width: 1400px; height: 72px; margin: 0 auto;
+  padding: 0 32px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1782,19 +1933,19 @@ onBeforeUnmount(() => {
   min-width: 44px; min-height: 32px; padding: 0 8px; color: var(--muted);
   border: 0; border-radius: 6px; background: transparent; font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.bk-lang button.active { color: var(--on-ink); background: var(--ink); }
+.bk-lang button.active { color: var(--on-accent); background: var(--accent); }
 .bk-demo {
-  max-width: 960px; margin: 4px auto 0; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 4px 12px;
+  width: calc(100% - 64px); max-width: 1336px; margin: 4px auto 0; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 4px 12px;
   color: var(--demo-fg); border: 1px solid var(--demo-bd); border-radius: 10px; background: var(--demo-bg);
 }
-.bk-main { width: 100%; max-width: 960px; margin: 0 auto; padding: 24px 20px 56px; flex: 1; }
+.bk-main { width: 100%; max-width: 1400px; margin: 0 auto; padding: 32px 32px 64px; flex: 1; }
 .bk-footer { padding: 0 20px 32px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--soft); font-size: 13px; }
 
 /* ---- shared ---- */
-.bk-card { border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.bk-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
 .bk-avatar {
   width: 24px; height: 24px; flex: none; display: grid; place-items: center; object-fit: cover;
-  color: var(--on-ink); border-radius: 50%; background: var(--ink); font-size: 13px; font-weight: 700;
+  color: var(--on-accent); border-radius: 50%; background: var(--accent); font-size: 13px; font-weight: 700;
 }
 .bk-avatar.big { width: 72px; height: 72px; font-size: 28px; }
 .bk-btn {
@@ -1803,8 +1954,10 @@ onBeforeUnmount(() => {
   font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
 }
 .bk-btn:hover:not(:disabled) { background: var(--line-soft); }
-.bk-btn.primary { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
-.bk-btn.primary:hover:not(:disabled) { background: var(--ink-hover); }
+.bk-btn.primary { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
+.bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+.bk-btn.danger { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
+.bk-btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-bg); }
 .bk-btn.wide { width: 100%; }
 .bk-btn.small { min-height: 32px; padding: 0 12px; font-size: 13px; }
 .bk-btn:disabled { color: var(--soft); border-color: var(--line); background: var(--line); cursor: not-allowed; }
@@ -1829,13 +1982,17 @@ onBeforeUnmount(() => {
 .bk-banner:focus-visible { outline: 2px solid var(--focus); }
 
 /* ---- profile ---- */
-.bk-profile { max-width: 640px; margin: 0 auto; display: grid; gap: 16px; }
-.bk-host { padding: 28px; display: grid; justify-items: start; gap: 6px; }
+.bk-profile { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); align-items: start; gap: 24px; }
+.bk-host { padding: 30px; display: grid; justify-items: start; gap: 8px; box-shadow: 0 12px 32px var(--shadow); }
 .bk-host .bk-avatar { margin-bottom: 8px; }
-.bk-host h1 { font-family: var(--display); font-size: 28px; font-weight: 650; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-host-eyebrow { color: var(--accent); font-size: 14px; font-weight: 700; }
+.bk-host h1 { font-family: var(--display); font-size: clamp(28px, 3vw, 38px); font-weight: 700; line-height: 1.08; letter-spacing: -0.04em; }
 .bk-bio { max-width: 60ch; color: var(--body); white-space: pre-line; }
-.bk-services-title { padding: 16px 24px 4px; color: var(--muted); font-size: 13px; font-weight: 600; }
-.bk-services-title:focus { outline: none; }
+.bk-services { overflow: hidden; box-shadow: 0 12px 32px var(--shadow); }
+.bk-services-title { padding: 24px 28px 12px; display: grid; gap: 3px; }
+.bk-services-title h2 { color: var(--ink); font-size: 20px; letter-spacing: -0.02em; }
+.bk-services-title p { color: var(--muted); }
+.bk-services-title h2:focus { outline: none; }
 .bk-search { position: relative; margin: 8px 16px 4px; }
 .bk-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
 .bk-search .bk-input { padding-left: 34px; }
@@ -1843,13 +2000,13 @@ onBeforeUnmount(() => {
 .bk-services-title + .bk-group, .bk-search + .bk-group, .bk-search + p + .bk-group { border-top: 0; }
 .bk-nomatch { padding: 20px 24px; color: var(--muted); }
 .bk-service {
-  width: 100%; padding: 16px 24px; display: grid; gap: 6px; text-align: left; color: var(--ink);
+  width: 100%; padding: 18px 28px; display: grid; gap: 6px; text-align: left; color: var(--ink);
   border: 0; border-top: 1px solid var(--line-soft); background: transparent; font: inherit; cursor: pointer;
 }
 .bk-services li:first-child > .bk-service { border-top: 0; }
 .bk-services > ul:last-child li:last-child > .bk-service:last-child { border-radius: 0 0 12px 12px; }
 .bk-service:hover { background: var(--hover); }
-.bk-service-name { font-size: 15px; font-weight: 650; }
+.bk-service-name { font-size: 17px; font-weight: 700; }
 .bk-service-desc {
   max-width: 62ch; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
@@ -1857,33 +2014,33 @@ onBeforeUnmount(() => {
 .bk-chips { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 6px; }
 .bk-chip {
   min-height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px;
-  color: var(--body); border-radius: 6px; background: var(--surface); font-size: 13px; font-weight: 600;
+  color: var(--body); border-radius: 6px; background: var(--surface); font-size: 14px; font-weight: 600;
 }
 .bk-team { padding: 4px 24px 14px; display: grid; gap: 6px; }
 .bk-pro {
   min-height: 44px; padding: 0 12px; display: flex; align-items: center; gap: 10px; text-align: left; color: var(--ink);
   border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-weight: 600; cursor: pointer;
 }
-.bk-pro:hover { border-color: var(--ink); }
+.bk-pro:hover { border-color: var(--accent); }
 .bk-pro-price { margin-left: auto; color: var(--muted); font-weight: 500; }
 .bk-empty { padding: 40px 24px; display: grid; justify-items: center; gap: 6px; color: var(--muted); text-align: center; }
 .bk-empty h2 { color: var(--ink); font-size: 16px; }
 
 /* ---- scheduler ---- */
-.bk-book { max-width: 940px; margin: 0 auto; }
-.bk-grid { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 468px; overflow: hidden; box-shadow: 0 1px 2px var(--shadow); }
-.bk-info { position: relative; z-index: 3; padding: 24px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bk-book { max-width: 1320px; margin: 0 auto; container: booking-page / inline-size; }
+.bk-grid { display: grid; grid-template-columns: minmax(270px, 300px) minmax(0, 1fr); min-height: 600px; overflow: hidden; box-shadow: 0 16px 48px var(--shadow); }
+.bk-info { position: relative; z-index: 3; padding: 30px 28px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .bk-back {
   align-self: flex-start; min-height: 32px; margin: -4px 0 6px -8px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; gap: 4px;
   color: var(--muted); border: 0; border-radius: 6px; background: transparent; font: inherit; font-weight: 600; cursor: pointer;
 }
 .bk-back:hover:not(:disabled) { color: var(--ink); background: var(--line-soft); }
 .bk-host-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; }
-.bk-title { margin-top: 4px; font-family: var(--display); font-size: 22px; font-weight: 650; line-height: 1.2; letter-spacing: -0.035em; overflow-wrap: anywhere; }
+.bk-title { margin-top: 8px; font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.12; letter-spacing: -0.04em; overflow-wrap: anywhere; }
 .bk-desc {
   color: var(--muted); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
 }
-.bk-meta { margin-top: 14px; display: grid; gap: 10px; color: var(--body); font-weight: 600; }
+.bk-meta { margin-top: 18px; display: grid; gap: 12px; color: var(--body); font-weight: 600; }
 .bk-meta li { display: flex; align-items: flex-start; gap: 10px; }
 .bk-meta svg { flex: none; margin-top: 3px; color: var(--muted); }
 .bk-meta small { display: block; color: var(--muted); font-size: 13px; font-weight: 500; }
@@ -1911,22 +2068,28 @@ onBeforeUnmount(() => {
 .bk-tz-none { color: var(--muted); cursor: default !important; }
 
 /* view bar: range heading + nav on the left, view switcher on the right */
-.bk-schedule { display: grid; grid-template-columns: minmax(0, 1fr) 216px; grid-template-rows: auto 1fr; min-width: 0; }
+.bk-schedule { display: grid; grid-template-columns: minmax(500px, 600px) minmax(280px, 1fr); grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; }
 .bk-schedule.dv-week, .bk-schedule.dv-column { grid-template-columns: minmax(0, 1fr); }
-.bk-viewbar { grid-column: 1 / -1; padding: 16px 20px 0 24px; min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.bk-calendar-status { grid-column: 1 / -1; margin: 8px 20px 0 24px; color: var(--muted); font-size: 13px; }
+.bk-viewbar { grid-column: 1 / -1; grid-row: 1; padding: 24px 28px 16px; min-height: 100px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line-soft); }
+.bk-view-heading { min-width: 190px; display: grid; gap: 2px; }
+.bk-view-heading h2 { font-size: 21px; line-height: 1.2; letter-spacing: -0.025em; }
+.bk-view-heading h2:focus { outline: none; }
+.bk-view-heading h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
+.bk-view-heading p { max-width: 34ch; color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-view-tools { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
+.bk-calendar-status { grid-column: 1 / -1; grid-row: 2; margin: 10px 28px 0; color: var(--muted); font-size: 13px; }
 .bk-calendar-status.warning { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--warn); border: 1px solid var(--warn-bd); border-radius: 8px; background: var(--warn-bg); }
 .bk-calendar-status.details { margin: 12px 0 0; }
-.bk-range { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.bk-range { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .bk-range h3, .bk-sheet-bar h3 { font-size: 15px; text-transform: capitalize; }
 .bk-range h3 span, .bk-sheet-bar h3 span { color: var(--muted); font-weight: 500; }
-.bk-switch { display: flex; padding: 2px; border-radius: 8px; background: var(--surface); }
+.bk-switch { flex: none; display: flex; padding: 3px; border-radius: 10px; background: var(--surface); }
 .bk-switch button {
   min-height: 30px; padding: 0 12px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.bk-switch button.active { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14); }
-.bk-calendar { grid-column: 1; padding: 12px 24px 24px; min-width: 0; }
+.bk-switch button.active { color: var(--on-accent); background: var(--accent); box-shadow: none; }
+.bk-calendar { grid-column: 1; grid-row: 3; align-self: start; padding: 20px 28px 28px; min-width: 0; }
 .bk-cal-nav { display: flex; gap: 4px; }
 .bk-cal-nav button {
   width: 36px; height: 36px; display: grid; place-items: center; color: var(--ink); border: 0; border-radius: 8px; background: transparent; cursor: pointer;
@@ -1936,37 +2099,37 @@ onBeforeUnmount(() => {
 .bk-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; transition: opacity 0.15s ease; }
 .bk-days.loading { opacity: 0.5; pointer-events: none; }
 .bk-weekdays { margin-bottom: 6px; }
-.bk-weekdays span { color: var(--muted); font-size: 13px; font-weight: 600; text-align: center; text-transform: uppercase; letter-spacing: 0.04em; }
+.bk-weekdays span { color: var(--muted); font-size: 13px; font-weight: 700; text-align: center; }
 .bk-day {
-  position: relative; height: 44px; color: var(--soft); border: 0; border-radius: 8px; background: transparent;
+  position: relative; width: 100%; min-height: 44px; aspect-ratio: 1; color: var(--soft); border: 1px solid transparent; border-radius: 10px; background: transparent;
   font: inherit; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; cursor: default;
 }
-.bk-day.open { color: var(--ink); background: var(--surface); font-weight: 600; cursor: pointer; }
-.bk-day.open:hover { background: var(--line); }
-.bk-day.selected, .bk-day.selected:hover { color: var(--on-ink); background: var(--ink); }
+.bk-day.open { color: var(--ink); border-color: var(--line); background: var(--card); font-weight: 700; cursor: pointer; }
+.bk-day.open:hover { border-color: var(--accent); background: var(--surface); }
+.bk-day.selected, .bk-day.selected:hover { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .bk-day.today::after {
   content: ''; position: absolute; left: 50%; bottom: 5px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; transform: translateX(-50%);
 }
 .bk-day.today:not(.open) { color: var(--ink); }
 
-.bk-slots { grid-column: 2; position: relative; border-left: 1px solid var(--line); min-width: 0; }
-.bk-slots-inner { position: absolute; inset: 0; padding: 12px 20px 16px; overflow-y: auto; scrollbar-width: thin; }
-.bk-slots-head { margin-bottom: 14px; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.bk-slots-head h3 { font-size: 15px; font-weight: 500; text-transform: capitalize; }
+.bk-slots { grid-column: 2; grid-row: 3; position: relative; border-left: 1px solid var(--line); min-width: 0; }
+.bk-slots-inner { position: absolute; inset: 0; padding: 20px 24px 28px; overflow-y: auto; scrollbar-width: thin; }
+.bk-slots-head { margin-bottom: 16px; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bk-slots-head h3 { font-size: 16px; font-weight: 500; text-transform: capitalize; }
 .bk-slots-head h3 strong { font-weight: 650; }
 .bk-clock { display: flex; padding: 2px; border-radius: 8px; background: var(--surface); }
 .bk-clock button {
   min-height: 28px; min-width: 36px; padding: 0 8px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
   font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.bk-clock button.active { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
-.bk-slot-list { display: grid; gap: 8px; }
+.bk-clock button.active { color: var(--on-accent); background: var(--accent); box-shadow: none; }
+.bk-slot-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
 .bk-slot {
-  min-height: 42px; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  min-height: 46px; padding: 0 12px; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; background: var(--card);
   font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer;
 }
-.bk-slot:hover { border-color: var(--ink); }
-.bk-slot.picked, .bk-slot.picked:hover { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
+.bk-slot:hover { color: var(--accent); border-color: var(--accent); }
+.bk-slot.picked, .bk-slot.picked:hover { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .bk-note { padding: 8px 0; display: grid; justify-items: start; gap: 6px; color: var(--muted); }
 .bk-note strong { color: var(--ink); font-size: 14px; }
 .bk-note.error { color: var(--err); }
@@ -1974,12 +2137,12 @@ onBeforeUnmount(() => {
   min-height: 36px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; text-align: left; line-height: 1.3; color: var(--ink);
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; font-weight: 600; cursor: pointer;
 }
-.bk-next:hover { border-color: var(--ink); }
+.bk-next:hover { border-color: var(--accent); }
 
 /* week / column views */
-.bk-cols { grid-column: 1 / -1; padding: 8px 12px 16px 24px; min-width: 0; }
+.bk-cols { grid-column: 1 / -1; grid-row: 3; min-height: 0; padding: 18px 20px 24px 28px; display: flex; flex-direction: column; min-width: 0; }
 .bk-cols-scroll {
-  height: 372px; padding-right: 12px; display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 8px;
+  min-height: 0; flex: 1; padding-right: 12px; display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 10px;
   align-content: start; overflow-y: auto; scrollbar-width: thin;
 }
 .bk-col { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -1994,7 +2157,7 @@ onBeforeUnmount(() => {
 .bk-cols-note { padding-top: 12px; }
 
 /* ---- details ---- */
-.bk-details { padding: 24px 32px 28px; max-width: 600px; }
+.bk-details { width: 100%; max-width: 760px; margin: 0 auto; padding: 36px 48px 40px; }
 .bk-form-title { font-family: var(--display); font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
 .bk-form-title:focus { outline: none; }
 .bk-form-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
@@ -2029,6 +2192,9 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
 .bk-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .bk-ref code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 15px; user-select: all; }
 .bk-confirm-actions { width: 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 4px 0 4px; }
+.bk-private-actions { width: 100%; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+.bk-private-actions > p { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+.bk-private-actions > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .bk-change { display: grid; justify-items: center; gap: 8px; color: var(--body); }
 .bk-confirm .bk-fine { margin-top: 8px; }
 .bk-confirm-check svg { stroke-dasharray: 28; stroke-dashoffset: 0; }
@@ -2055,6 +2221,38 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
 @keyframes bk-draw { to { stroke-dashoffset: 0; } }
 @keyframes bk-pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
+/* Compact viewport gutters. The booking card itself responds through container queries below. */
+@media (min-width: 821px) and (max-width: 1160px) {
+  .bk-main { padding-left: 24px; padding-right: 24px; }
+  .bk-header { padding-left: 24px; padding-right: 24px; }
+  .bk-profile { grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); }
+}
+
+/* Embedded owner previews can be much narrower than the viewport. Respond to the actual card width. */
+@container booking-page (max-width: 1100px) {
+  .bk-grid { grid-template-columns: minmax(240px, 270px) minmax(0, 1fr); }
+  .bk-info { padding: 26px 22px; }
+  .bk-viewbar { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .bk-view-tools { width: 100%; justify-content: space-between; }
+  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto; }
+  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: min(100%, 600px); justify-self: center; }
+  .bk-schedule.dv-month .bk-slots { grid-column: 1; grid-row: 4; min-height: 260px; border-top: 1px solid var(--line); border-left: 0; }
+  .bk-schedule.dv-month .bk-slots-inner { position: static; max-height: 360px; }
+}
+
+@container booking-page (max-width: 700px) {
+  .bk-grid { grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: visible; }
+  .bk-info { padding: 22px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .bk-tz { margin-top: 10px; }
+  .bk-details { max-width: none; padding: 28px; }
+  .bk-viewbar { flex-direction: column; align-items: stretch; }
+  .bk-view-heading, .bk-view-tools, .bk-range { min-width: 0; max-width: 100%; }
+  .bk-view-heading p { white-space: normal; }
+  .bk-view-tools { flex-wrap: wrap; justify-content: flex-start; }
+  .bk-range { width: 100%; flex-wrap: wrap; justify-content: space-between; }
+  .bk-range h3 { min-width: 0; overflow-wrap: anywhere; }
+}
+
 /* ---- tablet / mobile: info -> slots-first strip -> times; month in a bottom sheet ---- */
 @media (max-width: 820px) {
   .bk-header { padding: 0 16px; height: 56px; }
@@ -2064,6 +2262,8 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-tz-btn { min-height: 40px; }
   .bk-clock button { min-height: 40px; min-width: 44px; }
   .bk-main { padding: 12px 12px 40px; }
+  .bk-profile { grid-template-columns: 1fr; gap: 12px; }
+  .bk-services { box-shadow: none; }
   .bk-grid { grid-template-columns: 1fr; min-height: 0; overflow: visible; }
   .bk-info { padding: 16px 16px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
   .bk-desc { -webkit-line-clamp: 3; line-clamp: 3; }
@@ -2075,7 +2275,13 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-tz-pop { bottom: auto; top: calc(100% - 2px); }
   .bk-grid.stage-details .bk-desc { display: none; }
   .bk-schedule { grid-template-columns: 1fr; grid-template-rows: none; }
-  .bk-viewbar { padding: 12px 12px 4px 16px; min-height: 52px; }
+  .bk-viewbar { padding: 16px 16px 10px; min-height: 0; flex-direction: column; align-items: stretch; gap: 12px; }
+  .bk-view-heading { min-width: 0; flex: 1 1 100%; }
+  .bk-view-heading h2 { font-size: 20px; }
+  .bk-view-heading p { max-width: 100%; white-space: normal; }
+  .bk-view-tools { width: 100%; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-start; gap: 8px; }
+  .bk-range { width: 100%; min-width: 0; flex-wrap: wrap; justify-content: space-between; }
+  .bk-range h3 { min-width: 0; overflow-wrap: anywhere; }
   .bk-strip { padding: 4px 12px 12px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
   .bk-sd {
     min-height: 66px; padding: 6px 0; display: grid; justify-items: center; align-content: center; gap: 1px; color: var(--soft);
@@ -2086,7 +2292,7 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-sd i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; visibility: hidden; }
   .bk-sd.has { color: var(--ink); background: var(--surface); }
   .bk-sd.has i { visibility: visible; }
-  .bk-sd.selected { color: var(--on-ink); border-color: var(--ink); background: var(--ink); }
+  .bk-sd.selected { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
   .bk-slots { grid-column: 1; border-left: 0; border-top: 1px solid var(--line); }
   .bk-slots-inner { position: static; padding: 16px 16px 24px; overflow: visible; min-height: 220px; }
   .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2109,12 +2315,388 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   }
   .bk-actions .bk-btn.primary { flex: 1; }
   .bk-input { min-height: 44px; font-size: 16px; }
-  .bk-host { padding: 20px; }
+  .bk-host { padding: 20px; box-shadow: none; }
   .bk-services-title, .bk-service, .bk-group, .bk-team { padding-left: 16px; padding-right: 16px; }
   .bk-confirm { padding: 28px 18px 22px; margin-top: 8px; }
   .bk-facts > div { grid-template-columns: 1fr; gap: 2px; }
 }
 @media (max-width: 380px) {
   .bk-slot-list { grid-template-columns: 1fr; }
+  .bk-day { min-height: 0; }
+  .bk-header { padding-left: 12px; padding-right: 12px; }
+  .bk-lang button { min-width: 40px; }
+  .bk-view-tools { align-items: flex-end; flex-wrap: wrap; }
+  .bk-range { width: 100%; justify-content: space-between; gap: 2px; }
+  .bk-calendar.is-sheet { padding-left: 10px; padding-right: 10px; }
+}
+</style>
+
+<style scoped>
+/* Approved guest direction: one quiet booking surface with compact, square controls. */
+.bk {
+  --ink: #20242d;
+  --body: #4f5662;
+  --muted: #707580;
+  --soft: #8b919c;
+  --line: #e5e7eb;
+  --line-soft: #f0f1f3;
+  --surface: #f7f8fa;
+  --bg: #e9ebef;
+  --input-line: #d5d8de;
+  --shadow: rgba(24, 31, 45, 0.08);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.bk[data-theme='sage'] {
+  --accent: #36765a;
+  --accent-hover: #245d43;
+  --surface: #eaf4ed;
+  --bg: #e8ece9;
+  --ring: rgba(54, 118, 90, 0.16);
+}
+.bk[data-theme='sand'] {
+  --accent: #9d6538;
+  --accent-hover: #7f4d28;
+  --surface: #fbf0e5;
+  --bg: #eeeae5;
+  --card: #fffdf9;
+  --ring: rgba(157, 101, 56, 0.16);
+}
+.bk[data-theme='midnight'] {
+  --accent: #a8b8ff;
+  --accent-hover: #c2ccff;
+  --on-accent: #172047;
+  --ink: #f1f4fc;
+  --body: #c7d0e2;
+  --muted: #afb9ce;
+  --soft: #98a5bc;
+  --line: #36405a;
+  --line-soft: #2a3349;
+  --surface: #252e4b;
+  --bg: #151b2d;
+  --card: #20283c;
+  --input-line: #505b73;
+}
+.bk-header {
+  width: min(1120px, calc(100% - 40px));
+  max-width: none;
+  height: 72px;
+  padding: 8px 2px 0;
+}
+.bk-header > a { color: var(--accent); }
+.bk-header :deep(.bookins-logo) { height: 40px; }
+.bk-header-end { gap: 10px; }
+.bk-lang {
+  padding: 2px;
+  border-color: var(--input-line);
+  border-radius: 7px;
+}
+.bk-lang button { min-width: 40px; min-height: 30px; border-radius: 5px; font-size: 12px; }
+.bk-main {
+  width: 100%;
+  max-width: none;
+  padding: 20px 20px 48px;
+}
+.bk-footer { padding-bottom: 22px; }
+.bk-card { border-radius: 14px; }
+.bk-btn {
+  min-height: 40px;
+  padding: 0 15px;
+  border-color: var(--input-line);
+  border-radius: 7px;
+  font-weight: 660;
+}
+.bk-btn:hover:not(:disabled) { border-color: #aeb4c0; background: var(--card); }
+.bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
+.bk-input { border-radius: 7px; }
+
+.bk-profile {
+  max-width: 1120px;
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-host {
+  min-height: 110px;
+  padding: 21px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.bk-host-identity { min-width: 0; display: flex; align-items: center; gap: 14px; }
+.bk-host-identity.compact p { margin-bottom: 2px; color: var(--muted); font-size: 13px; }
+.bk-host-identity.compact h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-avatar.big {
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  color: #fff;
+  background: #20242d;
+  font-size: 17px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.bk-host .bk-avatar { margin: 0; }
+.bk-host-eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.bk-host h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
+.bk-bio { max-width: 64ch; margin-top: 3px; color: var(--body); font-size: 13px; }
+.bk-progress { flex: none; display: flex; align-items: center; gap: 7px; }
+.bk-progress i { width: 23px; height: 3px; border-radius: 10px; background: #dfe2e7; }
+.bk-progress i.active { background: var(--accent); }
+.bk-services {
+  padding: 28px 32px 30px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.bk-services-title { max-width: 680px; margin: 0 auto 20px; padding: 0; }
+.bk-services-title h2 { font-size: 22px; line-height: 1.2; letter-spacing: -0.026em; }
+.bk-services-title p { margin-top: 7px; }
+.bk-services > ul,
+.bk-services > .bk-group,
+.bk-services > .bk-nomatch { width: min(680px, 100%); margin-left: auto; margin-right: auto; }
+.bk-search { width: min(680px, 100%); margin: 0 auto 12px; }
+.bk-group { padding: 14px 0 7px; border: 0; text-transform: none; letter-spacing: 0; }
+.bk-services li + li { margin-top: 10px; }
+.bk-service {
+  min-height: 83px;
+  padding: 17px 18px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid var(--input-line) !important;
+  border-radius: 8px !important;
+  background: var(--card);
+}
+.bk-service:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--input-line)) !important; background: var(--card); }
+.bk-radio { width: 18px; height: 18px; border: 1.5px solid #b5bac3; border-radius: 50%; background: var(--card); }
+.bk-service-copy { min-width: 0; display: grid; gap: 3px; }
+.bk-service-name { font-size: 15px; }
+.bk-service-desc { font-size: 12px; }
+.bk-service-prep { font-size: 12px; }
+.bk-chips { margin: 0; justify-content: flex-end; }
+.bk-chip { padding: 0; color: var(--body); background: transparent; font-size: 13px; }
+.bk-team { padding: 10px 0 0 33px; gap: 8px; }
+.bk-pro { min-height: 56px; border-radius: 8px; }
+.bk-pro .bk-radio { display: none; }
+.bk-pro-name { min-width: 0; }
+
+.bk-book { max-width: 1240px; }
+.bk-banner { max-width: 1120px; border-radius: 7px; }
+.bk-grid {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-rows: auto minmax(490px, auto);
+  min-height: 0;
+  border-color: var(--line);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-grid.stage-schedule { max-width: 1120px; margin: 0 auto; }
+.bk-grid.stage-details {
+  grid-template-columns: 320px minmax(0, 1fr);
+  column-gap: 48px;
+  grid-template-rows: auto auto;
+}
+.bk-book-hero {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  min-height: 110px;
+  padding: 21px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+  border-bottom: 1px solid var(--line);
+}
+.bk-service-meta { margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: var(--body); font-size: 13px; }
+.bk-service-meta i { width: 4px; height: 4px; border-radius: 50%; background: var(--soft); }
+.bk-info {
+  grid-column: 1;
+  grid-row: 2;
+  z-index: 3;
+  padding: 24px 20px;
+  border-right: 1px solid var(--line);
+  gap: 7px;
+}
+.stage-details .bk-info {
+  margin: 36px 0 40px 40px;
+  padding: 24px;
+  align-self: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.bk-summary-title { margin-bottom: 4px; font-size: 15px; }
+.bk-back { margin: -8px 0 6px -6px; }
+.bk-title { margin-top: 2px; font-size: 20px; letter-spacing: -0.025em; }
+.bk-desc { font-size: 13px; }
+.bk-meta { margin-top: 12px; gap: 11px; font-size: 13px; }
+.bk-tz { padding-top: 16px; }
+.stage-details .bk-tz { margin-top: 4px; }
+.bk-schedule {
+  grid-column: 2;
+  grid-row: 2;
+  grid-template-columns: minmax(360px, 1fr) 190px;
+  grid-template-rows: auto auto auto;
+  align-content: start;
+}
+.bk-viewbar {
+  min-height: 0;
+  padding: 22px 28px 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+}
+.bk-view-heading h2 { font-size: 22px; }
+.bk-view-heading p { margin-top: 5px; }
+.bk-view-tools { width: 100%; justify-content: space-between; gap: 16px; }
+.bk-switch { border-radius: 8px; }
+.bk-switch button { border-radius: 5px; }
+.bk-calendar { width: min(476px, 100%); padding: 20px 28px 28px; }
+.bk-days { width: min(420px, 100%); gap: 4px; }
+.bk-weekdays span { font-size: 10px; }
+.bk-day {
+  width: 100%;
+  min-width: 0;
+  max-width: 56px;
+  min-height: 0;
+  max-height: none;
+  justify-self: center;
+  aspect-ratio: 1 / 1;
+  padding: 0;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.bk-day.open { border-color: #e8eaf0; background: var(--surface); }
+.bk-day:not(.open) { border-color: transparent; background: transparent; }
+.bk-day.selected,
+.bk-day.selected.open,
+.bk-day.selected:hover {
+  color: var(--on-accent);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+.bk-slots { align-self: stretch; }
+.bk-slots-inner { position: static; min-height: 100%; padding: 20px 21px 28px; overflow: visible; }
+.bk-slots-head h3 { font-size: 13px; }
+.bk-slot-list { grid-template-columns: 1fr; gap: 7px; }
+.bk-slot {
+  min-height: 40px;
+  padding: 0 10px;
+  border-color: var(--input-line);
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: left;
+}
+.bk-clock { margin-bottom: 4px; }
+.bk-calendar-status.warning { border-radius: 7px; }
+
+.bk-details {
+  grid-column: 2;
+  grid-row: 2;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 36px 40px 40px 0;
+}
+.bk-form-title { font-size: 26px; line-height: 1.2; }
+.bk-details > .bk-muted { margin-top: 7px; }
+.bk-form { margin-top: 28px; gap: 20px; }
+.bk-field { gap: 8px; }
+.bk-field label { font-size: 14px; }
+.bk-input { min-height: 46px; font-size: 15px; }
+textarea.bk-input { min-height: 82px; }
+.bk-actions { margin-top: 4px; padding-top: 20px; border-top: 1px solid var(--line); }
+.bk-actions .bk-btn { min-height: 44px; padding: 0 20px; }
+
+.bk-confirm {
+  max-width: 610px;
+  min-height: 490px;
+  margin: 0 auto;
+  padding: 48px 32px 32px;
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-confirm h1 { font-size: 25px; }
+.bk-confirm-check { width: 54px; height: 54px; margin-bottom: 10px; }
+.bk-facts { max-width: 430px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.bk-facts > div { grid-template-columns: 86px minmax(0, 1fr); }
+.bk-state {
+  min-height: 420px;
+  max-width: 590px;
+  margin: 0 auto;
+  padding: 48px 32px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: 0 12px 34px var(--shadow);
+}
+
+@container booking-page (max-width: 1100px) {
+  .bk-grid { grid-template-columns: 240px minmax(0, 1fr); }
+  .bk-grid.stage-details { grid-template-columns: 280px minmax(0, 1fr); column-gap: 28px; }
+  .stage-details .bk-info { margin-left: 28px; }
+  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr) 190px; grid-template-rows: auto auto minmax(0, 1fr); }
+  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: 100%; }
+  .bk-schedule.dv-month .bk-slots { grid-column: 2; grid-row: 3; min-height: 0; border-top: 0; border-left: 1px solid var(--line); }
+  .bk-schedule.dv-month .bk-slots-inner { position: static; max-height: none; }
+}
+
+@container booking-page (max-width: 760px) {
+  .bk-grid,
+  .bk-grid.stage-details { display: block; }
+  .bk-book-hero { min-height: 0; padding: 21px 20px; }
+  .bk-info { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .stage-details .bk-info { margin: 24px 20px 0; padding: 18px; border: 1px solid var(--line); }
+  .bk-schedule { display: grid; }
+  .bk-details { padding: 24px 20px; }
+  .bk-form-title { font-size: 22px; }
+}
+
+@media (max-width: 820px) {
+  .bk-header { width: calc(100% - 24px); height: 56px; padding-top: 0; }
+  .bk-main { padding: 14px 12px 32px; }
+  .bk-profile { border-radius: 10px; }
+  .bk-host { min-height: 0; padding: 21px 20px; }
+  .bk-host h1, .bk-host-identity.compact h1 { font-size: 21px; }
+  .bk-bio { display: none; }
+  .bk-services { padding: 25px 20px 28px; }
+  .bk-services-title h2 { font-size: 20px; }
+  .bk-service { grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 14px; }
+  .bk-service .bk-chips { grid-column: 2; justify-content: flex-start; }
+  .bk-team { padding-left: 28px; }
+  .bk-book-hero .bk-progress { margin-top: 17px; }
+  .bk-book-hero { align-items: flex-start; flex-direction: column; gap: 0; }
+  .bk-grid { border-radius: 10px; }
+  .bk-summary-title { font-size: 13px; }
+  .bk-schedule { grid-template-columns: 1fr; }
+  .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-slot { min-height: 44px; text-align: center; }
+  .bk-details { padding-bottom: 0; }
+  .bk-form { margin-top: 24px; }
+  .bk-actions { margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
+  .bk-confirm { min-height: 420px; padding-top: 32px; }
+}
+
+@media (max-width: 600px) {
+  .bk-progress i { width: 20px; }
+  .bk-host { align-items: flex-start; flex-direction: column; gap: 16px; }
+  .bk-service .bk-chip.team { width: 100%; }
+  .bk-pro { padding: 8px 10px; }
+}
+@media (max-width: 820px) {
+  .stage-details .bk-actions { position:static; margin:8px 0 0; padding:16px 0; backdrop-filter:none; }
+  .stage-details .bk-details { padding-bottom:20px; }
 }
 </style>

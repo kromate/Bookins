@@ -2,9 +2,10 @@
 // Messages: the live queue of messages the owner can open in their own WhatsApp, SMS or email app.
 // Bookins prepares the text; the owner presses send in their own app. Nothing is sent automatically and
 // delivery is never claimed, so every state here says "opened by you".
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
+import GmDialog from '../components/ui/GmDialog.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
 import { copyText, hasTeam, markMessageOpened, messageQueue, staffForBooking, teamMembers } from '../booking.js'
@@ -140,17 +141,49 @@ function unusableNote(item) {
   if (emailMissing) return 'Email is hidden: this booking has no real email address.'
   return ''
 }
-const linkAttrs = (channel) => (channel === 'whatsapp' ? { target: '_blank', rel: 'noopener noreferrer' } : {})
+const linkAttrs = (channel) => (channel === 'whatsapp' || channel === 'gmail' ? { target: '_blank', rel: 'noopener noreferrer' } : {})
 const gmailFor = (item) => gmailComposeUrl(item.links.email)
 
-// ---- row state ----
-const expanded = ref(new Set())
-function toggleExpanded(id) {
-  const next = new Set(expanded.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  expanded.value = next
+// ---- message details ----
+const selected = ref(null)
+const selectedChannel = ref('')
+const selectedHandled = ref(false)
+const detailChannelOptions = computed(() => {
+  const item = selected.value
+  if (!item) return []
+  const options = usableChannels(item).map((channel) => ({ value: channel, label: CHANNEL_LABEL[channel] }))
+  if (gmailFor(item)) options.push({ value: 'gmail', label: 'Open Gmail' })
+  return options
+})
+const selectedHref = computed(() => {
+  const item = selected.value
+  if (!item) return ''
+  return selectedChannel.value === 'gmail' ? gmailFor(item) : item.links[selectedChannel.value] || ''
+})
+function openDetails(item) {
+  selected.value = item
+  selectedHandled.value = Boolean(item.openedAt)
+  const preferred = usableChannels(item)[0]
+  selectedChannel.value = preferred || (gmailFor(item) ? 'gmail' : '')
 }
+function closeDetails() {
+  selected.value = null
+  selectedChannel.value = ''
+  selectedHandled.value = false
+}
+function onOpenSelected() {
+  const item = selected.value
+  if (!item || item.openedAt) return
+  selectedHandled.value = true
+  if (isDemo.value) return
+  void markDone(item, { quiet: true })
+}
+async function markSelectedDone() {
+  if (!selected.value) return
+  if (await markDone(selected.value)) selectedHandled.value = true
+}
+
+// ---- row state ----
 const busyIds = ref(new Set())
 const setBusy = (id, on) => {
   const next = new Set(busyIds.value)
@@ -214,6 +247,19 @@ const batchReason = computed(() => {
   return ''
 })
 const current = computed(() => (batch.value ? batch.value.items[batch.value.index] || null : null))
+const batchChannel = ref('')
+const batchChannelOptions = computed(() => {
+  const item = current.value
+  if (!item) return []
+  const options = usableChannels(item).map(channel => ({ value: channel, label: CHANNEL_LABEL[channel] }))
+  if (gmailFor(item)) options.push({ value: 'gmail', label: 'Open Gmail' })
+  return options
+})
+watch(current, item => {
+  if (!item) return
+  if (!batchChannelOptions.value.some(option => option.value === batchChannel.value)) batchChannel.value = batchChannelOptions.value[0]?.value || ''
+})
+const batchHref = computed(() => current.value ? batchChannel.value === 'gmail' ? gmailFor(current.value) : current.value.links[batchChannel.value] || '' : '')
 const batchFinished = computed(() => Boolean(batch.value) && batch.value.index >= batch.value.items.length)
 const batchTotal = computed(() => batch.value?.items.length || 0)
 const batchProgress = computed(() => {
@@ -254,9 +300,8 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
   <section class="messages">
     <div class="page-header">
       <div>
-        <p class="eyebrow">Client messages</p>
         <h1>Messages</h1>
-        <p class="lede">Reminders, prep notes, thank-yous and rebook nudges for your clients, ready to open in WhatsApp, SMS, Gmail or your mail app.</p>
+        <p class="lede">Review reminders and follow-ups.</p>
       </div>
       <div class="page-header-actions">
         <RouterLink class="secondary" :to="{ path: '/settings', hash: '#settings-templates' }">
@@ -265,10 +310,7 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
       </div>
     </div>
 
-    <div class="notice info" role="note">
-      <AppIcon name="info" :size="18" />
-      <span><strong>Bookins prepares the message; you press send in your own app. Nothing is sent automatically.</strong> Bookins cannot tell whether a message was sent. "Done" means you opened it.</span>
-    </div>
+    <p class="send-note">Messages open in your own app. You send them there.</p>
     <div v-if="hiddenKinds.length" class="notice warning" role="status">
       <AppIcon name="info" :size="18" />
       <span>{{ hiddenKinds.join(', ') }} {{ hiddenKinds.length === 1 ? 'is' : 'are' }} turned off in your message journey, so those messages are not listed.
@@ -285,9 +327,27 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
             Upcoming <span class="count-pill">{{ counts.upcoming }}</span>
           </button>
           <button type="button" :class="{ 'is-active': tab === 'done' }" :aria-pressed="tab === 'done'" @click="tab = 'done'">
-            Done <span class="count-pill">{{ counts.done }}</span>
+            Opened <span class="count-pill">{{ counts.done }}</span>
           </button>
         </div>
+        <div v-if="tab === 'due' && !batch" class="batch-start-wrap">
+          <GmButton
+            variant="primary"
+            class="batch-start"
+            :disabled-reason="batchReason"
+            @click="startBatch"
+          >
+            <template #leading><AppIcon name="bolt" :size="16" /></template>Open next
+          </GmButton>
+          <GmHint text="Works through due messages one by one. Open a message in your app, then move to the next." label="About Open next" />
+        </div>
+      </div>
+
+      <details class="filter-disclosure">
+        <summary>
+          Filters
+          <span v-if="filtersActive" class="count-pill">Active</span>
+        </summary>
         <div class="queue-tools">
           <div class="field">
             <label for="msg-kind">Type</label>
@@ -297,27 +357,17 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
             <label for="msg-staff">Staff</label>
             <GmSelect id="msg-staff" v-model="staffFilter" :options="staffOptions" label="Filter by staff member" />
           </div>
-          <div v-if="tab === 'due' && !batch" class="batch-start-wrap">
-          <GmButton
-            variant="primary"
-            class="batch-start"
-            :disabled-reason="batchReason"
-            @click="startBatch"
-          >
-            <template #leading><AppIcon name="bolt" :size="16" /></template>Start batch ({{ batchCandidates.length }})
-          </GmButton>
-          <GmHint text="Walks the due messages one by one: tap to open your app with the message filled in, then Next. Each message you open is marked as opened by you." label="About Start batch" />
-          </div>
+          <button v-if="filtersActive" class="ghost small-button" type="button" @click="clearFilters">Clear filters</button>
         </div>
-      </div>
+      </details>
 
       <!-- Batch stepper -->
       <section v-if="batch" class="batch" aria-label="Batch of messages" aria-live="polite">
         <template v-if="!batchFinished && current">
           <div class="batch-head">
             <strong class="tnum">{{ batch.index + 1 }} of {{ batchTotal }}</strong>
-            <span class="muted">Tap to open, we open your app prefilled. You press send there.</span>
-            <button class="ghost small-button batch-close" type="button" @click="stopBatch">End batch</button>
+            <span class="muted">Review one message at a time.</span>
+            <button class="ghost small-button batch-close" type="button" aria-label="Close message sequence" @click="stopBatch">Close</button>
           </div>
           <div class="progress-track" role="progressbar" aria-label="Batch progress" :aria-valuenow="batch.index" :aria-valuemin="0" :aria-valuemax="batchTotal"><span :style="{ width: `${batchProgress}%` }" /></div>
           <div class="batch-card">
@@ -327,18 +377,10 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
               <small class="muted">{{ current.booking.service_name }}<template v-if="team"> · {{ staffOf(current).name }}</template> · {{ whenLabel(current) }}</small>
             </div>
             <p class="batch-preview">{{ current.message.text }}</p>
+            <div class="field"><label for="batch-channel">Open with</label><GmSelect id="batch-channel" v-model="batchChannel" :options="batchChannelOptions" label="Where to open this message" /></div>
             <div class="batch-actions">
-              <template
-                v-for="(channel, index) in usableChannels(current)"
-                :key="channel"
-              ><a
-                :class="index === 0 ? 'primary' : 'secondary'"
-                :href="current.links[channel]"
-                v-bind="linkAttrs(channel)"
-                @click="openFromBatch(current)"
-              >{{ CHANNEL_LABEL[channel] }}<AppIcon v-if="channel === 'whatsapp'" name="external" :size="15" /></a>
-              <a v-if="channel === 'email' && gmailFor(current)" class="secondary" :href="gmailFor(current)" target="_blank" rel="noopener noreferrer" @click="openFromBatch(current)">Open Gmail<AppIcon name="external" :size="15" /></a></template>
-              <button class="ghost" type="button" @click="copyMessage(current)"><AppIcon name="copy" :size="16" />Copy message</button>
+              <a v-if="batchHref" class="primary" :href="batchHref" v-bind="linkAttrs(batchChannel)" @click="openFromBatch(current)">{{ batchChannel === 'gmail' ? 'Open Gmail' : CHANNEL_LABEL[batchChannel] }}<AppIcon name="external" :size="15" /></a>
+              <button class="secondary" type="button" @click="copyMessage(current)"><AppIcon name="copy" :size="16" />Copy message</button>
             </div>
             <p v-if="batch.opened.has(current.id)" class="batch-status ok"><AppIcon name="check" :size="15" />Opened by you{{ isDemo ? ' (Demo: not saved)' : '' }}. Press Next for the following message.</p>
             <p v-else class="batch-status muted">Not opened yet.</p>
@@ -378,37 +420,9 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
               {{ item.booking.service_name }}<template v-if="team"> · with {{ staffOf(item).name }}</template> · {{ whenLabel(item) }}
             </p>
             <p v-if="dueNote(item)" class="msg-due" :class="{ opened: item.openedAt }">{{ dueNote(item) }}</p>
-            <p class="msg-preview"><span class="msg-text" :class="{ clamp: !expanded.has(item.id) }">{{ expanded.has(item.id) ? item.message.text : item.message.text.replace(/\n{2,}/g, '\n') }}</span></p>
-            <button class="link-button" type="button" :aria-expanded="expanded.has(item.id)" @click="toggleExpanded(item.id)">{{ expanded.has(item.id) ? 'Show less' : 'Show full message' }}</button>
-            <p v-if="tab !== 'done' && unusableNote(item)" class="field-hint msg-unusable">{{ unusableNote(item) }}</p>
           </div>
           <div class="msg-actions">
-            <template v-if="tab !== 'done'">
-              <div class="msg-channels"><template
-                v-for="(channel, index) in usableChannels(item)"
-                :key="channel"
-              ><a
-                :class="index === 0 ? 'primary small' : 'secondary small'"
-                :href="item.links[channel]"
-                v-bind="linkAttrs(channel)"
-              >{{ CHANNEL_LABEL[channel] }}<AppIcon v-if="channel === 'whatsapp'" name="external" :size="14" /></a>
-              <a v-if="channel === 'email' && gmailFor(item)" class="secondary small" :href="gmailFor(item)" target="_blank" rel="noopener noreferrer">Open Gmail<AppIcon name="external" :size="14" /></a></template></div>
-              <div class="msg-tools">
-              <GmButton variant="ghost" size="sm" @click="copyMessage(item)"><template #leading><AppIcon name="copy" :size="15" /></template>Copy message</GmButton>
-              <GmButton
-                variant="secondary"
-                size="sm"
-                :disabled="busyIds.has(item.id)"
-                :disabled-reason="isDemo ? demoReason : ''"
-                @click="markDone(item)"
-              ><template #leading><AppIcon name="check" :size="15" /></template>Mark done</GmButton>
-              <GmHint text="Mark done means you opened this message in your own app. Bookins cannot see whether you pressed send." label="About Mark done" />
-              </div>
-            </template>
-            <template v-else>
-              <GmButton variant="ghost" size="sm" @click="copyMessage(item)"><template #leading><AppIcon name="copy" :size="15" /></template>Copy message</GmButton>
-              <GmButton variant="secondary" size="sm" :disabled="busyIds.has(item.id)" :disabled-reason="isDemo ? demoReason : ''" @click="undo(item)">Move back to queue</GmButton>
-            </template>
+            <button class="secondary small" type="button" @click="openDetails(item)">Open message</button>
           </div>
         </li>
       </ul>
@@ -451,12 +465,72 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
       <div v-else class="empty compact">
         <span class="empty-icon"><AppIcon name="messages" :size="20" /></span>
         <h2>Nothing opened yet</h2>
-        <p>Messages you open or mark done appear here, so you can see what you already handled.</p>
+        <p>Messages you open or mark as opened appear here, so you can see what you already handled.</p>
         <div class="empty-actions">
           <button v-if="visibleQueue.due.length" class="primary small" type="button" @click="tab = 'due'">Go to Due now ({{ visibleQueue.due.length }})</button>
         </div>
       </div>
     </article>
+
+    <GmDialog
+      :open="Boolean(selected)"
+      :title="selected ? `Message for ${selected.contact.name}` : 'Message details'"
+      content-class="card modal message-drawer"
+      @update:open="$event || closeDetails()"
+    >
+      <div v-if="selected" class="drawer-shell">
+        <header class="drawer-head drawer-sticky-head">
+          <div>
+            <span class="chip" :class="KIND_TONE[selected.kind]">{{ kindLabel(selected.kind) }}</span>
+            <h2>{{ selected.contact.name }}</h2>
+            <p>{{ selected.booking.service_name }}<template v-if="team"> · {{ staffOf(selected).name }}</template> · {{ whenLabel(selected) }}</p>
+          </div>
+          <button class="ghost small-button" type="button" aria-label="Close message" @click="closeDetails">Close</button>
+        </header>
+
+        <div class="message-copy">
+          <p>{{ selected.message.text }}</p>
+        </div>
+
+        <p v-if="tab !== 'done' && unusableNote(selected)" class="notice warning" role="status">{{ unusableNote(selected) }}</p>
+
+        <div v-if="detailChannelOptions.length" class="field">
+          <label for="message-channel">Open with</label>
+          <GmSelect
+            id="message-channel"
+            v-model="selectedChannel"
+            :options="detailChannelOptions"
+            label="Choose where to open this message"
+          />
+        </div>
+
+        <div class="drawer-actions">
+          <a
+            v-if="selectedHref"
+            class="primary"
+            :href="selectedHref"
+            v-bind="linkAttrs(selectedChannel)"
+            @click="onOpenSelected"
+          >{{ detailChannelOptions.find((option) => option.value === selectedChannel)?.label || 'Open message' }}<AppIcon v-if="selectedChannel === 'whatsapp' || selectedChannel === 'gmail'" name="external" :size="15" /></a>
+          <GmButton variant="secondary" @click="copyMessage(selected)"><template #leading><AppIcon name="copy" :size="15" /></template>Copy message</GmButton>
+        </div>
+
+        <div class="drawer-foot">
+          <template v-if="tab !== 'done' && !selectedHandled">
+            <GmButton
+              variant="ghost"
+              size="sm"
+              :disabled="busyIds.has(selected.id)"
+              :disabled-reason="isDemo ? demoReason : ''"
+              @click="markSelectedDone"
+            >Mark as opened</GmButton>
+            <GmHint text="Use this only if you already opened the message another way. Bookins cannot see whether you pressed send." label="About marking as opened" />
+          </template>
+          <span v-else-if="tab !== 'done'" class="opened-note"><AppIcon name="check" :size="15" />Opened by you{{ isDemo ? ' (Demo: not saved)' : '' }}</span>
+          <GmButton v-else variant="ghost" size="sm" :disabled="busyIds.has(selected.id)" :disabled-reason="isDemo ? demoReason : ''" @click="undo(selected)">Move back to queue</GmButton>
+        </div>
+      </div>
+    </GmDialog>
   </section>
 </template>
 
@@ -464,33 +538,45 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
 .messages { display: grid; gap: var(--space-4); }
 .messages .page-header { margin-bottom: 0; }
 .messages .notice { margin-bottom: 0; }
+.send-note { margin: 0; color: var(--muted); font-size: var(--text-sm); }
 .notice a { margin-left: 6px; color: var(--accent); font-weight: 700; }
 .queue-card { display: grid; gap: var(--space-4); min-width: 0; }
-.queue-top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-3); }
+.queue-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
 .queue-top .tab-bar { margin-bottom: 0; }
 .queue-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-3); }
-.queue-tools .batch-start-wrap { min-height: var(--control-h); }
 .queue-tools .field { margin: 0; min-width: 170px; }
 .batch-start-wrap { display: flex; align-items: center; gap: 4px; }
 .batch-start { white-space: nowrap; }
+.filter-disclosure { border-top: 1px solid var(--line); }
+.filter-disclosure > summary { min-height: var(--control-h-sm); display: inline-flex; align-items: center; gap: var(--space-2); color: var(--muted); font-size: var(--text-sm); font-weight: 650; cursor: pointer; }
+.filter-disclosure[open] > summary { color: var(--ink); }
+.filter-disclosure .queue-tools { padding-top: var(--space-2); }
 
 .msg-list { margin: 0; padding: 0; list-style: none; display: grid; }
 .msg-row { padding: var(--space-4) 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); align-items: start; border-bottom: 1px solid var(--line); }
 .msg-row:first-child { padding-top: 0; }
 .msg-row:last-child { border-bottom: 0; padding-bottom: 0; }
-.msg-main { min-width: 0; display: grid; gap: 4px; justify-items: start; }
+.msg-main { min-width: 0; display: grid; gap: 4px; }
 .msg-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .msg-title strong { font-size: var(--text-md); overflow-wrap: anywhere; }
 .msg-meta, .msg-due { margin: 0; font-size: var(--text-sm); }
 .msg-due { color: var(--ink-soft); font-weight: 650; }
 .msg-due.opened { color: var(--success); }
-.msg-preview { margin: 6px 0 0; padding: 10px 12px; width: 100%; color: #445071; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); font-size: var(--text-sm); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.msg-text.clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.link-button { padding: 0; min-height: 32px; color: var(--accent); border: 0; background: none; font-size: var(--text-xs); font-weight: 650; text-decoration: underline; cursor: pointer; }
-.msg-unusable { margin: 0; }
-.msg-actions { display: grid; justify-items: end; gap: var(--space-2); max-width: 400px; }
-.msg-channels, .msg-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); }
-.msg-channels a { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.msg-actions { display: grid; justify-items: end; }
+
+.drawer-shell { min-height: 100%; display: grid; grid-template-rows: auto auto auto auto 1fr; gap: var(--space-4); align-content: start; }
+.drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.drawer-head > div { min-width: 0; }
+.drawer-head > :last-child { flex: none; }
+.drawer-sticky-head { position: sticky; top: calc(var(--space-5) * -1); z-index: 12; margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-4); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--line); background: var(--surface); }
+.drawer-head h2 { margin: var(--space-2) 0 2px; font-size: var(--text-xl); }
+.drawer-head p { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.message-copy { padding: var(--space-4); color: #445071; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.message-copy p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.drawer-actions, .drawer-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.drawer-actions a { min-height: var(--control-h); padding: 0 18px; display: inline-flex; align-items: center; gap: 7px; border-radius: var(--radius-sm); text-decoration: none; }
+.drawer-foot { padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.opened-note { display: inline-flex; align-items: center; gap: 6px; color: var(--success); font-size: var(--text-sm); font-weight: 650; }
 
 .batch { padding: var(--space-4); display: grid; gap: var(--space-3); border: 1px solid var(--accent-line); border-radius: var(--radius); background: var(--accent-faint); }
 .batch-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
@@ -518,16 +604,19 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
 .empty.compact p { margin-bottom: 0; }
 
 @media (max-width: 800px) {
+  .drawer-sticky-head { top: calc(var(--space-4) * -1); margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) var(--space-4); padding: max(var(--space-4), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right)) var(--space-4) max(var(--space-4), env(safe-area-inset-left)); }
   .queue-top .tab-bar { width: 100%; flex-wrap: wrap; overflow: visible; }
   .queue-top .tab-bar { gap: 6px; }
   .queue-top .tab-bar > button { padding: 0 8px; gap: 6px; flex: 1 1 auto; justify-content: center; }
   .msg-row { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
   .msg-actions { justify-items: start; max-width: none; }
-  .msg-channels, .msg-tools { justify-content: flex-start; }
   .queue-tools { width: 100%; }
   .queue-tools .field { flex: 1 1 140px; min-width: 0; }
-  .batch-start { width: 100%; justify-content: center; }
+  .batch-start-wrap { width: 100%; }
+  .batch-start { flex: 1; justify-content: center; }
   .batch-nav button { flex: 1; justify-content: center; }
-  .batch-actions a, .batch-actions button, .msg-channels a { flex: 1 1 auto; justify-content: center; }
+  .batch-actions a, .batch-actions button, .drawer-actions > * { flex: 1 1 auto; justify-content: center; }
 }
+.filter-disclosure>summary::after{content:"⌄";margin-left:6px}
+@media(max-width:520px){.messages .tab-bar{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}.messages .tab-bar button{min-width:0;justify-content:center;padding:0 5px;gap:4px;font-size:12px;white-space:nowrap}.messages .count-pill{min-width:18px;font-size:11px}}
 </style>

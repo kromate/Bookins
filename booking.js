@@ -1,4 +1,5 @@
 import { isDemo, runOwnerCall } from './runtime.js'
+import { normalizeBookingAppearance } from './booking-appearance.js'
 import {
   BookingError,
   assertScheduleSettings,
@@ -293,6 +294,30 @@ const transientReadFailure = error =>
   error?.code === 'BOOKING_READ_TIMEOUT' || error?.retryable === true || [408, 425, 429].includes(Number(error?.status)) || Number(error?.status) >= 500 ||
   /failed to fetch|network|record loading failed|temporarily unavailable/i.test(error?.message || '')
 
+const errorChain = error => {
+  const chain = []
+  const seen = new Set()
+  let current = error
+  while (current && typeof current === 'object' && !seen.has(current) && chain.length < 8) {
+    chain.push(current)
+    seen.add(current)
+    current = current.cause
+  }
+  return chain
+}
+
+const errorDetail = error => {
+  const chain = errorChain(error)
+  const semantic = chain.find(item => item.code && item.code !== 'PAGINATION_REQUEST_FAILED') || chain.find(item => item.code) || null
+  const status = chain.find(item => item.status !== undefined || item.statusCode !== undefined) || null
+  const retryable = chain.find(item => item.retryable === true) || null
+  return {
+    code: semantic?.code,
+    status: status?.status ?? status?.statusCode,
+    retryable: Boolean(retryable),
+  }
+}
+
 const tableReadError = (table, cause) => {
   const labels = {
     profiles: 'Booking profile',
@@ -303,11 +328,33 @@ const tableReadError = (table, cause) => {
     staff: 'Team',
     campaigns: 'Campaigns',
   }
-  const error = new Error(`${labels[table] || 'Workspace data'} could not load. ${cause?.message || 'Try again.'}`)
-  if (cause?.code) error.code = cause.code
-  if (cause?.retryable === true) error.retryable = true
-  if (cause?.status !== undefined) error.status = cause.status
+  const label = labels[table] || 'Workspace data'
+  const offline = globalThis.navigator?.onLine === false
+  const error = new Error(
+    offline ? `${label} could not load because you are offline. Reconnect, then try again.` : `${label} could not load. ${cause?.message || 'Try again.'}`,
+    { cause },
+  )
+  const detail = errorDetail(cause)
+  if (detail.code) error.code = detail.code
+  if (detail.retryable) error.retryable = true
+  if (detail.status !== undefined) error.status = detail.status
   return error
+}
+
+const OPTIONAL_TABLE_MISSING_CODES = new Set([
+  // Hosted App runtime resolves an absent declared binding before proxying the operation.
+  'APP_RESOURCE_BINDING_REQUIRED',
+  // The Web Key runtime rejects a logical Table selector that is absent from installation bindings.
+  'APP_RESOURCE_BINDING_DENIED',
+])
+
+const listOptional = async table => {
+  try {
+    return await list(table)
+  } catch (error) {
+    if (errorChain(error).some(item => OPTIONAL_TABLE_MISSING_CODES.has(item.code))) return []
+    throw error
+  }
 }
 
 async function list(table) {
@@ -368,10 +415,10 @@ export async function loadOwnerWorkspace() {
       list(TABLES.services),
       list(TABLES.bookings),
       // Contacts is optional (added in v0.5.0); an unbound Table must not block the workspace.
-      list(TABLES.contacts).catch(() => []),
+      listOptional(TABLES.contacts),
       // Staff and campaigns are optional (added in v0.6.0); unbound Tables behave as empty.
-      list(TABLES.staff).catch(() => []),
-      list(TABLES.campaigns).catch(() => []),
+      listOptional(TABLES.staff),
+      listOptional(TABLES.campaigns),
     ])
     return { profile: profiles[0] || null, schedules, services, bookings, contacts, staff, campaigns }
   })
@@ -870,6 +917,20 @@ export function saveMessageTemplates(profile, templates) {
   )
 }
 
+export function saveBookingAppearance(existing, input) {
+  return runOwnerCall(
+    'saveBookingAppearance',
+    async () => {
+      if (!existing?.id) throw notStarted(409, 'BOOKING_PROFILE_REQUIRED', 'Save your profile before changing your booking page.')
+      return update(TABLES.profiles, existing.id, {
+        booking_page_settings_json: JSON.stringify(input || {}),
+        updated_at: new Date().toISOString(),
+      })
+    },
+    [existing, input],
+  )
+}
+
 /** Client record keyed by lowercased email: private notes and tags merged with booking history. */
 export function saveContact(existing, input = {}) {
   return runOwnerCall(
@@ -908,9 +969,120 @@ export async function copyText(value) {
   input.remove()
 }
 
+let guestGrant = ''
+let privateManagementFragment = ''
+
+export function readGuestManagementLink() {
+  const fragment = window.location.hash.slice(1)
+  if (!fragment.startsWith('bm=')) {
+    if (fragment) guestGrant = fragment
+    return null
+  }
+  try {
+    if (fragment.length > 2048) throw new Error('Invalid link')
+    const encoded = fragment.slice(3).replace(/-/g, '+').replace(/_/g, '/')
+    const value = JSON.parse(atob(encoded))
+    if (!value || typeof value.bookingId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(value.bookingId)
+      || !/^[a-f0-9]{64}$/.test(value.managementToken || '')
+      || !( /^[A-Za-z0-9_-]{43}$/.test(value.grant || '') || (isLocalPreview() && value.grant === 'local-preview'))) throw new Error('Invalid link')
+    guestGrant = value.grant
+    privateManagementFragment = fragment
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${guestGrant}`)
+    return { bookingId: value.bookingId, managementToken: value.managementToken }
+  } catch {
+    return { bookingId: '', managementToken: '' }
+  }
+}
+
+export function buildGuestManagementLink(receipt, theme = 'indigo') {
+  if (!guestGrant || !receipt?.bookingId || !/^[a-f0-9]{64}$/.test(receipt.managementToken || '')) return ''
+  const encoded = btoa(JSON.stringify({ grant: guestGrant, bookingId: receipt.bookingId, managementToken: receipt.managementToken }))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const appearance = ['indigo', 'sage', 'sand', 'midnight'].includes(theme) ? theme : 'indigo'
+  return `${window.location.origin}/book?theme=${appearance}#bm=${encoded}`
+}
+
+export function clearGuestManagementLink() {
+  privateManagementFragment = ''
+  window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}${guestGrant ? '#' + guestGrant : ''}`)
+}
+
+function restoreManagementFragment() {
+  if (privateManagementFragment) window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${privateManagementFragment}`)
+}
+
+async function managementTokenHash(token) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
+  return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function localManagedBooking(input) {
+  const booking = localTable(TABLES.bookings).find(item => item.id === input?.bookingId)
+  if (!booking || !/^[a-f0-9]{64}$/.test(input?.managementToken || '')
+    || booking.management_token_hash !== await managementTokenHash(input.managementToken)
+    || Date.parse(booking.management_expires_at) <= Date.now()) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  const service = localTable(TABLES.services).find(item => item.id === booking.service_id)
+  const subject = localGuestSubject()
+  if (!subject || !service || !serviceAllowed(service, subject)) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  return booking
+}
+
+function managementReceipt(booking) {
+  return { bookingId: booking.id, reference: booking.reference, serviceId: booking.service_id, serviceName: booking.service_name,
+    startsAt: booking.starts_at, endsAt: booking.ends_at, timezone: booking.timezone, status: booking.status,
+    managementExpiresAt: booking.management_expires_at, calendarSync: booking.calendar_sync_status || 'none' }
+}
+
+async function managementCall(action, input, key) {
+  if (!input?.bookingId || !/^[a-f0-9]{64}$/.test(input?.managementToken || '')) throw new BookingError(403, 'BOOKING_MANAGEMENT_INVALID', 'This private booking link is invalid or expired.')
+  try {
+    await window.GoalmaticGuest.ready()
+    return key ? await window.GoalmaticGuest.command(action, input, { idempotencyKey: key }) : await window.GoalmaticGuest.query(action, input)
+  } finally { restoreManagementFragment() }
+}
+
+export async function loadGuestBookingManagement(input) {
+  if (!isLocalPreview()) return managementCall('booking-manage-get', input)
+  try { return managementReceipt(await localManagedBooking(input)) } finally { restoreManagementFragment() }
+}
+
+export async function loadGuestManagementOpenings(input) {
+  if (!isLocalPreview()) return managementCall('booking-manage-openings', input)
+  const booking = await localManagedBooking(input)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  return listServiceOpenings({ services: localTable(TABLES.services), schedules: localTable(TABLES.schedules),
+    bookings: localTable(TABLES.bookings).filter(item => item.id !== booking.id), serviceId: booking.service_id,
+    fromDate: input.fromDate, throughDate: input.throughDate, now: new Date(), subject: localGuestSubject() })
+}
+
+export async function rescheduleGuestBooking(input, idempotencyKey) {
+  if (!isLocalPreview()) return managementCall('booking-reschedule', input, idempotencyKey)
+  const booking = await localManagedBooking(input)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  const localDate = localFields(new Date(input.startsAt), booking.timezone).date
+  const result = await loadGuestManagementOpenings({ ...input, fromDate: localDate, throughDate: localDate })
+  const opening = result.openings.find(item => item.startsAt === input.startsAt)
+  if (!opening) throw new BookingError(409, 'BOOKING_SLOT_TAKEN', 'This time is no longer available. Choose another time.')
+  const updated = await update(TABLES.bookings, booking.id, { starts_at: opening.startsAt, ends_at: opening.endsAt,
+    reservation_key: `${booking.schedule_id}|${opening.startsAt}`, updated_at: new Date().toISOString(),
+    ...(booking.calendar_event_id ? { calendar_sync_status: 'pending' } : {}) })
+  return managementReceipt({ ...booking, ...updated })
+}
+
+export async function cancelGuestBooking(input, idempotencyKey) {
+  if (!isLocalPreview()) return managementCall('booking-cancel', input, idempotencyKey)
+  const booking = await localManagedBooking(input)
+  if (booking.status === 'cancelled') return managementReceipt(booking)
+  if (booking.status !== 'confirmed' || Date.parse(booking.starts_at) <= Date.now()) throw new BookingError(409, 'BOOKING_NOT_CHANGEABLE', 'This booking can no longer be changed.')
+  const updated = await update(TABLES.bookings, booking.id, { status: 'cancelled', reservation_key: `released:${booking.id}`,
+    cancelled_at: new Date().toISOString(), cancellation_reason: 'Cancelled by guest',
+    ...(booking.calendar_event_id ? { calendar_sync_status: 'pending' } : {}) })
+  return managementReceipt({ ...booking, ...updated })
+}
+
 // Local stand-in for the hosted grant subject: the profile link or one service's direct link.
 function localGuestSubject() {
-  const token = window.location.hash.slice(1)
+  const token = guestGrant || window.location.hash.slice(1)
   const tokenOf = (url) => String(url || '').split('#')[1] || ''
   if (!token) return null
   if (tokenOf(localTable(TABLES.profiles)[0]?.public_link_url) === token) return { kind: 'profile' }
@@ -929,6 +1101,7 @@ export async function loadGuestPage() {
         bio: profile.bio || '',
         photoUrl: profile.photo_url || null,
         timezone: profile.timezone || 'UTC',
+        bookingAppearance: normalizeBookingAppearance(profile.booking_page_settings_json),
       },
       services: localTable(TABLES.services)
         .filter((item) => item.active !== false && serviceAllowed(item, subject))
@@ -943,6 +1116,7 @@ export async function loadGuestPage() {
     }
   }
   await window.GoalmaticGuest.ready()
+  restoreManagementFragment()
   return window.GoalmaticGuest.query('page-get', {})
 }
 
@@ -962,8 +1136,14 @@ export async function loadGuestOpenings(serviceId, fromDate, throughDate) {
 }
 
 export async function submitGuestBooking(input, idempotencyKey) {
-  if (!isLocalPreview())
-    return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
+  if (!isLocalPreview()) {
+    try { return await window.GoalmaticGuest.command('booking-create-managed', input, { idempotencyKey }) }
+    catch (error) {
+      const missing = errorChain(error).some(item => Number(item.status ?? item.statusCode) === 404 && (item.code === 'APP_PUBLIC_ACTION_NOT_FOUND' || item.message === 'Public App action not found'))
+      if (!missing) throw error
+      return window.GoalmaticGuest.command('booking-create', input, { idempotencyKey })
+    }
+  }
   const bookings = localTable(TABLES.bookings)
   const request = resolveBookingRequest({
     services: localTable(TABLES.services),
@@ -980,8 +1160,13 @@ export async function submitGuestBooking(input, idempotencyKey) {
     throw new BookingError(409, 'BOOKING_SLOT_TAKEN', 'This time was booked by someone else. Choose another slot.')
   const reference = `LOCAL-${String(idempotencyKey || crypto.randomUUID()).slice(0, 8).toUpperCase()}`
   const { service, opening } = request
+  const managementToken = [...crypto.getRandomValues(new Uint8Array(32))].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  const managementExpiresAt = new Date(Date.now() + 365 * 86400000).toISOString()
+  const tokenHash = await managementTokenHash(managementToken)
   const booking = await create(TABLES.bookings, {
     reference,
+    management_token_hash: tokenHash,
+    management_expires_at: managementExpiresAt,
     service_id: service.id,
     service_name: service.name,
     schedule_id: request.scheduleId,
@@ -999,6 +1184,9 @@ export async function submitGuestBooking(input, idempotencyKey) {
   return {
     bookingId: booking.id,
     reference,
+    managementToken,
+    managementExpiresAt,
+    serviceId: service.id,
     serviceName: service.name,
     startsAt: opening.startsAt,
     endsAt: opening.endsAt,
@@ -1052,6 +1240,12 @@ export const isCalendarNotConnected = (error) =>
     error?.data?.message,
     error?.error?.message,
   ].filter(Boolean).join(' '))
+
+// Older pinned public links predate the optional calendar-busy action. Keep that exact compatibility case
+// available-without-Calendar; other 404s and all authentication or service failures remain failed checks.
+const isLegacyGuestCalendarUnavailable = error => errorChain(error).some(item =>
+  Number(item.status ?? item.statusCode) === 404 && item.message === 'Public App action not found',
+)
 
 function calendarErrorMessage(error, fallback) {
   if (isCalendarNotConnected(error)) return 'Google Calendar is not connected.'
@@ -1284,7 +1478,7 @@ export async function loadGuestCalendarCheck(fromMs, toMs) {
     }
     return { state: 'checked', busy }
   } catch (error) {
-    return { state: isCalendarNotConnected(error) ? 'unavailable' : 'failed', busy: [] }
+    return { state: isCalendarNotConnected(error) || isLegacyGuestCalendarUnavailable(error) ? 'unavailable' : 'failed', busy: [] }
   }
 }
 

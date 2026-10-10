@@ -3,11 +3,15 @@
 // WhatsApp / SMS / your own mail app, or export a CSV. Bookins never sends anything, so the only progress it can
 // show is "opened by you". No delivery, open-rate or revenue claims anywhere on this page.
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
+import GmDatePicker from '../components/ui/GmDatePicker.vue'
+import GmDialog from '../components/ui/GmDialog.vue'
 import GmHint from '../components/ui/GmHint.vue'
+import GmSelect from '../components/ui/GmSelect.vue'
+import GmTextSuggest from '../components/ui/GmTextSuggest.vue'
 import { formatDay } from '../format-date.js'
 import { isDemo } from '../runtime.js'
 import { useSetupState } from '../setup.js'
@@ -45,25 +49,8 @@ const teamOn = computed(() => hasTeam(state))
 const currency = computed(() => state.services?.find((item) => item.currency)?.currency || 'NGN')
 
 // ---------------------------------------------------------------- consent note (first use)
-const CONSENT_KEY = 'bookins:campaign-consent-seen:v1'
 const CONSENT_TEXT = 'Only message people who agreed to hear from you. Ask for a STOP reply and mark them opted out here.'
 const CONSENT_LAW = "Check local rules, e.g. Nigeria's NDPA, with your adviser."
-const readConsent = () => {
-  try {
-    return window.localStorage.getItem(CONSENT_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-const consentSeen = ref(readConsent())
-function dismissConsent() {
-  consentSeen.value = true
-  try {
-    window.localStorage.setItem(CONSENT_KEY, '1')
-  } catch {
-    // The note simply shows again next visit when storage is unavailable.
-  }
-}
 
 // ---------------------------------------------------------------- draft model
 const NUMBER_FIELDS = [
@@ -197,7 +184,15 @@ const serviceOptions = computed(() => {
   return [...set].sort((a, b) => a.localeCompare(b))
 })
 const categoryOptions = computed(() => [...new Set((state.services || []).map((item) => serviceDisplayMeta(item).category).filter(Boolean))].sort())
-const staffOptions = computed(() => teamMembers(state).map((member) => ({ value: member.id, label: member.name || 'Team member' })))
+const staffOptions = computed(() => [
+  { value: '', label: 'Anyone' },
+  ...teamMembers(state).map((member) => ({ value: member.id, label: member.name || 'Team member' })),
+])
+const sourceOptions = Object.freeze([
+  { value: '', label: 'Either way' },
+  { value: 'guest', label: 'Booked online' },
+  { value: 'owner', label: 'Added by me' },
+])
 
 const sameFilters = (a, b) => {
   const left = normalizeFilters(a)
@@ -206,6 +201,11 @@ const sameFilters = (a, b) => {
   return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key])
 }
 const activePreset = computed(() => SEGMENT_PRESETS.find((preset) => sameFilters(preset.filters, draft.filters))?.id || '')
+const audienceGroupOptions = computed(() => [{ value: 'all', label: 'All eligible clients' }, ...SEGMENT_PRESETS.map(preset => ({ value: preset.id, label: preset.name })), ...(filterCount.value && !activePreset.value ? [{ value: 'custom', label: 'Custom audience', disabled: true }] : [])])
+function chooseAudienceGroup(value) {
+  if (value === 'all') clearFilters()
+  else { const preset = SEGMENT_PRESETS.find(item => item.id === value); if (preset) applyPreset(preset) }
+}
 const autoName = ref('')
 function applyPreset(preset) {
   draft.filters = formFromFilters(preset.filters)
@@ -349,6 +349,20 @@ async function save() {
 }
 
 const rowBusy = ref('')
+function closeCampaignMenus(except = null) {
+  for (const menu of document.querySelectorAll('.campaign-menu[open]')) {
+    if (menu !== except) menu.removeAttribute('open')
+  }
+}
+function onCampaignMenuPointerDown(event) {
+  closeCampaignMenus(event.target.closest?.('.campaign-menu') || null)
+}
+function onCampaignMenuKeydown(event) {
+  if (event.key === 'Escape') closeCampaignMenus()
+}
+function closeCampaignMenuFromAction(event) {
+  if (!event.target.closest?.('.gm-confirm')) event.currentTarget.closest('details')?.removeAttribute('open')
+}
 async function duplicate(record) {
   if (isDemo.value || rowBusy.value) return
   rowBusy.value = record.id
@@ -399,32 +413,30 @@ async function setStatus(record, status) {
 }
 
 // ---------------------------------------------------------------- unsaved changes
-const confirmKey = ref('')
-const pendingAction = ref(null)
-const setConfirm = (key, open) => {
-  if (open) confirmKey.value = key
-  else if (confirmKey.value === key) confirmKey.value = ''
-}
-function guarded(key, action) {
-  if (dirty.value) {
-    pendingAction.value = action
-    confirmKey.value = key
-  } else action()
-}
-function runPending() {
-  const action = pendingAction.value
-  pendingAction.value = null
-  confirmKey.value = ''
-  action?.()
-}
+const pendingRoute = ref('')
+const allowLeave = ref(false)
 const builderEl = ref(null)
-const scrollToBuilder = () => nextTick(() => builderEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+const builderOpen = ref(false)
+const builderStep = ref(1)
+const closeAfterDiscard = ref(false)
+const stepTitle = computed(() => ['Audience', 'Message', 'Review'][builderStep.value - 1])
+const nextReason = computed(() => {
+  if (builderStep.value === 1 && !draft.name.trim()) return 'Give the campaign a name first.'
+  if (builderStep.value === 1 && !segment.value.total) return 'Choose an audience with at least one person.'
+  if (builderStep.value === 2 && !draft.body.trim()) return 'Write the message first.'
+  return ''
+})
+const scrollToBuilder = () => nextTick(() => builderEl.value?.closest('.gm-dialog-content')?.scrollTo?.({ top: 0, behavior: 'smooth' }))
 function startNew() {
   resetDraft()
+  builderStep.value = 1
+  builderOpen.value = true
   scrollToBuilder()
 }
 function editCampaign(record) {
   loadCampaign(record)
+  builderStep.value = 1
+  builderOpen.value = true
   scrollToBuilder()
 }
 const discardOpen = ref(false)
@@ -432,21 +444,65 @@ function discardChanges() {
   discardOpen.value = false
   if (savedRecord.value) loadCampaign(savedRecord.value)
   else resetDraft()
+  if (closeAfterDiscard.value) builderOpen.value = false
+  closeAfterDiscard.value = false
+  const nextRoute = pendingRoute.value
+  pendingRoute.value = ''
+  if (nextRoute) {
+    allowLeave.value = true
+    router.push(nextRoute)
+  }
 }
+function requestCloseBuilder() {
+  if (saving.value) return
+  if (dirty.value) {
+    closeAfterDiscard.value = true
+    discardOpen.value = true
+    return
+  }
+  builderOpen.value = false
+}
+function nextStep() {
+  if (nextReason.value) return
+  builderStep.value = Math.min(3, builderStep.value + 1)
+  scrollToBuilder()
+}
+function previousStep() {
+  builderStep.value = Math.max(1, builderStep.value - 1)
+  scrollToBuilder()
+}
+onBeforeRouteLeave((to) => {
+  if (allowLeave.value) {
+    allowLeave.value = false
+    return true
+  }
+  if (!dirty.value) return true
+  pendingRoute.value = to.fullPath
+  discardOpen.value = true
+  return false
+})
 const onBeforeUnload = (event) => {
   if (!dirty.value) return
   event.preventDefault()
   event.returnValue = ''
 }
-onMounted(() => window.addEventListener('beforeunload', onBeforeUnload))
-onBeforeUnmount(() => window.removeEventListener('beforeunload', onBeforeUnload))
+onMounted(() => {
+  window.addEventListener('beforeunload', onBeforeUnload)
+  document.addEventListener('pointerdown', onCampaignMenuPointerDown)
+  document.addEventListener('keydown', onCampaignMenuKeydown)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', onBeforeUnload)
+  document.removeEventListener('pointerdown', onCampaignMenuPointerDown)
+  document.removeEventListener('keydown', onCampaignMenuKeydown)
+})
 
 // Deep links: /campaigns?preset=due-rebook, ?tag=VIP, ?service=Braids, ?campaign=<id>
 function applyQuery(query) {
   if (!query || !Object.keys(query).length) return
   if (query.campaign) {
     const record = campaigns.value.find((item) => item.id === query.campaign)
-    if (record) loadCampaign(record)
+    if (record) editCampaign(record)
   } else if (query.preset || query.tag || query.service) {
     resetDraft()
     const preset = SEGMENT_PRESETS.find((item) => item.id === query.preset)
@@ -455,6 +511,8 @@ function applyQuery(query) {
     if (query.service) draft.filters.serviceContains = String(query.service)
     if (!draft.name.trim()) draft.name = query.tag ? `Clients tagged ${query.tag}` : query.service ? `${query.service} clients` : ''
     baseline.value = snapshot()
+    builderStep.value = 1
+    builderOpen.value = true
   }
   router.replace({ path: route.path, query: {} })
   scrollToBuilder()
@@ -470,6 +528,7 @@ const SEND_TABS = [
   { value: 'csv', label: 'Export CSV' },
 ]
 const sendTab = ref('whatsapp')
+watch(() => draft.channel, value => { sendTab.value = value })
 const sessionOpened = reactive(new Set())
 const stepIndex = ref(-1)
 const touched = new Set()
@@ -616,33 +675,11 @@ async function copyBookingLink() {
   <section class="campaigns">
     <div class="page-header">
       <div>
-        <p class="eyebrow">Win clients back</p>
         <h1>Campaigns</h1>
-        <p class="lede">Pick a group of clients from your booking history, write one message, then open each message yourself in WhatsApp, SMS or your own email app. Bookins never sends anything for you.</p>
+        <p class="lede">Choose clients, write a message, and open it in your own app.</p>
       </div>
       <div class="page-header-actions">
-        <GmConfirm
-          :open="confirmKey === 'new'"
-          title="Discard unsaved changes?"
-          message="Starting a new campaign will lose your edits to this one."
-          confirm-label="Discard and start new"
-          cancel-label="Keep editing"
-          tone="danger"
-          @update:open="setConfirm('new', $event)"
-          @confirm="runPending"
-          @cancel="pendingAction = null"
-        >
-          <button class="secondary" type="button" @click="guarded('new', startNew)"><AppIcon name="plus" :size="16" />New campaign</button>
-        </GmConfirm>
-      </div>
-    </div>
-
-    <div v-if="!consentSeen" class="notice info consent" role="note">
-      <AppIcon name="info" :size="18" />
-      <div>
-        <p><strong>Before you message anyone</strong></p>
-        <p>{{ CONSENT_TEXT }} {{ CONSENT_LAW }}</p>
-        <button class="secondary small-button" type="button" @click="dismissConsent">Got it</button>
+        <button class="primary" type="button" data-tour="tour-campaigns-builder" @click="startNew"><AppIcon name="plus" :size="16" />New campaign</button>
       </div>
     </div>
 
@@ -664,34 +701,27 @@ async function copyBookingLink() {
             </p>
           </div>
           <div class="row-actions">
-            <GmConfirm
-              :open="confirmKey === `edit-${record.id}`"
-              title="Discard unsaved changes?"
-              message="Opening another campaign will lose your edits to the current one."
-              confirm-label="Discard and open"
-              cancel-label="Keep editing"
-              tone="danger"
-              @update:open="setConfirm(`edit-${record.id}`, $event)"
-              @confirm="runPending"
-              @cancel="pendingAction = null"
-            >
-              <button class="secondary small-button" type="button" :aria-label="`Edit ${record.name}`" @click="guarded(`edit-${record.id}`, () => editCampaign(record))"><AppIcon name="edit" :size="16" />Edit</button>
-            </GmConfirm>
-            <GmButton variant="secondary" size="sm" :disabled-reason="isDemo ? 'Demo is read-only. Exit Demo to duplicate campaigns.' : ''" :pending="rowBusy === record.id" :aria-label="`Duplicate ${record.name}`" @click="duplicate(record)"><template #leading><AppIcon name="copy" :size="16" /></template>Duplicate</GmButton>
-            <GmButton v-if="record.status === 'done'" variant="secondary" size="sm" :disabled-reason="isDemo ? 'Demo is read-only.' : ''" @click="setStatus(record, 'active')">Reopen</GmButton>
-            <GmButton v-else-if="record.status === 'active'" variant="secondary" size="sm" :disabled-reason="isDemo ? 'Demo is read-only.' : ''" @click="setStatus(record, 'done')">Mark done</GmButton>
-            <GmConfirm
-              :open="deleteTarget === record.id"
-              title="Delete this campaign?"
-              :message="`&quot;${record.name}&quot; will be removed. Offers already recorded on contacts are kept.`"
-              confirm-label="Delete campaign"
-              tone="danger"
-              :busy="rowBusy === record.id"
-              @update:open="deleteTarget = $event ? record.id : ''"
-              @confirm="removeCampaign(record)"
-            >
-              <GmButton variant="ghost" size="sm" :disabled-reason="isDemo ? 'Demo is read-only. Exit Demo to delete campaigns.' : ''" :aria-label="`Delete ${record.name}`" @click="deleteTarget = record.id"><template #leading><AppIcon name="trash" :size="16" /></template>Delete</GmButton>
-            </GmConfirm>
+            <button class="secondary small" type="button" :aria-label="`Open ${record.name}`" @click="editCampaign(record)">Open campaign</button>
+            <details class="campaign-menu">
+              <summary class="ghost small-button" :aria-label="`More actions for ${record.name}`">More</summary>
+              <div class="campaign-menu-items" @click="closeCampaignMenuFromAction">
+                <GmButton variant="ghost" size="sm" :disabled-reason="isDemo ? 'Demo is read-only. Exit Demo to duplicate campaigns.' : ''" :pending="rowBusy === record.id" @click="duplicate(record)"><template #leading><AppIcon name="copy" :size="16" /></template>Duplicate</GmButton>
+                <GmButton v-if="record.status === 'done'" variant="ghost" size="sm" :disabled-reason="isDemo ? 'Demo is read-only.' : ''" @click="setStatus(record, 'active')">Reopen</GmButton>
+                <GmButton v-else-if="record.status === 'active'" variant="ghost" size="sm" :disabled-reason="isDemo ? 'Demo is read-only.' : ''" @click="setStatus(record, 'done')">Mark done</GmButton>
+                <GmConfirm
+                  :open="deleteTarget === record.id"
+                  title="Delete this campaign?"
+                  :message="`&quot;${record.name}&quot; will be removed. Offers already recorded on contacts are kept.`"
+                  confirm-label="Delete campaign"
+                  tone="danger"
+                  :busy="rowBusy === record.id"
+                  @update:open="deleteTarget = $event ? record.id : ''"
+                  @confirm="removeCampaign(record)"
+                >
+                  <GmButton variant="ghost" size="sm" :disabled-reason="isDemo ? 'Demo is read-only. Exit Demo to delete campaigns.' : ''" @click="deleteTarget = record.id"><template #leading><AppIcon name="trash" :size="16" /></template>Delete</GmButton>
+                </GmConfirm>
+              </div>
+            </details>
           </div>
         </li>
       </ul>
@@ -699,7 +729,7 @@ async function copyBookingLink() {
         <span class="empty-icon"><AppIcon name="campaigns" /></span>
         <h3>No campaigns yet</h3>
         <p>A campaign is a saved group of clients plus a message. {{ hasHistory ? 'Start with a ready-made group, like clients who are due to rebook.' : 'Once clients have booked with you, you can message them from here.' }}</p>
-        <button v-if="hasHistory" class="primary" type="button" @click="applyPreset(SEGMENT_PRESETS[0]); scrollToBuilder()">Start with "{{ SEGMENT_PRESETS[0].name }}"</button>
+        <button v-if="hasHistory" class="primary" type="button" @click="startNew(); applyPreset(SEGMENT_PRESETS[0])">Start with "{{ SEGMENT_PRESETS[0].name }}"</button>
         <template v-else>
           <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
           <RouterLink v-else class="primary" to="/settings">Create your booking link</RouterLink>
@@ -707,14 +737,39 @@ async function copyBookingLink() {
       </div>
     </article>
 
-    <!-- Builder -->
+    <!-- Guided builder -->
+    <GmDialog
+      :open="builderOpen"
+      :title="`${draft.id ? 'Edit' : 'New'} campaign: ${stepTitle}`"
+      content-class="card modal campaign-drawer"
+      :busy="saving"
+      @update:open="$event || requestCloseBuilder()"
+    >
     <div ref="builderEl" class="builder" data-tour="tour-campaigns-builder">
-      <article class="card block">
-        <div class="block-head">
-          <h2>{{ draft.id ? 'Edit campaign' : 'New campaign' }}</h2>
-          <span v-if="draft.id" class="chip neutral">Saved</span>
-          <span v-else class="chip warning">Not saved yet</span>
+      <header class="builder-head builder-sticky-head">
+        <div>
+          <p class="builder-kicker">{{ draft.id ? 'Edit campaign' : 'New campaign' }}</p>
+          <h2>{{ stepTitle }}</h2>
         </div>
+        <GmConfirm
+          v-model:open="discardOpen"
+          title="Discard unsaved changes?"
+          :message="draft.id ? 'Your edits to this campaign will be lost.' : 'This new campaign has not been saved.'"
+          confirm-label="Discard changes"
+          cancel-label="Keep editing"
+          tone="danger"
+          @confirm="discardChanges"
+          @cancel="closeAfterDiscard = false; pendingRoute = ''"
+        >
+          <button class="ghost small-button" type="button" :disabled="saving" @click="requestCloseBuilder">Close</button>
+        </GmConfirm>
+      </header>
+      <ol class="builder-steps" aria-label="Campaign steps">
+        <li v-for="(label, index) in ['Audience', 'Message', 'Review']" :key="label" :class="{ active: builderStep === index + 1, done: builderStep > index + 1 }"><span>{{ index + 1 }}</span>{{ label }}</li>
+      </ol>
+
+      <article v-if="builderStep === 1" class="card block">
+
         <div class="field">
           <label for="campaign-name">Campaign name <GmHint text="Only you see this. Use something you will recognise, like 'Braids refresh, October'." label="About the campaign name" /></label>
           <input id="campaign-name" v-model="draft.name" class="input" maxlength="120" placeholder="e.g. Bring back lapsed clients" autocomplete="off" />
@@ -722,7 +777,7 @@ async function copyBookingLink() {
       </article>
 
       <!-- 1. Audience -->
-      <article class="card block" aria-labelledby="audience-heading">
+      <article v-if="builderStep === 1" class="card block" aria-labelledby="audience-heading">
         <div class="block-head">
           <h2 id="audience-heading"><span class="step">1</span>Choose who</h2>
           <GmHint text="Everything here is worked out in your browser from your bookings and contacts. Cancelled bookings and time off are ignored. Opted-out contacts are always left out." label="How audiences work" />
@@ -737,35 +792,20 @@ async function copyBookingLink() {
         </div>
 
         <template v-else>
-          <p class="field-hint presets-label">Start from a ready-made group</p>
-          <div class="preset-row" role="group" aria-label="Ready-made groups">
-            <button
-              v-for="preset in SEGMENT_PRESETS"
-              :key="preset.id"
-              class="chip-button"
-              type="button"
-              :class="{ on: activePreset === preset.id }"
-              :aria-pressed="activePreset === preset.id"
-              :title="preset.description"
-              @click="applyPreset(preset)"
-              >{{ preset.name }}</button
-            >
-          </div>
+          <div class="field"><label for="audience-group">Client group</label><GmSelect id="audience-group" :model-value="activePreset || (filterCount ? 'custom' : 'all')" :options="audienceGroupOptions" label="Client group" @update:model-value="chooseAudienceGroup" /></div>
           <p v-if="activePreset" class="field-hint">{{ SEGMENT_PRESETS.find((item) => item.id === activePreset).description }}</p>
 
-          <details class="advanced-section" :open="filterCount ? true : undefined">
+          <details class="advanced-section">
             <summary>Audience filters <span v-if="filterCount" class="count-pill">{{ filterCount }}</span><span v-else class="summary-note">Optional</span></summary>
           <fieldset class="filters">
             <legend class="visually-hidden">Audience filters</legend>
             <div class="field">
               <label for="f-service">Past service contains <GmHint text="Matches the name of any service they booked, or its category. Other filters then look only at those visits." label="About the service filter" /></label>
-              <input id="f-service" v-model="draft.filters.serviceContains" class="input" list="f-service-list" placeholder="e.g. braids" autocomplete="off" />
-              <datalist id="f-service-list"><option v-for="option in serviceOptions" :key="option" :value="option" /></datalist>
+              <GmTextSuggest id="f-service" v-model="draft.filters.serviceContains" class="input" :options="serviceOptions" label="Past service contains" placeholder="e.g. braids" autocomplete="off" />
             </div>
             <div class="field">
               <label for="f-category">Category contains</label>
-              <input id="f-category" v-model="draft.filters.categoryContains" class="input" list="f-category-list" placeholder="e.g. Nails" autocomplete="off" />
-              <datalist id="f-category-list"><option v-for="option in categoryOptions" :key="option" :value="option" /></datalist>
+              <GmTextSuggest id="f-category" v-model="draft.filters.categoryContains" class="input" :options="categoryOptions" label="Category contains" placeholder="e.g. Nails" autocomplete="off" />
             </div>
             <div v-for="field in NUMBER_FIELDS" :key="field.key" class="field">
               <label :for="`f-${field.key}`">{{ field.label }} <GmHint :text="field.hint" :label="`About ${field.label}`" /></label>
@@ -776,23 +816,15 @@ async function copyBookingLink() {
             </div>
             <div v-if="teamOn" class="field">
               <label for="f-staff">Seen by <GmHint text="Only clients who had a visit with this team member." label="About the team member filter" /></label>
-              <select id="f-staff" v-model="draft.filters.staffId" class="input">
-                <option value="">Anyone</option>
-                <option v-for="option in staffOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-              </select>
+              <GmSelect id="f-staff" v-model="draft.filters.staffId" :options="staffOptions" label="Filter by team member" />
             </div>
             <div class="field">
               <label for="f-tag">Tag <GmHint text="One of your own tags from Contacts, such as VIP." label="About the tag filter" /></label>
-              <input id="f-tag" v-model="draft.filters.tag" class="input" list="f-tag-list" placeholder="Any tag" autocomplete="off" />
-              <datalist id="f-tag-list"><option v-for="option in tagOptions" :key="option" :value="option" /></datalist>
+              <GmTextSuggest id="f-tag" v-model="draft.filters.tag" class="input" :options="tagOptions" label="Tag" placeholder="Any tag" autocomplete="off" />
             </div>
             <div class="field">
               <label for="f-source">Booked how <GmHint text="Whether their first booking came from your public booking page or was added by you." label="About the source filter" /></label>
-              <select id="f-source" v-model="draft.filters.source" class="input">
-                <option value="">Either way</option>
-                <option value="guest">Booked online</option>
-                <option value="owner">Added by me</option>
-              </select>
+              <GmSelect id="f-source" v-model="draft.filters.source" :options="sourceOptions" label="Filter by how the client booked" />
             </div>
             <div class="checks">
               <label class="check"><input v-model="draft.filters.dueToRebook" type="checkbox" /> Due to rebook <GmHint text="Their last visit was longer ago than the 'rebook after' days you set on that service. Set it in Services." label="About due to rebook" /></label>
@@ -812,6 +844,7 @@ async function copyBookingLink() {
             <button v-if="filterCount" class="ghost small-button" type="button" @click="clearFilters">Clear filters</button>
           </div>
 
+          <details v-if="segment.total || segment.optedOut.length" class="audience-preview"><summary>View clients ({{ segment.total }})</summary>
           <div v-if="segment.total || segment.optedOut.length" class="table-wrap">
             <table class="preview">
               <caption class="visually-hidden">People in this audience</caption>
@@ -843,6 +876,7 @@ async function copyBookingLink() {
           </p>
           <p v-if="segment.optedOut.length > optedOutRows.length" class="table-foot">and {{ segment.optedOut.length - optedOutRows.length }} more opted-out contacts.</p>
           <p v-if="segment.optedOut.length" class="field-hint">Greyed rows asked to stop. Change this on their card in <RouterLink to="/contacts">Contacts</RouterLink>.</p>
+          </details>
           <div v-if="!segment.total && !segment.optedOut.length" class="empty compact">
             <span class="empty-icon"><AppIcon name="search" /></span>
             <h3>No one matches these filters</h3>
@@ -853,16 +887,14 @@ async function copyBookingLink() {
       </article>
 
       <!-- 2. Message -->
-      <article class="card block" aria-labelledby="message-heading">
+      <article v-if="builderStep === 2" class="card block" aria-labelledby="message-heading">
         <div class="block-head">
           <h2 id="message-heading"><span class="step">2</span>Write the message</h2>
         </div>
 
         <div class="field">
           <span class="field-label" id="channel-label">Main channel <GmHint text="Where you plan to reach people first. You can still choose a different way when you reach out." label="About the main channel" /></span>
-          <div class="segmented" role="group" aria-labelledby="channel-label">
-            <button v-for="option in CHANNELS" :key="option.value" type="button" :aria-pressed="draft.channel === option.value" :class="{ 'is-active': draft.channel === option.value }" @click="draft.channel = option.value">{{ option.label }}</button>
-          </div>
+          <GmSelect v-model="draft.channel" :options="CHANNELS" label="Main channel" />
         </div>
 
         <div v-if="draft.channel === 'email'" class="field">
@@ -872,9 +904,10 @@ async function copyBookingLink() {
         <div class="field">
           <label for="campaign-body">Message <GmHint text="Click a variable below to drop it into your message. Each person's own details are filled in when you open their message. Email batches use a name-free version." label="About the message" /></label>
           <textarea id="campaign-body" ref="bodyField" v-model="draft.body" class="body-field" maxlength="2000" rows="7"></textarea>
-          <div class="var-chips" role="group" aria-label="Insert a variable">
+          <details class="personalize-message"><summary>Personalize message</summary><div class="var-chips" role="group" aria-label="Insert a variable">
             <button v-for="variable in VARIABLES" :key="variable.name" class="chip-button var" type="button" :title="variable.hint" @click="insertVariable(variable.name)" v-text="`{{${variable.name}}}`"></button>
           </div>
+          </details>
           <p class="field-hint">A "Reply STOP to opt out" footer is always added if your message does not already have one.</p>
         </div>
 
@@ -891,7 +924,7 @@ async function copyBookingLink() {
           </div>
           <div class="field">
             <label for="offer-expires">Valid until <GmHint text="Shown in the message as 'Valid until 30 Nov 2026'. Bookins does not enforce it, so you decide at the till." label="About the expiry" /></label>
-            <input id="offer-expires" v-model="draft.offerExpires" class="input" type="date" />
+            <GmDatePicker id="offer-expires" v-model="draft.offerExpires" label="Offer expiry date" />
           </div>
         </div>
         <p class="field-hint">Offers are words only. Bookins cannot apply a discount for you, so you honour it by hand when the client books.</p>
@@ -904,31 +937,39 @@ async function copyBookingLink() {
           <p class="preview-text">{{ preview.text }}</p>
         </div>
 
-        <p v-if="saveError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ saveError }}</p>
-        <div class="form-actions">
-          <GmButton :pending="saving" pending-label="Saving…" :disabled-reason="saveReason" reason-visible @click="save">{{ draft.id ? 'Save changes' : 'Save campaign' }}</GmButton>
-        </div>
       </article>
 
-      <!-- 3. Reach out -->
-      <article class="card block" aria-labelledby="reach-heading">
+      <!-- 3. Review and reach out -->
+      <article v-if="builderStep === 3" class="card block" aria-labelledby="reach-heading">
         <div class="block-head">
-          <h2 id="reach-heading"><span class="step">3</span>Reach your clients</h2>
+          <h2 id="reach-heading"><span class="step">3</span>Review</h2>
           <GmHint :text="`${CONSENT_TEXT} ${CONSENT_LAW}`" label="About consent" />
         </div>
-        <p class="field-hint">Bookins builds the list and the message, then you open each one in your own app. It cannot see what happens after you press send in your own app, so progress here is only what you opened.</p>
+        <p class="field-hint">Only message clients who agreed to hear from you. Opted-out clients are excluded.</p>
+        <div class="review-summary">
+          <p><span>Campaign</span><strong>{{ draft.name }}</strong></p>
+          <p><span>Audience</span><strong>{{ segment.total }} {{ segment.total === 1 ? 'person' : 'people' }}</strong></p>
+          <p><span>Main channel</span><strong>{{ CHANNELS.find((option) => option.value === draft.channel)?.label }}</strong></p>
+        </div>
+        <div class="message-preview" aria-live="polite">
+          <p class="preview-label">Message preview</p>
+          <p v-if="draft.channel === 'email'" class="preview-subject"><strong>Subject:</strong> {{ preview.subject }}</p>
+          <p class="preview-text">{{ preview.text }}</p>
+        </div>
+        <p v-if="saveError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ saveError }}</p>
 
         <div v-if="!draft.id" class="empty compact">
           <span class="empty-icon"><AppIcon name="lock" /></span>
-          <h3>Save the campaign to start</h3>
-          <p>Saving keeps your place, so you can stop and carry on later where you left off.</p>
-          <GmButton :pending="saving" pending-label="Saving…" :disabled-reason="saveReason" reason-visible @click="save">Save campaign</GmButton>
+          <h3>Save to start reaching clients</h3>
+          <p>Bookins will remember who you opened.</p>
         </div>
 
         <template v-else>
-          <div class="segmented send-tabs" role="tablist" aria-label="How to reach people">
-            <button v-for="tab in SEND_TABS" :key="tab.value" type="button" role="tab" :aria-selected="sendTab === tab.value" :class="{ 'is-active': sendTab === tab.value }" @click="sendTab = tab.value">{{ tab.label }}</button>
+          <div class="reach-intro">
+            <h3>Reach your clients</h3>
+            <p>Open each message in your own app. Bookins records what you opened, not what you sent.</p>
           </div>
+          <details class="advanced-section"><summary>Other ways to reach clients</summary><GmSelect v-model="sendTab" :options="SEND_TABS" label="How to reach clients" /></details>
 
           <div class="queue-summary" role="status">
             <strong class="tnum">{{ queue.total }}</strong> {{ queue.total === 1 ? 'person' : 'people' }} in this queue
@@ -1038,25 +1079,15 @@ async function copyBookingLink() {
           </details>
         </template>
       </article>
-    </div>
 
-    <div v-if="dirty" class="sticky-save-bar" role="status">
-      <span>Unsaved changes</span>
-      <div class="cluster">
-        <GmConfirm
-          v-model:open="discardOpen"
-          title="Discard unsaved changes?"
-          :message="draft.id ? 'Your edits to this campaign will be lost.' : 'This new campaign has not been saved.'"
-          confirm-label="Discard changes"
-          cancel-label="Keep editing"
-          tone="danger"
-          @confirm="discardChanges"
-        >
-          <button class="secondary small" type="button" @click="discardOpen = true">Discard</button>
-        </GmConfirm>
-        <GmButton size="sm" :pending="saving" pending-label="Saving…" :disabled-reason="saveReason" @click="save">{{ draft.id ? 'Save changes' : 'Save campaign' }}</GmButton>
-      </div>
+      <footer class="builder-nav">
+        <button v-if="builderStep > 1" class="secondary" type="button" @click="previousStep"><AppIcon name="arrow-left" :size="16" />Back</button>
+        <span v-else />
+        <GmButton v-if="builderStep < 3" :disabled-reason="nextReason" reason-visible @click="nextStep">Next<AppIcon name="chevron" :size="15" /></GmButton>
+        <GmButton v-else :pending="saving" pending-label="Saving…" :disabled-reason="saveReason" reason-visible @click="save">{{ draft.id ? 'Save changes' : 'Save campaign' }}</GmButton>
+      </footer>
     </div>
+    </GmDialog>
   </section>
 </template>
 
@@ -1069,7 +1100,19 @@ async function copyBookingLink() {
 .block-head .chip { margin-left: auto; }
 .block-head h2 + .chip { margin-left: 0; }
 .step { width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: var(--text-sm); font-weight: 750; }
-.builder { display: grid; gap: var(--space-4); }
+.builder { min-height: 100%; display: grid; gap: var(--space-4); align-content: start; }
+.builder-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.builder-head > div { min-width: 0; }
+.builder-head > :last-child { flex: none; }
+.builder-sticky-head { position: sticky; top: calc(var(--space-5) * -1); z-index: 12; margin: calc(var(--space-5) * -1) calc(var(--space-5) * -1) var(--space-4); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--line); background: var(--surface); }
+.builder-head h2 { margin: 2px 0 0; font-size: var(--text-xl); }
+.builder-kicker { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.builder-steps { margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; list-style: none; }
+.builder-steps li { min-width: 0; padding: 8px 10px; display: flex; align-items: center; gap: 8px; color: var(--muted); border-radius: var(--radius-sm); background: var(--surface-soft); font-size: var(--text-sm); font-weight: 650; }
+.builder-steps li span { width: 24px; height: 24px; flex: 0 0 auto; display: grid; place-items: center; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 50%; font-size: var(--text-xs); }
+.builder-steps li.active { color: var(--accent); background: var(--accent-soft); }
+.builder-steps li.active span, .builder-steps li.done span { color: #fff; border-color: var(--accent); background: var(--accent); }
+.builder-nav { position: sticky; bottom: 0; z-index: 2; margin-top: auto; padding: var(--space-3) 0 max(var(--space-2), env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border-top: 1px solid var(--line); background: #fff; }
 .consent p { margin: 0 0 var(--space-2); }
 .consent .small-button { margin-top: var(--space-1); }
 .faint { color: var(--muted); font-size: var(--text-sm); }
@@ -1080,6 +1123,11 @@ async function copyBookingLink() {
 .campaign-main { min-width: 0; flex: 1 1 260px; }
 .campaign-main h3 { margin: 0; font-size: var(--text-md); font-weight: 650; }
 .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.campaign-menu { position: relative; }
+.campaign-menu > summary { list-style: none; cursor: pointer; }
+.campaign-menu > summary::-webkit-details-marker { display: none; }
+.campaign-menu-items { position: absolute; top: calc(100% + 6px); right: 0; z-index: 5; min-width: 190px; padding: 8px; display: grid; gap: 4px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; box-shadow: var(--shadow-lg, var(--shadow)); }
+.campaign-menu-items > * { width: 100%; justify-content: flex-start; }
 .presets-label { margin: 0; }
 .preset-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .chip-button { min-height: var(--control-h-sm); padding: 0 14px; color: var(--ink-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: #fff; font-size: var(--text-sm); font-weight: 650; cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
@@ -1123,6 +1171,12 @@ table.preview td .chip + .chip { margin-left: 4px; }
 .send-tabs { max-width: 100%; justify-self: start; overflow-x: auto; }
 .queue-summary { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .queue-summary strong { font-size: var(--text-lg); }
+.review-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+.review-summary p { margin: 0; padding: var(--space-3); display: grid; gap: 4px; border-radius: var(--radius-sm); background: var(--surface-soft); }
+.review-summary span { color: var(--muted); font-size: var(--text-xs); }
+.review-summary strong { font-size: var(--text-md); overflow-wrap: anywhere; }
+.reach-intro h3 { margin: 0; font-size: var(--text-md); }
+.reach-intro p { margin: 4px 0 0; color: var(--muted); font-size: var(--text-sm); }
 .advanced-section { margin: var(--space-3) 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
 .advanced-section > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: 650; }
 .advanced-section > summary .summary-note { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
@@ -1155,6 +1209,10 @@ table.preview td .chip + .chip { margin-left: 4px; }
 .recipient-list .who { min-width: 0; flex: 1 1 160px; display: grid; }
 .recipient-list .status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 @media (max-width: 700px) {
+  .builder-sticky-head { top: calc(var(--space-4) * -1); margin: calc(var(--space-4) * -1) calc(var(--space-4) * -1) var(--space-4); padding: max(var(--space-4), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-right)) var(--space-4) max(var(--space-4), env(safe-area-inset-left)); }
+  .builder-steps li { justify-content: center; padding-inline: 6px; font-size: 0; }
+  .builder-steps li span { font-size: var(--text-xs); }
+  .review-summary { grid-template-columns: 1fr; }
   .filters { padding: var(--space-3); grid-template-columns: 1fr; }
   .audience-bar .ghost { margin-left: 0; }
   table.preview thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
@@ -1169,4 +1227,5 @@ table.preview td .chip + .chip { margin-left: 4px; }
   .batch > .batch-actions { width: 100%; justify-content: flex-start; }
   .batch > .batch-actions a { flex: 1 1 auto; justify-content: center; }
 }
+.audience-preview>summary,.personalize-message>summary{min-height:40px;display:flex;align-items:center;cursor:pointer;font-size:13px;color:var(--accent);font-weight:600}.audience-preview>summary::after,.personalize-message>summary::after{content:"⌄";margin-left:auto}
 </style>

@@ -29,14 +29,27 @@ const props = defineProps({
   required: Boolean,
   loading: Boolean,
   invalid: Boolean,
+  searchable: Boolean,
+  searchPlaceholder: { type: String, default: 'Search options' },
   describedBy: { type: String, default: undefined },
   theme: { type: String, default: 'light' },
   portalTarget: { type: [String, Object], default: 'body' },
 })
-const emit = defineEmits(['update:modelValue', 'update:open', 'invalid'])
+const emit = defineEmits(['update:modelValue', 'change', 'update:open', 'invalid'])
 const missingRequired = ref(false)
 const open = ref(false)
-watch(open, (value) => emit('update:open', value))
+const searchInput = ref(/** @type {HTMLInputElement | null} */ (null))
+const searchQuery = ref('')
+watch(open, async (value) => {
+  emit('update:open', value)
+  if (!value) {
+    searchQuery.value = ''
+    return
+  }
+  if (!props.searchable) return
+  await nextTick()
+  window.requestAnimationFrame(() => searchInput.value?.focus({ preventScroll: true }))
+})
 const nativeControl = ref(/** @type {HTMLSelectElement | null} */ (null))
 // Form reset restores the initial value, not the current reactive selection.
 // eslint-disable-next-line vue/no-setup-props-destructure
@@ -66,6 +79,11 @@ const selectedIndex = computed(() =>
   props.options.findIndex((option) => option.value === props.modelValue),
 )
 const selected = computed(() => props.options[selectedIndex.value])
+const filteredOptions = computed(() => {
+  const query = searchQuery.value.trim().toLocaleLowerCase()
+  if (!props.searchable || !query) return props.options
+  return props.options.filter((option) => option.label.toLocaleLowerCase().includes(query))
+})
 // HTML required selects treat only the first empty option as the missing-value placeholder.
 const nativeSelectedIndex = computed(() => props.required && props.modelValue === '' ? 0 : selectedIndex.value + 1)
 const optionKey = (value) => typeof value + ':' + String(value)
@@ -106,12 +124,28 @@ const choose = (value) => {
     !props.disabled &&
     !props.loading &&
     !nativeControl.value?.matches(':disabled')
-  )
+  ) {
     emit('update:modelValue', option.value)
+    emit('change', option.value)
+  }
 }
 const chooseNative = (event) => {
   const option = props.options[event.target.selectedIndex - 1]
   if (option) choose(optionKey(option.value))
+}
+const onSearchKeydown = (event) => {
+  event.stopPropagation()
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    open.value = false
+    return
+  }
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  const options = [...(searchInput.value?.closest('.gm-select-content')?.querySelectorAll('[role="option"]:not([data-disabled])') || [])]
+  const target = event.key === 'ArrowDown' ? options[0] : options.at(-1)
+  if (!target) return
+  event.preventDefault()
+  target.focus()
 }
 </script>
 
@@ -203,6 +237,36 @@ const chooseNative = (event) => {
           :side-offset="6"
           :collision-padding="12"
         >
+          <div
+            v-if="searchable"
+            class="gm-select-search-wrap"
+          >
+            <svg
+              class="gm-select-search-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-4-4" />
+            </svg>
+            <input
+              ref="searchInput"
+              v-model="searchQuery"
+              class="gm-select-search"
+              type="search"
+              inputmode="search"
+              autocomplete="off"
+              :placeholder="searchPlaceholder"
+              :aria-label="`${searchPlaceholder} for ${label}`"
+              @keydown="onSearchKeydown"
+              @pointerdown.stop
+            />
+          </div>
           <SelectScrollUpButton
             class="gm-select-scroll"
             aria-hidden="true"
@@ -222,7 +286,7 @@ const chooseNative = (event) => {
           </SelectScrollUpButton>
           <SelectViewport class="gm-select-viewport">
             <SelectItem
-              v-for="option in options"
+              v-for="option in filteredOptions"
               :key="optionKey(option.value)"
               :value="optionKey(option.value)"
               :disabled="option.disabled"
@@ -249,9 +313,9 @@ const chooseNative = (event) => {
               </SelectItemIndicator>
             </SelectItem>
             <p
-              v-if="!options.length"
+              v-if="!filteredOptions.length"
               class="gm-select-empty"
-              >No options available</p
+              >{{ searchQuery ? 'No matching options' : 'No options available' }}</p
             >
           </SelectViewport>
           <SelectScrollDownButton
@@ -293,7 +357,8 @@ const chooseNative = (event) => {
 }
 .gm-select-trigger,
 .gm-select-content,
-.gm-select-item {
+.gm-select-item,
+.gm-select-search {
   box-sizing: border-box;
 }
 .gm-select-shell > .gm-select-native {
@@ -334,6 +399,38 @@ const chooseNative = (event) => {
   --select-accent: #601ded;
   --select-muted: #64616d;
 }
+.gm-select-search-wrap {
+  position: relative;
+  padding: 8px 8px 4px;
+}
+.gm-select-search-icon {
+  position: absolute;
+  left: 19px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  color: var(--select-muted);
+  pointer-events: none;
+  transform: translateY(-38%);
+}
+.gm-select-search {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 9px 12px 9px 36px;
+  border: 1px solid var(--select-border);
+  border-radius: 8px;
+  background: var(--select-bg);
+  color: var(--select-text);
+  font: inherit;
+  font-size: 16px;
+}
+.gm-select-search:focus {
+  border-color: var(--select-accent);
+  outline: 2px solid color-mix(in srgb, var(--select-accent) 28%, transparent);
+  outline-offset: 0;
+}
+.gm-select-search::-webkit-search-cancel-button { cursor: pointer; }
 .gm-select-trigger[data-theme='dark'],
 .gm-select-content[data-theme='dark'] {
   --select-bg: #201d28;

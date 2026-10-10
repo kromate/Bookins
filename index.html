@@ -12,9 +12,15 @@
     />
     <meta name="theme-color" content="#ffffff" />
     <title>Bookins</title>
+    <style>
+      .bootstrap-loading{min-height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:#f8f9fb;color:#20242d;font:14px/1.5 system-ui,sans-serif}
+      .bootstrap-loading strong{font-size:24px;letter-spacing:-.04em}.bootstrap-loading span{color:#626976}.bootstrap-loading i{width:96px;height:3px;border-radius:3px;background:#2336dc;animation:loading-pulse 1.2s ease-in-out infinite}
+      @keyframes loading-pulse{50%{opacity:.3}}@media(prefers-reduced-motion:reduce){.bootstrap-loading i{animation:none}}
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><div class="bootstrap-loading" role="status" aria-live="polite"><strong>Bookins</strong><span>Loading…</span><i aria-hidden="true"></i></div></div>
+    <noscript>Enable JavaScript to use Bookins.</noscript>
     <script
       type="module"
       src="/goalmatic.dev.js"

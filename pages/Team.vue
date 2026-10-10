@@ -1,7 +1,7 @@
 <script setup>
 // Team: everyone who takes appointments. A member is a person plus their own calendar (a schedule), which is what
 // lets two people be booked at the same time. The owner is always member #1 ("You"), implicit until saved.
-import { computed, inject, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
@@ -118,10 +118,30 @@ const saveReason = computed(() => {
   if (!form.allServices && !form.serviceIds.length) return 'Choose at least one service, or switch to All services.'
   return ''
 })
+function closeMemberMenus(except = null) {
+  for (const menu of document.querySelectorAll('.member-more[open]')) {
+    if (menu !== except) menu.removeAttribute('open')
+  }
+}
+function onMemberMenuPointerDown(event) {
+  closeMemberMenus(event.target.closest?.('.member-more') || null)
+}
+function onMemberMenuKeydown(event) {
+  if (event.key === 'Escape') closeMemberMenus()
+}
+function closeMemberMenuFromAction(event) {
+  if (!event.target.closest?.('.gm-confirm')) event.currentTarget.closest('details')?.removeAttribute('open')
+}
 const removeGuard = registerDemoGuard('bookins-team-dialog', () => (open.value ? 'Close the team member window before switching modes.' : ''))
+onMounted(() => {
+  document.addEventListener('pointerdown', onMemberMenuPointerDown)
+  document.addEventListener('keydown', onMemberMenuKeydown)
+})
 onBeforeUnmount(() => {
   removeGuard()
   window.clearInterval(clock)
+  document.removeEventListener('pointerdown', onMemberMenuPointerDown)
+  document.removeEventListener('keydown', onMemberMenuKeydown)
 })
 
 function loadHoursFrom(schedule) {
@@ -344,9 +364,9 @@ const reactivateMessage = (member) =>
   <section>
     <div class="page-header">
       <div>
-        <p class="eyebrow">Your people</p>
+
         <h1>Team</h1>
-        <p class="lede">Everyone who takes appointments. Each person has their own calendar (working hours and time off), so two people can be booked at the same time while one person is never double-booked.</p>
+        <p class="lede">Manage the people clients can book.</p>
       </div>
       <div class="page-header-actions">
         <GmButton variant="primary" data-tour="tour-team-add" :disabled-reason="demoHint" @click="openAdd"><template #leading><AppIcon name="plus" :size="18" /></template>Add team member</GmButton>
@@ -369,53 +389,50 @@ const reactivateMessage = (member) =>
               <span class="chip success dot">Active</span>
               <span v-if="!row.owner && !row.schedule" class="chip warning">No hours yet</span>
             </div>
-            <p v-if="row.member.role || row.member.phone || row.member.email" class="member-contact">
-              <span v-if="row.member.role">{{ row.member.role }}</span>
-              <span v-if="row.member.phone">{{ row.member.phone }}</span>
-              <span v-if="row.member.email">{{ row.member.email }}</span>
-            </p>
+            <p v-if="row.member.role" class="member-contact"><span>{{ row.member.role }}</span></p>
             <ul class="member-facts">
-              <li><AppIcon name="clock" :size="16" /><span>{{ row.hours.text }}<template v-if="row.hours.hoursPerWeek"> · {{ row.hours.hoursPerWeek }} h a week</template></span></li>
-              <li><AppIcon name="services" :size="16" /><span>{{ row.services }}<GmHint :text="row.owner ? 'Which services you can be assigned. Guests only see people you have set up on a service.' : 'The services you can assign to this person in Bookings. Whether guests can pick them is set per service in Services.'" label="About services offered" /></span></li>
-              <li><AppIcon name="bookings" :size="16" /><span>{{ row.upcoming }} upcoming booking{{ row.upcoming === 1 ? '' : 's' }}<template v-if="row.onPage"> · on your booking page ({{ row.onPage }} service{{ row.onPage === 1 ? '' : 's' }})</template></span></li>
+              <li><AppIcon name="clock" :size="16" /><span>{{ row.hours.text }}<template v-if="row.hours.hoursPerWeek"> · {{ row.hours.hoursPerWeek }} h/week</template></span></li>
+              <li><AppIcon name="services" :size="16" /><span>{{ row.services }}</span></li>
+              <li><AppIcon name="bookings" :size="16" /><span>{{ row.upcoming }} upcoming</span></li>
             </ul>
           </div>
           <div class="member-actions">
-            <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)"><template #leading><AppIcon name="edit" :size="16" /></template>Edit</GmButton>
-            <router-link class="secondary small-button action-link" :to="row.owner ? '/availability' : { path: '/availability', query: { staff: row.member.id } }">Hours</router-link>
-            <router-link class="ghost small-button action-link" :to="{ path: '/bookings', query: { staff: row.member.id } }">Bookings</router-link>
-            <GmConfirm
-              v-if="!row.owner"
-              :open="confirming === row.member.id"
-              :title="`Deactivate ${memberFirstName(row.member)}?`"
-              :message="deactivateMessage(row.member)"
-              confirm-label="Deactivate"
-              cancel-label="Keep active"
-              tone="danger"
-              :busy="statusBusy"
-              @update:open="(value) => { if (value) confirming = row.member.id; else if (!statusBusy) confirming = '' }"
-              @confirm="deactivate(row.member)"
-            >
-              <GmButton variant="ghost" size="sm" :disabled-reason="demoHint" :aria-label="`Deactivate ${row.member.name}`" @click="confirming = row.member.id">Deactivate</GmButton>
-            </GmConfirm>
+            <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)"><template #leading><AppIcon name="edit" :size="16" /></template>Manage</GmButton>
+            <details class="member-more">
+              <summary class="ghost small-button" :aria-label="`More actions for ${row.member.name || 'you'}`">More <AppIcon name="chevron" :size="15" /></summary>
+              <div class="member-more-menu" @click="closeMemberMenuFromAction">
+                <router-link class="ghost small-button action-link" :to="row.owner ? '/availability' : { path: '/availability', query: { staff: row.member.id } }">Working hours</router-link>
+                <router-link class="ghost small-button action-link" :to="{ path: '/bookings', query: { staff: row.member.id } }">Bookings</router-link>
+                <p v-if="row.member.phone || row.member.email" class="member-more-contact"><span v-if="row.member.phone">{{ row.member.phone }}</span><span v-if="row.member.email">{{ row.member.email }}</span></p>
+                <GmConfirm
+                  v-if="!row.owner"
+                  :open="confirming === row.member.id"
+                  :title="`Deactivate ${memberFirstName(row.member)}?`"
+                  :message="deactivateMessage(row.member)"
+                  confirm-label="Deactivate"
+                  cancel-label="Keep active"
+                  tone="danger"
+                  :busy="statusBusy"
+                  @update:open="(value) => { if (value) confirming = row.member.id; else if (!statusBusy) confirming = '' }"
+                  @confirm="deactivate(row.member)"
+                >
+                  <GmButton variant="ghost" size="sm" class="deactivate-action" :disabled-reason="demoHint" :aria-label="`Deactivate ${row.member.name}`" @click="confirming = row.member.id">Deactivate</GmButton>
+                </GmConfirm>
+              </div>
+            </details>
           </div>
         </li>
       </ul>
 
       <p v-if="team" class="team-tip muted" data-team-tip>
         <AppIcon name="info" :size="16" />
-        <span><strong>Many services?</strong> You do not have to open each service. On the <RouterLink to="/services">Services page</RouterLink>, use "Let guests choose a team member for…" to do it for all services or a whole category. Or add a <code>staff</code> column to your services CSV (names separated by ; or |, for example <code>Amaka; Tolu</code>) and import it.</span>
+        <span>Set which team members guests can choose from on the <RouterLink to="/services">Services page</RouterLink>.</span>
       </p>
 
       <div v-if="!team" class="card team-empty">
         <span class="empty-icon"><AppIcon name="team" /></span>
         <h2>Working with other people?</h2>
-        <p>Right now it is just you, and everything works exactly as before. Add someone and they get their own calendar: their own working hours and time off.</p>
-        <ul class="explain">
-          <li><strong>Two people, same time.</strong> Each person is booked separately, so Amaka and Tolu can both have a 10:00 appointment. One person can never be double-booked.</li>
-          <li><strong>You assign the work.</strong> In Bookings you assign or reassign a booking to a person, one at a time or in bulk. A move is refused if they are busy or on time off.</li>
-          <li><strong>Guests choose, you do not auto-assign.</strong> Letting a guest pick a person is set up per service in Services. "Any professional" (Bookins picks whoever is free) is not available yet.</li>
-        </ul>
+        <p>Add someone to give them their own working hours, time off and bookings.</p>
         <div class="empty-actions">
           <GmButton variant="primary" :disabled-reason="demoHint" @click="openAdd">Add your first team member</GmButton>
         </div>
@@ -449,7 +466,7 @@ const reactivateMessage = (member) =>
               >
                 <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="confirming = row.member.id">Reactivate</GmButton>
               </GmConfirm>
-              <GmButton variant="ghost" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)">Edit</GmButton>
+              <GmButton variant="ghost" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)">Manage</GmButton>
               <router-link class="ghost small-button action-link" :to="{ path: '/bookings', query: { staff: row.member.id } }">Bookings</router-link>
             </div>
           </li>
@@ -468,16 +485,16 @@ const reactivateMessage = (member) =>
       <form novalidate @submit.prevent="submit">
         <div class="modal-header">
           <div>
-            <p class="eyebrow">{{ editingOwner ? 'You' : editing ? 'Team member' : 'New team member' }}</p>
+
             <h2>{{ editingOwner ? 'Your team profile' : editing ? `Edit ${form.name.trim() || 'team member'}` : 'Add team member' }}</h2>
           </div>
-          <button class="icon-button" type="button" aria-label="Close" @click="requestClose"><AppIcon name="close" /></button>
+          <button class="icon-button" type="button" aria-label="Close" :disabled="saving" @click="requestClose"><AppIcon name="close" /></button>
         </div>
 
         <div v-if="formError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ formError }}</div>
 
         <p v-if="editingOwner" class="field-hint form-hint">This is how you appear next to your own bookings. Your working hours are edited in Availability.</p>
-        <p v-else-if="!editing" class="field-hint form-hint">They get their own calendar. Two people can be booked at the same time; the same person cannot.</p>
+        <p v-else-if="!editing" class="field-hint form-hint">Each person has their own availability.</p>
 
         <div class="field">
           <label for="member-name">Name</label>
@@ -602,23 +619,31 @@ const reactivateMessage = (member) =>
 <style scoped>
 .demo-note { margin: 0 0 var(--space-3); font-size: var(--text-sm); }
 .team-wrap { display: grid; gap: var(--space-4); }
-.member-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-3); }
-.member-card { padding: var(--space-4); display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: start; gap: var(--space-4); box-shadow: none; }
+.member-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
+.member-card { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); box-shadow: none; }
 .member-card.is-inactive { background: #fafafc; }
 .member-card.is-inactive .member-avatar { opacity: 0.55; }
-.member-avatar { position: relative; width: 56px; height: 56px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-xl); font-weight: 750; }
+.member-avatar { position: relative; width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-md); font-weight: 750; }
 .member-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
-.member-main { min-width: 0; display: grid; gap: var(--space-2); }
+.member-main { min-width: 0; display: grid; gap: 4px; }
 .member-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.member-title h2 { margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
+.member-title h2 { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
 .member-contact { margin: 0; display: flex; flex-wrap: wrap; gap: 2px var(--space-3); color: var(--muted); font-size: var(--text-sm); }
 .member-contact span { overflow-wrap: anywhere; }
-.member-facts { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.member-facts { margin: 2px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 5px var(--space-4); }
 .member-facts li { display: flex; align-items: center; gap: 8px; color: var(--ink-soft, var(--ink)); font-size: var(--text-sm); }
 .member-facts li > svg { flex: none; color: var(--muted); }
 .member-facts li > span { min-width: 0; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 4px; }
-.member-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); max-width: 440px; }
+.member-actions { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
 .action-link { min-height: var(--control-h-sm); display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.member-more { position: relative; }
+.member-more > summary { min-height: var(--control-h-sm); display: inline-flex; align-items: center; gap: 4px; list-style: none; cursor: pointer; }
+.member-more > summary::-webkit-details-marker { display: none; }
+.member-more[open] > summary svg { transform: rotate(90deg); }
+.member-more-menu { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: max-content; min-width: 190px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; box-shadow: var(--shadow-lg); }
+.member-more-menu > a, .member-more-menu :deep(.gm-button) { width: 100%; justify-content: flex-start; }
+.member-more-contact { margin: 4px 8px; padding-top: 8px; display: grid; gap: 3px; color: var(--muted); border-top: 1px solid var(--line); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.member-more-menu :deep(.deactivate-action) { color: var(--danger); }
 .inactive-title { margin: var(--space-4) 0 0; display: flex; align-items: center; gap: 4px; }
 
 .team-empty { padding: var(--space-6) var(--space-5); display: grid; justify-items: center; gap: var(--space-3); text-align: center; box-shadow: none; }
@@ -660,6 +685,7 @@ const reactivateMessage = (member) =>
   .member-card { grid-template-columns: 48px minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); }
   .member-avatar { width: 48px; height: 48px; font-size: var(--text-lg); }
   .member-actions { grid-column: 1 / -1; max-width: none; justify-content: flex-start; }
+  .member-more-menu { left: 0; right: auto; }
   .team-empty { padding: var(--space-5) var(--space-4); }
   .save-reason { text-align: left; }
   .modal-footer > button, .modal-footer > a { flex: 1 1 auto; }

@@ -41,7 +41,7 @@ const en = {
   'confirm.minutes': '{count} minutes',
   'confirm.ics': 'Download .ics file',
   'confirm.google': 'Add to Google Calendar',
-  'confirm.note': 'These buttons create the event on your device only. Bookins does not send a confirmation email, add this to your calendar for you, or take online payment in this release. Save your reference, because it is not shown again after you leave this page.',
+  'confirm.note': 'Save a copy of these details for your appointment.',
 
   'host.eyebrow': 'Book a session with',
   'tz.shownIn': 'Times shown in',
@@ -98,7 +98,7 @@ const en = {
 
   'form.title': 'Tell us about you',
   'form.titleDemo': 'Preview guest details',
-  'form.text': 'We will use these details only for this booking.',
+  'form.text': 'Enter your contact details to finish booking.',
   'form.textDemo': 'Use fictional details to explore this form. Nothing is sent or booked.',
   'form.name': 'Full name',
   'form.namePh': 'Your name',
@@ -114,7 +114,7 @@ const en = {
   'form.submitUnchecked': 'Confirm without Calendar check',
   'form.submitting': 'Confirming your booking…',
   'form.submitDemo': 'Reservations unavailable in Demo',
-  'form.fine': 'Your booking is shown on this screen. Bookins does not send email, add to your calendar, or take payment in this release.',
+  'form.fine': 'Your confirmation will appear here after booking.',
   'form.fineDemo': 'Demo does not submit these details or create a booking.',
   'form.errName': 'Enter your name.',
   'form.errEmailEmpty': 'Enter your email address.',
@@ -233,7 +233,7 @@ const fr = {
   'confirm.minutes': '{count} minutes',
   'confirm.ics': 'Télécharger le fichier .ics',
   'confirm.google': 'Ajouter à Google Agenda',
-  'confirm.note': 'Ces boutons créent l’événement uniquement sur votre appareil. Dans cette version, Bookins n’envoie pas d’e-mail de confirmation, n’ajoute pas ce rendez-vous à votre agenda à votre place et ne prend aucun paiement en ligne. Notez votre référence : elle ne sera plus affichée une fois que vous aurez quitté cette page.',
+  'confirm.note': 'Enregistrez ces informations pour votre rendez-vous.',
 
   'host.eyebrow': 'Réserver une séance avec',
   'tz.shownIn': 'Heures affichées en',
@@ -290,7 +290,7 @@ const fr = {
 
   'form.title': 'Dites-nous qui vous êtes',
   'form.titleDemo': 'Aperçu des coordonnées de l’invité',
-  'form.text': 'Nous utiliserons ces informations uniquement pour cette réservation.',
+  'form.text': 'Saisissez vos coordonnées pour terminer la réservation.',
   'form.textDemo': 'Utilisez des coordonnées fictives pour explorer ce formulaire. Rien n’est envoyé ni réservé.',
   'form.name': 'Nom complet',
   'form.namePh': 'Votre nom',
@@ -306,7 +306,7 @@ const fr = {
   'form.submitUnchecked': 'Confirmer sans vérification de l’agenda',
   'form.submitting': 'Confirmation de votre réservation…',
   'form.submitDemo': 'Réservation indisponible dans la démo',
-  'form.fine': 'Votre réservation s’affiche sur cet écran. Dans cette version, Bookins n’envoie pas d’e-mail, n’ajoute rien à votre agenda et ne prend aucun paiement.',
+  'form.fine': 'Votre confirmation s’affichera ici après la réservation.',
   'form.fineDemo': 'La démo n’envoie pas ces informations et ne crée aucune réservation.',
   'form.errName': 'Saisissez votre nom.',
   'form.errEmailEmpty': 'Saisissez votre adresse e-mail.',

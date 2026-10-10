@@ -3,6 +3,7 @@
 // `days` is the reactive array from `makeDays()`; rows edit it in place. `idPrefix` keeps ids unique when
 // two editors can be on screen.
 import { computed } from 'vue'
+import GmTimePicker from './ui/GmTimePicker.vue'
 import { cloneWindows, dayIssues, endMinute, time } from '../weekly-hours.js'
 
 const props = defineProps({
@@ -51,8 +52,8 @@ function copyDayToWeekdays(source) {
         <template v-if="day.active">
           <div v-for="(item, index) in day.windows" :key="index" class="weekly-hours__window-row">
             <div class="weekly-hours__time-range">
-              <input v-model="item.start" type="time" required :disabled="disabled" :aria-label="`${day.name} window ${index + 1} start time`" /><span class="weekly-hours__to">to</span
-              ><input v-model="item.end" type="time" required :disabled="disabled" :aria-label="`${day.name} window ${index + 1} end time`" />
+              <GmTimePicker :id="`${idPrefix}-${day.weekday}-${index}-start`" v-model="item.start" required :disabled="disabled" :label="`${day.name} window ${index + 1} start time`" /><span class="weekly-hours__to">to</span
+              ><GmTimePicker :id="`${idPrefix}-${day.weekday}-${index}-end`" v-model="item.end" required :disabled="disabled" :label="`${day.name} window ${index + 1} end time`" />
             </div>
             <button
               v-if="day.windows.length > 1"
@@ -64,10 +65,13 @@ function copyDayToWeekdays(source) {
               >Remove</button
             >
           </div>
-          <div class="weekly-hours__actions">
-            <button class="ghost small-button" type="button" :disabled="disabled" @click="addWindow(day)">+ Add window</button>
-            <button class="ghost small-button" type="button" :disabled="disabled" @click="copyDayToWeekdays(day)">Copy to Mon-Fri</button>
-          </div>
+          <details class="weekly-hours__more">
+            <summary :aria-label="`More options for ${day.name}`">More</summary>
+            <div class="weekly-hours__actions">
+              <button class="ghost small-button" type="button" :disabled="disabled" @click="addWindow(day)">Add another time range</button>
+              <button class="ghost small-button" type="button" :disabled="disabled" @click="copyDayToWeekdays(day)">Use for Monday to Friday</button>
+            </div>
+          </details>
           <p v-if="issues[day.weekday]" class="weekly-hours__issue" role="alert">{{ issues[day.weekday] }}</p>
         </template>
         <span v-else class="weekly-hours__closed-label">Unavailable</span>
@@ -92,8 +96,8 @@ function copyDayToWeekdays(source) {
 .weekly-hours__window-row { display: grid; grid-template-columns: minmax(280px, 360px) max-content; align-items: center; gap: var(--space-2); min-width: 0; }
 .weekly-hours__time-range { min-width: 0; min-height: var(--control-h); padding: 0 4px; display: grid; grid-template-columns: minmax(108px, 1fr) auto minmax(108px, 1fr); align-items: center; gap: 4px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: #fff; }
 .weekly-hours__time-range:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
-.weekly-hours__time-range input { width: 100%; min-width: 0; min-height: 38px; padding: 0 8px; color: var(--ink); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: var(--text-md); font-variant-numeric: tabular-nums; }
-.weekly-hours__time-range input:focus, .weekly-hours__time-range input:focus-visible { outline: 0; box-shadow: none; }
+.weekly-hours__time-range :deep(.gm-picker-trigger) { min-height: 38px; padding: 0 8px; color: var(--ink); border: 0; border-radius: var(--radius-sm); background: transparent; font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+.weekly-hours__time-range :deep(.gm-picker-trigger:focus), .weekly-hours__time-range :deep(.gm-picker-trigger:focus-visible) { outline: 0; box-shadow: none; }
 .weekly-hours__to { color: var(--muted); font-size: var(--text-sm); }
 .weekly-hours__remove { min-width: 88px; padding-inline: 14px; color: var(--danger); white-space: nowrap; }
 .weekly-hours__actions { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
@@ -111,9 +115,13 @@ function copyDayToWeekdays(source) {
 @media (max-width: 520px) {
   .weekly-hours__window-row { grid-template-columns: 1fr; }
   .weekly-hours__remove { justify-self: start; }
+  .weekly-hours__actions { display: grid; grid-template-columns: 1fr; gap: var(--space-2); }
+  .weekly-hours__actions .small-button { width: 100%; justify-content: center; }
 }
 @media (max-width: 380px) {
   .weekly-hours__time-range { grid-template-columns: minmax(96px, 1fr) auto minmax(96px, 1fr); }
-  .weekly-hours__time-range input { padding-inline: 4px; font-size: 16px; }
+  .weekly-hours__time-range :deep(.gm-picker-trigger) { padding-inline: 4px; font-size: 16px; }
 }
+.weekly-hours__more summary{min-height:28px;display:inline-flex;align-items:center;cursor:pointer;font-size:12px;color:var(--muted);font-weight:600}.weekly-hours__more summary::after{content:"⌄";margin-left:6px}.weekly-hours__more[open] summary{color:var(--accent)}.weekly-hours__more .weekly-hours__actions{padding-top:4px}
+@media(max-width:780px){.weekly-hours__day.is-closed{grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px}}
 </style>

@@ -27,6 +27,45 @@ const route = useRoute()
 if (['localhost', '127.0.0.1'].includes(globalThis.location?.hostname))
   document.documentElement.classList.add('bookins-loopback')
 const router = useRouter()
+const routePending = ref(false)
+const pendingPath = ref('')
+const navigationError = ref('')
+let navigationTimer = 0
+const preloadingPages = new Set()
+function preloadPage(path) {
+  if (!path || preloadingPages.has(path) || path === route.path) return Promise.resolve()
+  const match = router.resolve(path).matched.at(-1)
+  const loader = match?.components?.default
+  if (typeof loader !== 'function') return Promise.resolve()
+  preloadingPages.add(path)
+  return Promise.resolve().then(() => loader()).catch(() => { preloadingPages.delete(path) })
+}
+function preloadFromLink(event) {
+  const link = event.target.closest?.('a[href]')
+  if (!link || link.origin !== window.location.origin || link.target === '_blank') return
+  void preloadPage(link.pathname)
+}
+function clearNavigation() {
+  window.clearTimeout(navigationTimer)
+  routePending.value = false
+}
+const stopBeforeNavigation = router.beforeEach(to => {
+  clearNavigation()
+  navigationError.value = ''
+  pendingPath.value = to.fullPath
+  if (to.path !== route.path) navigationTimer = window.setTimeout(() => { routePending.value = true }, 120)
+})
+const stopAfterNavigation = router.afterEach(to => {
+  if (to.fullPath === pendingPath.value) clearNavigation()
+})
+const stopNavigationError = router.onError((_error, to) => {
+  if (to && to.fullPath !== pendingPath.value) return
+  clearNavigation()
+  navigationError.value = 'This page could not load. Check your connection and try again.'
+})
+function retryNavigation() { window.location.assign(router.resolve(pendingPath.value).href) }
+onBeforeUnmount(() => { clearNavigation(); stopBeforeNavigation(); stopAfterNavigation(); stopNavigationError() })
+
 const menuOpen = ref(false)
 const sideMenu = ref(null)
 const closeWorkspaceMenus = () => sideMenu.value?.close?.()
@@ -348,12 +387,14 @@ function refresh(options) {
 // store state; pages keep their own drafts, so typing is never overwritten.
 const POLL_MS = 45000
 let pollTimer = 0
+let lastBackgroundAttempt = 0
 function backgroundBusy() {
   return Boolean(document.querySelector('.gm-dialog-overlay, [data-state="open"][role="dialog"]')) || document.body.classList.contains('bookins-tour-open')
 }
 function backgroundRefresh({ force = false } = {}) {
   if (isDemo.value || isPublicRoute.value || document.visibilityState === 'hidden' || !loaded.value) return
-  if (!force && (backgroundBusy() || Date.now() - lastLoadedAt < 10000)) return
+  if (!force && (backgroundBusy() || Date.now() - Math.max(lastLoadedAt, lastBackgroundAttempt) < 10000)) return
+  lastBackgroundAttempt = Date.now()
   void refresh({ silent: true })
 }
 function onVisibility() { if (document.visibilityState === 'visible') backgroundRefresh() }
@@ -504,6 +545,19 @@ provide('localPreview', localPreview)
 provide('bookingLoaded', loaded)
 provide('toast', toast)
 provide('startTour', startTour)
+let warmupCancelled = false
+let warmupHandle = 0
+watch(loaded, ready => {
+  if (!ready || isPublicRoute.value || navigator.connection?.saveData || /(^|-)2g$/.test(navigator.connection?.effectiveType || '')) return
+  const warm = async () => {
+    for (const path of primaryNav.map(item => item.to).concat(manageNav.map(item => item.to), ['/settings'])) {
+      if (warmupCancelled || document.visibilityState === 'hidden') return
+      await preloadPage(path)
+    }
+  }
+  warmupHandle = window.setTimeout(warm, 600)
+}, { once: true })
+onBeforeUnmount(() => { warmupCancelled = true; window.clearTimeout(warmupHandle) })
 
 watch(
   () => route.path,
@@ -515,7 +569,7 @@ watch(
     if (previous !== undefined) {
       // Arriving from the public /book route (or after a failed load) with no workspace yet: load it now instead of showing an empty page.
       if (!isPublicRoute.value && !loaded.value && !loading.value && !modeRequesting.value) void refresh()
-      else backgroundRefresh({ force: true })
+      else backgroundRefresh({ force: previous === '/book' })
       await nextTick()
       if (!route.hash) window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
     }
@@ -599,6 +653,8 @@ onMounted(async () => {
   <div
     v-else
     class="app-shell"
+    @pointerover="preloadFromLink"
+    @focusin="preloadFromLink"
   >
     <a class="skip-link" href="#main-content" @click.prevent="focusMain">Skip to content</a>
     <aside
@@ -617,7 +673,7 @@ onMounted(async () => {
           to="/"
           class="sidebar-identity"
           aria-label="Bookins home"
-          ><BookinsLogo compact /><span>Bookins<small>by Goalmatic</small></span></RouterLink>
+          ><BookinsLogo /></RouterLink>
         <button
           class="sidebar-close"
           type="button"
@@ -689,10 +745,7 @@ onMounted(async () => {
           class="share-card"
         >
           <div class="share-card-header">
-            <AppIcon
-              name="link"
-              :size="15"
-            /><strong>Booking link</strong>
+            <a :href="publicUrl" target="_blank" rel="noopener noreferrer" class="share-card-label"><AppIcon name="link" :size="15" /><strong>Booking link</strong></a>
             <div class="share-card-actions">
               <button
                 type="button"
@@ -775,7 +828,7 @@ onMounted(async () => {
           >
         </div>
         <div class="topbar-title"
-          ><strong>{{ currentPage.label }}</strong
+          ><strong>{{ routePending ? (pageIntros[pendingPath.split('?')[0]]?.title || 'Loading') : currentPage.label }}</strong
           ><small
             >{{ profileName }} ·
             <RouterLink v-if="loaded && !timezoneLabel" class="topbar-link" to="/settings">Set your timezone</RouterLink
@@ -828,7 +881,7 @@ onMounted(async () => {
         ></div
       >
 
-      <main id="main-content" tabindex="-1" :aria-busy="loading || transitioning">
+      <main id="main-content" :class="{ 'design-wide-page': ['/', '/bookings'].includes(route.path) }" tabindex="-1" :aria-busy="loading || transitioning || routePending">
         <div v-if="loading && !loaded" class="page-skeleton">
           <span class="visually-hidden" role="status">Loading your workspace…</span>
           <div class="page-header">
@@ -860,9 +913,15 @@ onMounted(async () => {
             >Try again</button
           >
         </div>
-        <RouterView v-else-if="!transitioning" v-slot="{ Component }">
-          <component :is="Component" :key="`${routeKey}:${route.path}`" />
-        </RouterView>
+        <template v-else-if="!transitioning">
+          <div v-if="routePending" class="route-loading" role="status" aria-live="polite">
+            <h1>{{ pageIntros[pendingPath.split('?')[0]]?.title || 'Loading page' }}</h1>
+            <p>Loading…</p>
+            <div class="route-loading-lines" aria-hidden="true"><span /><span /><span /></div>
+          </div>
+          <div v-if="navigationError" class="notice error" role="alert"><span>{{ navigationError }}</span><button type="button" class="secondary small-button" @click="retryNavigation">Reload page</button></div>
+          <div v-show="!routePending" :inert="routePending"><RouterView v-slot="{ Component }"><component :is="Component" :key="`${routeKey}:${route.path}`" /></RouterView></div>
+        </template>
         <p v-if="transitioning" class="mode-transition" role="status">Loading your workspace…</p>
       </main>
       <ProductTour v-if="!transitioning && loaded" ref="tour" />
@@ -904,34 +963,44 @@ onMounted(async () => {
       <button class="more-sheet-scrim" type="button" aria-label="Close more menu" tabindex="-1" @click="toggleMore(false)" />
       <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-label="More pages" @keydown="moreKeydown">
         <div class="more-heading"><h2>More</h2><button class="icon-button more-close" type="button" aria-label="Close more menu" @click="toggleMore(false)"><AppIcon name="close" :size="20" /></button></div>
-        <nav class="more-pages" aria-label="More pages">
-          <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to" @click="toggleMore(false)">
-            <AppIcon :name="item.icon" :size="20" />{{ item.label }}
-          </RouterLink>
-        </nav>
-        <hr />
-        <h2>Workspace</h2>
-        <WorkspaceMenu
-          inline
-          id-prefix="sheet-workspace"
-          :label="isDemo ? accountLabel : loaded ? profileName : accountLabel"
-          :user-label="accountLabel"
-          :avatar-url="avatarUrl"
-          :is-demo="isDemo"
-          :local-preview="localPreview"
-          :busy="workspaceBusy"
-          @toggle-mode="changeMode(!isDemo)"
-          @switched="onWorkspaceSwitched"
-        >
-          <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="moreOpen = false">Guest preview</RouterLink>
-        </WorkspaceMenu>
-        <CreditsPill v-if="!isDemo" id-prefix="sheet-credits" />
-        <hr />
-        <h2>Help</h2>
-        <button type="button" class="more-item" @click="openFeedback"><AppIcon name="messages" :size="20" />Feedback and help</button>
-        <button type="button" class="more-item" @click="startTour"><AppIcon name="help" :size="20" />Take a walkthrough</button>
-        <a class="more-item" :href="APPS_URL" target="_blank" rel="noopener" @click="moreOpen = false"><AppIcon name="back" :size="20" />Back to Apps</a>
-        <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="20" />Contact support</a>
+        <div class="more-sheet-content">
+          <nav class="more-pages" aria-label="More pages">
+            <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to" @click="toggleMore(false)">
+              <AppIcon :name="item.icon" :size="18" />{{ item.label }}
+            </RouterLink>
+          </nav>
+          <section class="more-workspace" aria-labelledby="more-workspace-heading">
+            <h2 id="more-workspace-heading">Workspace</h2>
+            <WorkspaceMenu
+              id-prefix="sheet-workspace"
+              :label="isDemo ? accountLabel : loaded ? profileName : accountLabel"
+              :user-label="accountLabel"
+              :avatar-url="avatarUrl"
+              :is-demo="isDemo"
+              :local-preview="localPreview"
+              :busy="workspaceBusy"
+              @toggle-mode="changeMode(!isDemo)"
+              @switched="onWorkspaceSwitched"
+            >
+              <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="moreOpen = false">Guest preview</RouterLink>
+            </WorkspaceMenu>
+            <CreditsPill v-if="!isDemo" id-prefix="sheet-credits" />
+          </section>
+          <div v-if="publicUrl" class="more-booking-link">
+            <a :href="publicUrl" target="_blank" rel="noopener noreferrer"><AppIcon name="link" :size="16" /><span>Booking link</span></a>
+            <button type="button" :aria-label="copied ? 'Booking link copied' : 'Copy booking link'" :title="copied ? 'Copied' : 'Copy booking link'" @click="copyPublicLink"><AppIcon :name="copied ? 'check' : 'copy'" :size="16" /></button>
+            <a :href="publicUrl" target="_blank" rel="noopener noreferrer" aria-label="Open booking page" title="Open booking page"><AppIcon name="external" :size="16" /></a>
+            <span class="visually-hidden" role="status">{{ copied ? 'Booking link copied' : '' }}</span>
+          </div>
+        </div>
+        <footer class="more-sheet-footer" aria-label="Help and account links">
+          <button type="button" class="more-walkthrough" @click="startTour"><AppIcon name="help" :size="18" />Take a walkthrough</button>
+          <div class="more-footer-links">
+            <button type="button" class="more-item" @click="openFeedback"><AppIcon name="messages" :size="17" />Feedback</button>
+            <a class="more-item" href="https://goalmatic.io/support" target="_blank" rel="noreferrer" @click="moreOpen = false"><AppIcon name="external" :size="17" />Support</a>
+            <a class="more-item" :href="APPS_URL" target="_blank" rel="noopener" @click="moreOpen = false"><AppIcon name="back" :size="17" />Apps</a>
+          </div>
+        </footer>
       </div>
     </template>
 

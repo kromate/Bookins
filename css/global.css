@@ -12,15 +12,15 @@
   -webkit-text-size-adjust: 100%;
 
   /* Colour (palette unchanged) */
-  --ink: #101928;
-  --ink-soft: #344054;
-  --muted: #5d6578; /* 5.9:1 on white; was #697087 */
+  --ink: #20242d;
+  --ink-soft: #454b56;
+  --muted: #626976; /* 5.9:1 on white; was #697087 */
   --muted-soft: #f1f3f8; /* a light surface tint (was a dark #6b7388 that made text on it unreadable); use --muted for text */
   --surface: #ffffff;
-  --surface-soft: #f7f8fa;
+  --surface-soft: #f8f9fb;
   --surface-blue: #f4f6ff;
-  --line: #e6e8f0;
-  --line-strong: #cfd4e2;
+  --line: #e5e7eb;
+  --line-strong: #d5d8de;
   --accent: #2336dc;
   --accent-hover: #192bc6;
   --accent-soft: #eef1ff;
@@ -53,8 +53,8 @@
   --space-7: 48px;
 
   /* Radius + shadow */
-  --radius: 14px;
-  --radius-sm: 10px;
+  --radius: 8px;
+  --radius-sm: 7px;
   --radius-pill: 999px;
   --shadow: 0 1px 2px rgba(16, 25, 40, 0.04);
   --shadow-hover: 0 8px 22px rgba(34, 45, 89, 0.08);
@@ -72,8 +72,8 @@
   --focus-ring: 0 0 0 3px rgba(35, 54, 220, 0.85);
 
   /* Layout */
-  --sidebar: 248px;
-  --topbar-h: 64px;
+  --sidebar: 208px;
+  --topbar-h: 60px;
   --bottom-nav-h: 68px;
   --page-gutter: var(--space-6);
 
@@ -268,7 +268,7 @@ p {
   text-decoration: none;
 }
 .sidebar-identity { display: flex; align-items: center; gap: 10px; text-decoration: none; }
-.sidebar-identity > span:last-child { display: grid; gap: 3px; color: var(--ink); font-size: 18px; font-weight: 750; letter-spacing: -0.035em; line-height: 1.15; }
+.sidebar-identity > .identity-copy { display: grid; gap: 3px; color: var(--ink); font-size: 18px; font-weight: 750; letter-spacing: -0.035em; line-height: 1.15; }
 .sidebar-identity small { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .sidebar-navigation { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 2px 12px; scrollbar-width: thin; }
 .sidebar-close {
@@ -2003,6 +2003,9 @@ body.bookins-tour-open [data-feedback-widget] { display: none !important; }
 }
 @media (max-width: 900px) {
   .workspace main { padding-bottom: calc(var(--bottom-nav-h) + 88px + env(safe-area-inset-bottom)); }
+  .workspace main.design-wide-page:has(.bookings-page.is-creating) {
+    padding-bottom: calc(var(--bottom-nav-h) + var(--space-4) + env(safe-area-inset-bottom));
+  }
 }
 /* Toasts never cover an open dialog. Desktop: the centred dialog card leaves the bottom strip free, so toasts stay there but
    sit in a strip GmDialog reserves under the card. Phones: dialogs
@@ -2038,6 +2041,9 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
 }
 /* Phones: shorten to one 16px line (the full sentence stays in the DOM for assistive tech) so it never covers sticky buttons. */
 @media (max-width: 900px) {
+  html.bookins-loopback body:has(.mobile-bottom-nav) > [data-goalmatic-runtime-notice][data-goalmatic-runtime-notice='offline'] {
+    display: none !important;
+  }
   [data-goalmatic-runtime-notice] {
     bottom: calc(var(--bottom-nav-h) + 2px + env(safe-area-inset-bottom)) !important;
     font-size: 0 !important;
@@ -2045,6 +2051,8 @@ html:not(.bookins-loopback) [data-goalmatic-runtime-notice][data-goalmatic-runti
     height: 20px;
     line-height: 20px !important;
   }
+  body:not(:has(.mobile-bottom-nav)) > [data-goalmatic-runtime-notice='offline'] { bottom: 6px !important; }
+  body:has(.bk-calendar.is-sheet, .gm-picker-content, .gm-dialog-overlay) > [data-goalmatic-runtime-notice='offline'] { display: none !important; }
   [data-goalmatic-runtime-notice]::before { content: 'Offline preview \00b7  not connected'; font-size: 13px; font-weight: 600; }
 }
 /* Topbar */
@@ -2182,3 +2190,172 @@ body:has(.more-sheet) [data-goalmatic-runtime-notice] { display: none !important
   .share-card-actions button, .share-card-actions a { width: 44px; }
 }
 h1, h2, h3 { text-wrap: balance; }
+
+/* Approved Bookins shell: compact navigation and quiet, consistent controls. */
+.sidebar { background:#fbfbfc; }
+.sidebar-identity { gap:0; }
+.sidebar-brand { margin-bottom:12px; }
+.sidebar .nav-section-label { font-size:11px; font-weight:600; color:#777e8a; }
+.sidebar .side-nav a { min-height:36px; font-size:13px; gap:9px; font-weight:550; }
+.sidebar .side-nav a.router-link-active { font-weight:650; }
+.sidebar .sidebar-link { min-height:36px; font-size:13px; font-weight:550; }
+.sidebar .ws-card { min-height:44px; padding:8px; gap:8px; }
+.sidebar .ws-avatar { width:28px; height:28px; font-size:12px; border-radius:6px; }
+.sidebar .ws-avatar img { width:28px; height:28px; }
+.sidebar .ws-copy strong { font-size:13px; }
+.sidebar .ws-copy small { font-size:11px; }
+.sidebar .sidebar-divider { margin:14px 8px; }
+.sidebar-footer { background:#fbfbfc; }
+.share-card-label { min-width:0; flex:1; display:flex; align-items:center; gap:6px; min-height:36px; text-decoration:none; }
+.share-card-label strong { font-size:12px; font-weight:650; }
+.share-card-actions { gap:0; }
+.share-card-actions button,.share-card-actions a { width:28px; min-height:36px; height:36px; }
+.topbar { background:#fff; backdrop-filter:none; border-bottom:1px solid var(--line); }
+.workspace main.design-wide-page { max-width:1680px; padding-top:24px; }
+@media(max-width:900px) {
+  .sidebar .side-nav a,.sidebar .sidebar-link { min-height:44px; }
+  .share-card-actions button,.share-card-actions a { width:36px; min-height:44px; height:44px; }
+  .workspace main.design-wide-page { padding-top:20px; }
+}
+
+.sidebar .credits-pill { padding:0 6px; gap:4px; font-size:12px; border-radius:7px; }
+.sidebar .credits-pill span { min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
+.sidebar .credits-pill strong,.sidebar .credits-pill > svg { flex-shrink:0; }
+
+/* Mobile More is a compact, scrollable sheet: routes first, account on demand, help always at hand. */
+@media (max-width: 900px) {
+  .more-sheet {
+    max-height: calc(100dvh - 20px);
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow: hidden;
+    border-radius: 7px 7px 0 0;
+    background: #fff;
+    box-shadow: 0 -8px 28px rgba(24, 31, 50, 0.16);
+  }
+  .more-heading {
+    min-height: 52px;
+    padding: 0 12px 0 16px;
+    flex: none;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #fff;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .more-heading h2 { font-size: 15px; font-weight: 700; }
+  .more-heading .more-close { width: 44px; min-height: 44px; }
+  .more-sheet-content {
+    min-height: 0;
+    padding: 10px 12px 12px;
+    display: grid;
+    gap: 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .more-pages { gap: 6px; }
+  .more-sheet .more-pages a {
+    min-height: 46px;
+    padding: 0 10px;
+    gap: 8px;
+    border: 1px solid #e5e7eb;
+    border-radius: 7px;
+    background: #fff;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .more-sheet .more-pages a.router-link-active { border-color: #cfd5ff; }
+  .more-workspace {
+    padding-top: 10px;
+    border-top: 1px solid #e5e7eb;
+  }
+  .more-sheet .more-workspace h2 {
+    margin: 0 4px 6px;
+    color: #626976;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .more-sheet .ws-switcher { margin: 0; }
+  .more-sheet .ws-card { min-height: 46px; border-radius: 7px; }
+  .more-sheet .ws-menu { z-index: 3; max-height: min(360px, 52dvh); border-radius: 7px; }
+  .more-sheet .ws-switcher:has(.ws-menu) .ws-menu { position: static; margin-top: 6px; }
+  .more-sheet .credits-pill-wrap { margin-top: 6px; }
+  .more-sheet .credits-pill { min-height: 44px; border-radius: 7px; }
+  .more-booking-link {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    border: 1px solid #e5e7eb;
+    border-radius: 7px;
+    color: #2336dc;
+  }
+  .more-booking-link > a:first-child {
+    min-width: 0;
+    flex: 1;
+    min-height: 42px;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    color: inherit;
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .more-booking-link > button,
+  .more-booking-link > a:not(:first-child) {
+    width: 42px;
+    min-height: 42px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-left: 1px solid #e5e7eb;
+    background: #fff;
+    color: inherit;
+  }
+  .more-sheet-footer {
+    flex: none;
+    padding: 8px 12px max(8px, env(safe-area-inset-bottom));
+    display: grid;
+    gap: 6px;
+    background: #fbfbfc;
+    border-top: 1px solid #e5e7eb;
+  }
+  .more-walkthrough {
+    min-height: 44px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 1px solid #cfd5ff;
+    border-radius: 7px;
+    background: #fff;
+    color: #2336dc;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .more-footer-links { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .more-sheet .more-footer-links .more-item {
+    min-height: 40px;
+    padding: 0 4px;
+    justify-content: center;
+    gap: 5px;
+    border-radius: 7px;
+    color: #454b56;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: center;
+  }
+  .more-sheet :is(a, button):focus-visible { outline: 2px solid #2336dc; outline-offset: -2px; }
+}
+
+.route-loading { min-height:360px; padding:8px 0; }
+.route-loading h1 { font-size:24px; margin-bottom:8px; }
+.route-loading p { color:var(--muted); font-size:14px; }
+.route-loading-lines { display:grid; gap:12px; margin-top:28px; }
+.route-loading-lines span { display:block; height:64px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+.route-loading-lines span:last-child { width:75%; }

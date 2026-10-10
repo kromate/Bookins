@@ -74,12 +74,12 @@ export const demoGuideSteps = Object.freeze([
 export const liveGuideRoutes = Object.freeze(['/', '/settings', '/availability', '/services', '/bookings', '/messages', '/team', '/campaigns', '/contacts', '/insights'])
 
 export const liveGuideSteps = Object.freeze([
-  { id: 'welcome', route: '/', targetId: 'tour-overview-checklist', title: 'Start with the checklist', explanation: 'This checklist is the order that works: profile, availability, a service, then your booking link.' },
+  { id: 'welcome', route: '/', targetId: 'tour-overview-checklist', title: 'Start with your overview', explanation: 'See upcoming bookings, active services and weekly hours here. If setup is unfinished, follow the next step above: profile, availability, a service, then your booking link.' },
   { id: 'profile', route: '/settings', targetId: 'tour-settings-profile', title: 'Your public profile', explanation: 'Your name and public details appear on your booking page.' },
   { id: 'availability', route: '/availability', targetId: 'tour-availability-hours', title: 'Set your weekly hours', explanation: 'Set the hours guests can book first. Services need this before they can be created. Save availability and you will see a confirmation.' },
   { id: 'timeoff', route: '/availability', targetId: 'tour-availability-timeoff', title: 'Block time off', explanation: 'Block days off here. Blocked time never shows to guests and is not counted as a booking.' },
   { id: 'services', route: '/services', targetId: 'tour-services-new', title: 'Create a service', explanation: 'Create what guests can book. Each service uses your shared availability.', requires: 'availability' },
-  { id: 'import', route: '/services', targetId: 'tour-services-import', title: 'Many services? Import them', explanation: 'Upload a spreadsheet (CSV) with all your services. You see a preview and fix mistakes before anything is saved.' },
+  { id: 'import', route: '/services', targetId: 'tour-services-import', title: 'Many services? Import them', explanation: 'Open More to import a CSV file. Preview it and fix mistakes before saving.' },
   { id: 'link', route: '/settings', targetId: 'tour-settings-link', title: 'Publish your booking link', explanation: 'Create your booking link, then share it or add the button to your site.' },
   { id: 'bookings', route: '/bookings', targetId: 'tour-bookings-list', title: 'Confirmed bookings', explanation: 'Confirmed appointments land here. Guest messages open in your own WhatsApp, SMS or email app. Bookins does not send them for you.' },
   { id: 'messages', route: '/messages', targetId: 'tour-messages-queue', title: 'Messages due', explanation: 'Reminders, thank-yous and rebook nudges that are due. Tap through them and each one opens prefilled in your own WhatsApp, SMS or email. Nothing is sent automatically.' },

@@ -6,7 +6,7 @@ Bookins owns the owner dashboard, guest booking page, schedule rules, service vi
 
 ## Records
 
-- `profiles` stores the public display name, bio, photo, timezone, current public-link metadata, and the owner's message templates (`message_templates_json`).
+- `profiles` stores the public display name, bio, photo, timezone, current public-link metadata, the owner's message templates (`message_templates_json`), and optional booking-page appearance (`booking_page_settings_json`).
 - `schedules` stores recurring weekly windows, timezone, slot interval, notice, horizon, and revision.
 - `services` stores the offering, duration, display price, location, schedule binding, visibility, status, revision, and an optional direct link (`public_link_url`, `public_link_expires_at`). v0.6.0 adds optional `category`, `sort_order`, `rebook_after_days`, and `prep_notes`. Because hosted `page-get` returns only slug, name, description, duration, price, and currency, `serializeService()` (services.js) also writes the same values (plus, for per-member copies, staff id, staff name, and base service id) as a machine-readable trailer on the last line of `description`: `[[bk:{"c":..,"o":..,"p":..,"s":..,"n":..,"b":..}]]` (service-meta.js). Owner UI reads fields first, then the trailer, and always shows the stripped text. Remove the trailer when the platform returns real fields.
 - `bookings` stores a service snapshot, optional `staff_id` and `staff_name` (snapshot; the implicit owner is `owner`), optional "opened by you" timestamps `reminder24_opened_at`, `reminder2_opened_at`, `prep_opened_at`, `followup_opened_at`, `rebook_opened_at` (and the legacy `reminder_opened_at`), UTC range, timezone, guest contact, notes, private `owner_notes`, status, `source` (`guest` or `owner`), optional `series_id` for recurring owner bookings, reference, and unique reservation key. Status is `confirmed`, `completed`, `no_show`, `cancelled`, or `blocked` (owner time off).
@@ -14,6 +14,7 @@ Bookins owns the owner dashboard, guest booking page, schedule rules, service vi
 - `staff` (optional, capability `staff-data`) stores team members: name, role, photo, colour, phone, email, `active`, `schedule_id` (their own schedule), `service_ids_json` (empty = all services), `is_owner`. The owner needs no row: with no `is_owner` row an implicit member "You" owns the first schedule no other member has claimed. Unbound Table = no team.
 - `campaigns` (optional, capability `campaigns-data`) stores saved campaigns: `segment_json` (filters), `template_json` (channel, subject, body), `offer_text`, `offer_code`, `status` (draft, active, done), `audience_count`, `created_at`, `last_opened_at`.
 - `profiles.message_templates_json` is versioned JSON: `{v: 2, slots: {confirmation|reminder24|reminder2|prep|thanks|rebook|reschedule|cancellation|campaign: {channel, subject, body, enabled}}, serviceOverrides: {serviceId: {kind: {body}}}}`. v1 JSON (`reminder`, `followup`, subject/body only) still loads; only slots that differ from the defaults are written.
+- `profiles.booking_page_settings_json` stores `{theme, layout}`. Invalid or legacy values normalize to Indigo and the month calendar. The public profile projection exposes only this sanitized appearance object, so every existing grant reads the current profile setting without changing its URL.
 - `owner-daily-agenda` is an App workflow resource (installed off). A SCHEDULE_INTERVAL trigger (07:00 Africa/Lagos) runs TABLE_READ on the logical `bookings`, `profiles`, and `services` Tables via `$appResource` (no physical Table ID in source; step indices 0-2), one TRANSFORM_DATA step (index 3, reads all three through its `input` override) and one SEND_EMAIL step (index 4) to `USER_EMAIL`, whose subject and message are the mentions `@step-3-TRANSFORM_DATA-subject` and `-body`. Table-record triggers are not used: the Goalmatic importer rejects `$appResource` in trigger props.
 
 The App has no separate wallet, provider-token store, or App-only identity.
@@ -60,3 +61,40 @@ Private testing and Store publication are separate. Production must promote the 
 
 Domain logic is pure and unit-tested outside the Vue pages: `scheduling.js` mirrors the hosted opening and overlap rules; `services.js` and `csv.js` parse, validate, and import service CSV; `team.js` models staff as one schedule per person; `messaging.js` renders templates and computes the live message queue from bookings; `campaigns.js` builds segments, queues, and batches; `service-meta.js` reads and writes the description trailer. `booking.js` is the only module that touches Tables, the Goalmatic runtime, and the local preview store, and every owner write goes through `runOwnerCall` so Demo stays read-only.
 
+
+## Guest self-service management
+
+The reviewed public journey uses the existing anonymous `/book` route. A private
+management link wraps the public grant, booking ID, and a 256-bit management token
+inside a `#bm=` URL fragment; the secret never enters URL query parameters. The
+frontend unwraps the grant before `GoalmaticGuest.ready()` and restores the private
+fragment for bookmark/reload use. Guests are told to keep the link private.
+
+`booking.create-managed` generates the random token and stores only its SHA-256
+hash in `management_token_hash`, with a 365-day `management_expires_at`. The raw
+token is returned with the creation receipt. Legacy `booking.create` does not
+write the new fields, preserving old pinned grant/schema compatibility.
+
+The new manifest capability declares create-managed, guest-get, guest-openings,
+guest-reschedule, and guest-cancel. Every public action binds profile, schedule,
+service and booking Tables from the installation; callers cannot replace those
+bindings. Management verifies the booking-specific token and expiry, account/Table
+ownership and grant subject, then returns only appointment facts. It never returns
+contact details, notes or token hashes.
+
+Only confirmed future bookings can change. Availability excludes only the verified
+booking and follows its stored service/schedule. Rescheduling uses one revision-
+checked Table PATCH and the existing unique reservation key. Cancellation releases
+the reservation and is idempotent. The bounded busy-record scan fails closed if
+not exhausted. Existing owner operations still have their documented concurrency
+limitations; external Calendar availability is a separate non-atomic check.
+
+The guest UI checks the declared Calendar busy action while choosing a replacement
+and before submitting it. Unavailable checks are disclosed. Linked Calendar events
+are marked `pending` after a guest change; the host must reconcile them using the
+existing retry action. No guest email or automatic Calendar delivery is implied.
+
+The local preview adapter exercises the same user journey with browser-memory
+sample data. Its records intentionally reset on a full reload, so hosted private
+link persistence must be verified in the private-test installation. These changes
+are implemented locally and have not been published by this design task.

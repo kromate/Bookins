@@ -36,6 +36,7 @@ const effectiveConfig = computed(() => {
   return local ? publicConfig(local) : discoveredConfig.value
 })
 let widget, discovery, discoveryPromise, requestController, unsubscribe, discoveryGeneration = 0
+let lastDiscoveryAttempt = 0
 
 function userContext() {
   const user = window.GoalmaticAuth?.user
@@ -65,6 +66,8 @@ function savePublicConfig(value) {
 async function discover({ force = false, silent = true } = {}) {
   if (discovery && !force) return discovery
   if (discoveryPromise && !force) return discoveryPromise
+  if (silent && !force && Date.now() - lastDiscoveryAttempt < 60_000) return discovery || null
+  lastDiscoveryAttempt = Date.now()
   if (force) {
     discoveryGeneration += 1
     requestController?.abort()
@@ -136,6 +139,7 @@ function mountReceiver() {
       onSubmit: submit,
       signIn: goalmaticHandoff,
       onOpen: () => {
+        void discover()
         const user = userContext()
         const local = prepareLocal?.({ user })
         if (local && typeof local.then === 'function') throw new Error('The local feedback receiver must prepare synchronously.')
@@ -154,7 +158,6 @@ function mountReceiver() {
 }
 defineExpose({ open: () => { mountReceiver(); widget?.open() } })
 
-function refreshDiscovery() { if (visible.value) void discover({ force: true }) }
 function reset() {
   discoveryGeneration += 1
   requestController?.abort()
@@ -167,17 +170,15 @@ function reset() {
 
 watch(visible, value => {
   if (!value) reset()
-  else { void discover({ force: true }); mountReceiver() }
+  else mountReceiver()
 })
 watch(effectiveConfig, value => widget?.update({ config: value }), { deep: true })
 onMounted(() => {
-  if (visible.value) { void discover(); mountReceiver() }
-  window.addEventListener('focus', refreshDiscovery)
+  if (visible.value) mountReceiver()
   unsubscribe = window.GoalmaticAuth?.onAuthChange?.(() => widget?.update({ user: userContext() }))
 })
 onBeforeUnmount(() => {
   reset()
-  window.removeEventListener('focus', refreshDiscovery)
   if (typeof unsubscribe === 'function') unsubscribe()
 })
 </script>

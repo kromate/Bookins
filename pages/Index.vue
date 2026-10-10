@@ -1,479 +1,269 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmButton from '../components/ui/GmButton.vue'
-import GmHint from '../components/ui/GmHint.vue'
-import { useSetupState } from '../setup.js'
-import { copyText, hasTeam, isActiveBooking, isStaffCopy, isActiveTimeOff, messageQueue, setBookingStatus, staffForBooking, teamMembers } from '../booking.js'
-import { SLOT_LABELS } from '../messaging.js'
+import { copyText, isActiveBooking, isStaffCopy } from '../booking.js'
 import { isDemo } from '../runtime.js'
-import { displayTimeZone, zonedDateKey } from '../time-display.js'
+import { useSetupState } from '../setup.js'
+import { displayTimeZone } from '../time-display.js'
 import { displayName } from '../team-ui.js'
 
 const state = inject('bookingState')
-const refresh = inject('refreshBookings', async () => true)
-const router = useRouter()
-const setup = useSetupState()
-const startTour = inject('startTour', null)
-const copied = ref(false)
+const setup = useSetupState(state)
 const toast = inject('toast', null)
 const now = ref(Date.now())
-const clockTimer = window.setInterval(() => { now.value = Date.now() }, 30_000)
+const copied = ref(false)
+const copyError = ref('')
 let copiedTimer = 0
+const clockTimer = window.setInterval(() => { now.value = Date.now() }, 30_000)
+
 onBeforeUnmount(() => {
   window.clearInterval(clockTimer)
   window.clearTimeout(copiedTimer)
 })
-const copyError = ref('')
-const scheduleZone = computed(() => displayTimeZone(state.schedules[0]?.timezone))
 
-// Per-member copies are guest-page plumbing: count only the services the owner made (same as the Services page).
-const activeServices = computed(
-  () =>
-    state.services.filter((item) => !isStaffCopy(item) && item.active !== false && item.visibility === 'public').length,
+const schedule = computed(() => state.schedules?.[0] || null)
+const scheduleZone = computed(() => displayTimeZone(schedule.value?.timezone))
+const activeServiceList = computed(() =>
+  (state.services || []).filter((service) => !isStaffCopy(service) && service.active !== false && service.visibility === 'public'),
 )
 const upcomingBookings = computed(() =>
-  state.bookings
-    .filter((item) => isActiveBooking(item) && Date.parse(item.starts_at) > now.value)
+  (state.bookings || [])
+    .filter((booking) => isActiveBooking(booking) && Date.parse(booking.starts_at) > now.value)
     .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)),
 )
-const thisMonthBookings = computed(() => {
-  const monthOf = (value) =>
-    new Intl.DateTimeFormat('en-CA', { timeZone: scheduleZone.value, year: 'numeric', month: '2-digit' }).format(value)
-  const current = monthOf(new Date(now.value))
-  return state.bookings.filter(
-    (item) => isActiveBooking(item) && monthOf(new Date(item.starts_at)) === current,
-  ).length
+const nextSevenDays = computed(() => {
+  const limit = now.value + 7 * 24 * 60 * 60 * 1000
+  return upcomingBookings.value.filter((booking) => Date.parse(booking.starts_at) <= limit).length
 })
-const openDays = computed(() => {
+
+const weeklyWindows = computed(() => {
   try {
-    return new Set(
-      JSON.parse(state.schedules[0]?.weekly_windows_json || '[]').map((item) => item.weekday),
-    ).size
+    const parsed = JSON.parse(schedule.value?.weekly_windows_json || '[]')
+    return Array.isArray(parsed) ? parsed : []
   } catch {
-    return 0
+    return []
   }
 })
+const weeklyHours = computed(() => {
+  const minutes = weeklyWindows.value.reduce(
+    (total, window) => total + Math.max(0, Number(window.endMinute) - Number(window.startMinute)),
+    0,
+  )
+  const hours = minutes / 60
+  return Number.isInteger(hours) ? String(hours) : hours.toFixed(1)
+})
+const weekdays = [
+  { label: 'Monday', weekday: 1 }, { label: 'Tuesday', weekday: 2 }, { label: 'Wednesday', weekday: 3 },
+  { label: 'Thursday', weekday: 4 }, { label: 'Friday', weekday: 5 }, { label: 'Saturday', weekday: 6 },
+  { label: 'Sunday', weekday: 0 },
+]
+const availabilityRows = computed(() => weekdays.map(({ label, weekday }) => {
+  const windows = weeklyWindows.value
+    .filter((window) => Number(window.weekday) === weekday)
+    .sort((left, right) => Number(left.startMinute) - Number(right.startMinute))
+  return {
+    label,
+    windows: windows.map((window) => `${minuteLabel(window.startMinute)}–${minuteLabel(window.endMinute)}`),
+  }
+}))
+
 const publicUrl = computed(() => state.profile?.public_link_url || '')
 const linkExpired = computed(() => {
   const expiry = Date.parse(state.profile?.public_link_expires_at || '')
   return Boolean(publicUrl.value) && Number.isFinite(expiry) && expiry <= now.value
 })
-const linkActive = computed(() => Boolean(publicUrl.value) && !linkExpired.value)
-const setupSteps = computed(() => isDemo.value
-  ? [
-      { label: 'Review the sample profile', done: true, to: '/settings' },
-      { label: 'Review sample availability', done: true, to: '/availability' },
-      { label: 'Review sample services', done: true, to: '/services' },
-      { label: 'Guest preview available', done: true, to: '/demo/guest' },
-    ]
-  : setup.value.steps.map((step) => ({
-      ...step,
-      // A locked step points at the step that unlocks it.
-      to: step.key === 'service' && step.lockedReason ? '/availability' : step.to,
-    })))
-const completedSteps = computed(() => setupSteps.value.filter((step) => step.done).length)
-const setupProgress = computed(() => (completedSteps.value / setupSteps.value.length) * 100)
-const nextStep = computed(() => {
-  if (isDemo.value) return setupSteps.value.find((step) => !step.done) || { label: 'Open guest preview', to: '/demo/guest', description: '' }
-  const next = setup.value.nextStep
-  // The service step is blocked until hours exist, but the checklist order already puts availability first.
-  return { ...next, to: next.key === 'service' && !setup.value.hasAvailability ? '/availability' : next.to }
-})
-const newService = () => router.push({ path: '/services', query: { new: '1' } })
+const dateLabel = computed(() => new Intl.DateTimeFormat(undefined, {
+  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: scheduleZone.value,
+}).format(now.value))
 
-const todayLabel = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric', timeZone: scheduleZone.value }).format(now.value))
-const todayKey = computed(() => zonedDateKey(now.value, scheduleZone.value))
-const tomorrowKey = computed(() => {
-  const [year, month, day] = todayKey.value.split('-').map(Number)
-  return new Date(Date.UTC(year, month - 1, day + 1)).toISOString().slice(0, 10)
-})
-const byStart = (left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)
-const dayKey = (value) => zonedDateKey(value, scheduleZone.value)
-const todayBookings = computed(() =>
-  state.bookings.filter((item) => isActiveBooking(item) && dayKey(item.starts_at) === todayKey.value).sort(byStart),
-)
-const timeOffOn = (key) =>
-  state.bookings.some(
-    (item) => isActiveTimeOff(item) && dayKey(item.starts_at) <= key && key <= dayKey(item.ends_at || item.starts_at),
-  )
-const timeOffToday = computed(() => timeOffOn(todayKey.value))
-const timeOffTomorrow = computed(() => timeOffOn(tomorrowKey.value))
-
-// Messages due now, computed live from bookings. The owner opens each one in their own app; nothing is sent by Bookins.
-const KIND_CHIP = { reminder24: '24h reminder', reminder2: '2h reminder', prep: 'Prep info', thanks: 'Thank-you', rebook: 'Rebook nudge' }
-const KIND_TONE = { reminder24: 'info', reminder2: 'warning', prep: 'neutral', thanks: 'success', rebook: 'accent' }
-const kindLabel = (kind) => KIND_CHIP[kind] || SLOT_LABELS[kind] || kind
-const dueMessages = computed(() =>
-  messageQueue(state, { now: now.value, timezone: scheduleZone.value }).due.filter((item) => item.message.enabled !== false),
-)
-const dueTop = computed(() => dueMessages.value.slice(0, 3))
-
-// Today by staff: only shown once a team member has been added.
-const team = computed(() => hasTeam(state))
-const todayByStaff = computed(() => {
-  if (!team.value) return []
-  const groups = new Map(teamMembers(state).map((member) => [member.id, { member, bookings: [] }]))
-  for (const booking of todayBookings.value) {
-    const member = staffForBooking(state, booking)
-    if (!groups.has(member.id)) groups.set(member.id, { member, bookings: [] })
-    groups.get(member.id).bookings.push(booking)
-  }
-  return [...groups.values()]
-})
-
-const statusBusy = ref('')
-const statusError = ref('')
-const hasStarted = (booking) => Date.parse(booking.starts_at) <= now.value
-async function markStatus(booking, status) {
-  if (isDemo.value || statusBusy.value) return
-  statusBusy.value = booking.id
-  statusError.value = ''
+function minuteLabel(value) {
+  const minutes = Number(value)
+  const hours = Math.floor(minutes / 60)
+  return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+}
+function displayOptions(options) {
+  return { ...options, timeZone: scheduleZone.value }
+}
+function bookingDate(booking) {
+  return new Date(booking.starts_at).toLocaleDateString(undefined, displayOptions({ month: 'short', day: 'numeric' }))
+}
+function bookingTime(booking) {
+  return new Date(booking.starts_at).toLocaleTimeString(undefined, displayOptions({ hour: 'numeric', minute: '2-digit' }))
+}
+function priceLabel(service) {
+  if (!Number(service.price)) return 'Free'
   try {
-    await setBookingStatus(booking, status)
-    await refresh()
-    toast?.success(status === 'completed' ? `Marked ${booking.guest_name} as completed` : `Marked ${booking.guest_name} as no-show`)
-  } catch (reason) {
-    statusError.value = reason?.message || 'The booking status could not be saved.'
-    toast?.error(statusError.value)
-  } finally {
-    statusBusy.value = ''
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency', currency: service.currency || 'NGN', maximumFractionDigits: 0,
+    }).format(Number(service.price))
+  } catch {
+    return `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
   }
 }
-const statusLabel = { confirmed: 'Confirmed', completed: 'Completed', no_show: 'No-show' }
-const statusClass = (status) => String(status || '').replace('_', '-')
-const setupComplete = computed(() => completedSteps.value === setupSteps.value.length)
-
-const zone = () => scheduleZone.value
-const displayTimeOptions = (options, booking) => ({ ...options, timeZone: zone(booking) })
-
-function formatDate(booking) {
-  return new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  }, booking))
+function serviceTone(index) {
+  return ['indigo', 'sage', 'sand'][index % 3]
 }
-
-function formatTime(booking) {
-  return new Date(booking.starts_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))
+function statusLabel(status) {
+  const value = String(status || 'confirmed')
+  return value === 'no_show' ? 'No-show' : `${value.charAt(0).toUpperCase()}${value.slice(1)}`
 }
-
 async function copyLink() {
+  if (!publicUrl.value) return
   copyError.value = ''
   try {
     await copyText(publicUrl.value)
     copied.value = true
     toast?.success('Booking link copied')
     window.clearTimeout(copiedTimer)
-    copiedTimer = window.setTimeout(() => {
-      copied.value = false
-    }, 1600)
+    copiedTimer = window.setTimeout(() => { copied.value = false }, 1600)
   } catch {
     copyError.value = 'Your browser blocked copying. Select the link and copy it manually.'
-    toast?.error('Could not copy the link. Select it and copy manually.')
+    toast?.error('Could not copy the booking link')
   }
 }
 </script>
 
 <template>
-  <section class="overview">
-    <div class="page-header">
+  <section class="owner-overview">
+    <header class="overview-header">
       <div>
-        <h1>Your booking day</h1>
-        <p class="lede">{{ isDemo ? 'Explore your schedule and services with read-only sample data.' : 'Appointments, availability, and the people you’re seeing next.' }}</p>
+        <h1>Overview</h1>
+        <p>{{ dateLabel }}</p>
       </div>
-      <div class="page-header-actions">
-        <RouterLink v-if="isDemo" class="secondary" to="/services">
-          <AppIcon name="plus" :size="17" />View services
-        </RouterLink>
-        <GmButton v-else @click="newService">
-          <template #leading><AppIcon name="plus" :size="17" /></template>New service
-        </GmButton>
-      </div>
+      <RouterLink class="primary overview-new" :to="{ path: '/bookings', query: { new: '1' } }">
+        <AppIcon name="plus" :size="16" />New booking
+      </RouterLink>
+    </header>
+
+    <div v-if="!setup.isComplete && !isDemo" class="overview-setup"><div><strong>Finish setting up your booking page</strong><p>{{ setup.completed }} of {{ setup.total }} steps complete. {{ setup.nextStep.description }}</p></div><RouterLink class="secondary button-link" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink></div>
+    <p v-if="isDemo" class="muted demo-note">Sample owner data is read-only.</p>
+
+    <section class="metrics" data-tour="tour-overview-checklist" aria-label="Booking summary">
+      <RouterLink to="/bookings" class="metric"><span>Upcoming</span><strong>{{ upcomingBookings.length }}</strong></RouterLink>
+      <RouterLink to="/bookings" class="metric"><span>Next 7 days</span><strong>{{ nextSevenDays }}</strong></RouterLink>
+      <RouterLink to="/services" class="metric"><span>Active services</span><strong>{{ activeServiceList.length }}</strong></RouterLink>
+      <RouterLink to="/availability" class="metric"><span>Weekly hours</span><strong>{{ weeklyHours }}</strong></RouterLink>
+    </section>
+
+    <div class="overview-dashboard">
+      <section class="overview-section bookings-section">
+        <div class="section-head">
+          <h2>Upcoming bookings</h2>
+          <RouterLink to="/bookings">View calendar</RouterLink>
+        </div>
+        <div v-if="upcomingBookings.length" class="table-wrap">
+          <table class="booking-table">
+            <thead><tr><th>Client</th><th>Date &amp; time</th><th>Service</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr v-for="(booking, index) in upcomingBookings.slice(0, 4)" :key="booking.id">
+                <td><RouterLink :to="{ path: '/bookings', query: { q: booking.reference || booking.guest_name } }">{{ booking.guest_name }}</RouterLink></td>
+                <td class="date">{{ bookingDate(booking) }} · {{ bookingTime(booking) }}</td>
+                <td><span class="service"><i :class="serviceTone(index)" />{{ displayName(booking.service_name) }}</span></td>
+                <td><span class="status-badge" :class="booking.status"><i />{{ statusLabel(booking.status) }}</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="overview-empty">
+          <strong>No upcoming bookings</strong>
+          <span>Your next confirmed appointment will appear here.</span>
+          <RouterLink to="/bookings">Open bookings</RouterLink>
+        </div>
+      </section>
+
+      <section class="overview-section availability-section">
+        <div class="section-head">
+          <h2>Availability</h2>
+          <RouterLink class="compact-action" to="/availability">Edit availability</RouterLink>
+        </div>
+        <div class="availability-list">
+          <div v-for="day in availabilityRows" :key="day.label" class="availability-row" :class="{ closed: !day.windows.length }">
+            <span>{{ day.label }}</span><span>{{ day.windows.length ? day.windows.join(', ') : 'Closed' }}</span>
+          </div>
+        </div>
+        <p class="timezone">{{ scheduleZone }}</p>
+      </section>
     </div>
 
-    <div v-if="timeOffToday || timeOffTomorrow" class="notice warning" role="status">
-      <AppIcon name="clock" :size="18" />
-      <span>Time off {{ timeOffToday && timeOffTomorrow ? 'today and tomorrow' : timeOffToday ? 'today' : 'tomorrow' }}. Guests cannot book those times.
-        <RouterLink to="/bookings">Review</RouterLink></span>
-    </div>
+    <div class="overview-lower">
+      <section class="overview-section services-section">
+        <div class="section-head">
+          <h2>Services at a glance</h2>
+          <RouterLink to="/services">Manage services</RouterLink>
+        </div>
+        <div v-if="activeServiceList.length">
+          <div v-for="service in activeServiceList.slice(0, 4)" :key="service.id" class="service-row">
+            <strong>{{ displayName(service.name) }}</strong>
+            <span>{{ service.duration_minutes }} min</span>
+            <span>{{ priceLabel(service) }}</span>
+            <span class="active">Active</span>
+          </div>
+        </div>
+        <div v-else class="overview-empty compact-empty">
+          <strong>No active services</strong><RouterLink to="/services">Add a service</RouterLink>
+        </div>
+      </section>
 
-    <div class="stat-grid stagger" data-tour="tour-overview-stats">
-      <RouterLink class="card stat-tile" to="/services">
-        <span class="label">Active services</span>
-        <span class="icon-tile"><AppIcon name="services" :size="18" /></span>
-        <p class="metric tnum">{{ activeServices }}</p>
-        <p class="metric-sub">{{ activeServices ? 'Ready to book' : 'None yet' }}</p>
-      </RouterLink>
-      <RouterLink class="card stat-tile" to="/bookings">
-        <span class="label">Upcoming</span>
-        <span class="icon-tile success"><AppIcon name="bookings" :size="18" /></span>
-        <p class="metric tnum">{{ upcomingBookings.length }}</p>
-        <p class="metric-sub">Confirmed appointments</p>
-      </RouterLink>
-      <RouterLink class="card stat-tile" to="/bookings">
-        <span class="label">This month</span>
-        <span class="icon-tile warning"><AppIcon name="calendar" :size="18" /></span>
-        <p class="metric tnum">{{ thisMonthBookings }}</p>
-        <p class="metric-sub">{{ state.schedules[0] ? `Bookings in ${scheduleZone}` : 'Set your hours to begin' }}</p>
-      </RouterLink>
-      <RouterLink class="card stat-tile" to="/availability">
-        <span class="label">Open weekdays</span>
-        <span class="icon-tile info"><AppIcon name="availability" :size="18" /></span>
-        <p class="metric tnum">{{ openDays }}</p>
-        <p class="metric-sub">{{ state.schedules[0] ? scheduleZone : 'No timezone set' }}</p>
-      </RouterLink>
-    </div>
-
-    <div class="grid grid-2 day-panels">
-      <article class="card day-card">
-        <div class="section-heading">
-          <div>
-                        <h2>Today's bookings</h2>
-            <p class="tz-label muted">{{ todayLabel }} · {{ scheduleZone }}</p>
-          </div>
+      <aside class="overview-section link-card" id="booking-link">
+        <h2>Booking link</h2>
+        <p>{{ isDemo ? 'Sample preview URL' : linkExpired ? 'This link has expired' : publicUrl ? 'Ready to share' : 'Create your public page' }}</p>
+        <input v-if="publicUrl" class="url" type="text" readonly :value="publicUrl" aria-label="Booking link" @focus="$event.target.select()" />
+        <div v-if="publicUrl" class="link-actions">
+          <GmButton variant="secondary" size="sm" @click="copyLink"><template #leading><AppIcon name="copy" :size="15" /></template>{{ copied ? 'Copied' : 'Copy link' }}</GmButton>
+          <a v-if="!linkExpired" class="secondary compact-action" :href="publicUrl" target="_blank" rel="noreferrer"><AppIcon name="external" :size="15" />View page</a>
+          <RouterLink v-else class="secondary compact-action" to="/settings">Create new link</RouterLink>
         </div>
-        <p v-if="statusError" class="notice error" role="alert">{{ statusError }}</p>
-        <ul v-if="todayBookings.length" class="day-list">
-          <li v-for="booking in todayBookings" :key="booking.id">
-            <span class="day-time tnum">{{ formatTime(booking) }}</span>
-            <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ displayName(booking.service_name) }} · {{ statusLabel[booking.status] }}</small></span>
-            <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="day-actions">
-              <GmButton variant="secondary" size="sm" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'completed')">Mark completed</GmButton>
-              <GmButton variant="ghost" size="sm" class="delete-link" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="Boolean(statusBusy)" @click="markStatus(booking, 'no_show')">Mark no-show</GmButton>
-            </span>
-          </li>
-        </ul>
-        <div v-else class="empty compact">
-          <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
-          <p>No bookings today.</p>
-          <RouterLink v-if="!isDemo && !setup.isComplete" class="secondary small-button" :to="nextStep.to">{{ nextStep.label }}</RouterLink>
-          <RouterLink v-else-if="!isDemo && publicUrl" class="secondary small-button" to="/settings">Share your booking link</RouterLink>
-        </div>
-      </article>
-
-      <article class="card day-card messages-card" data-tour="tour-overview-messages">
-        <div class="section-heading">
-          <div>
-                        <h2>Messages due <span class="count-pill tnum">{{ dueMessages.length }}</span> <GmHint text="Reminders, prep notes, thank-yous and rebook nudges that are ready now. Bookins prepares each message and opens it in your own WhatsApp, SMS or email app. You press send; nothing is sent automatically." label="About messages due" /></h2>
-            <p class="tz-label muted">Opened in your own app. Bookins does not send.</p>
-          </div>
-        </div>
-        <ul v-if="dueTop.length" class="day-list msg-due-list">
-          <li v-for="item in dueTop" :key="item.id">
-            <span class="upcoming-copy"><strong>{{ item.contact.name }}</strong><small>{{ displayName(item.booking.service_name) }}</small></span>
-            <span class="chip" :class="KIND_TONE[item.kind]">{{ kindLabel(item.kind) }}</span>
-          </li>
-        </ul>
-        <div v-else class="empty compact">
-          <span class="empty-icon"><AppIcon name="check" :size="20" /></span>
-          <p>Nothing due right now. Reminders show up here 24 hours and 2 hours before a visit.</p>
-        </div>
-        <p v-if="dueMessages.length > dueTop.length" class="muted more-due">and {{ dueMessages.length - dueTop.length }} more</p>
-        <RouterLink class="secondary open-messages" to="/messages">Open Messages<AppIcon name="chevron" :size="14" /></RouterLink>
-      </article>
-
-      <article v-if="team" class="card day-card by-staff-card">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">Team</p>
-            <h2>Today by staff</h2>
-            <p class="tz-label muted">{{ todayLabel }} · {{ scheduleZone }}</p>
-          </div>
-          <RouterLink to="/team">Team <AppIcon name="chevron" :size="14" /></RouterLink>
-        </div>
-        <div class="staff-groups">
-          <section v-for="group in todayByStaff" :key="group.member.id" class="staff-group" :aria-label="`${group.member.name}'s bookings today`">
-            <h3><span class="staff-dot" :style="group.member.color ? { background: group.member.color } : null" />{{ group.member.name }} <span class="count-pill tnum">{{ group.bookings.length }}</span></h3>
-            <ul v-if="group.bookings.length" class="day-list">
-              <li v-for="booking in group.bookings" :key="booking.id">
-                <span class="day-time tnum">{{ formatTime(booking) }}</span>
-                <span class="upcoming-copy"><strong>{{ booking.guest_name }}</strong><small>{{ displayName(booking.service_name) }} · {{ statusLabel[booking.status] }}</small></span>
-              </li>
-            </ul>
-            <p v-else class="muted staff-free">No bookings today.</p>
-          </section>
-        </div>
-      </article>
-    </div>
-
-    <div class="dashboard-grid">
-      <article class="card next-card">
-        <div class="section-heading">
-          <div>
-                        <h2>Upcoming bookings</h2>
-            <p class="tz-label muted">Times shown in {{ scheduleZone }}</p>
-          </div>
-          <RouterLink to="/bookings">View all <AppIcon name="chevron" :size="14" /></RouterLink>
-        </div>
-        <div v-if="upcomingBookings.length" class="list">
-          <RouterLink v-for="booking in upcomingBookings.slice(0, 3)" :key="booking.id" class="list-row upcoming-row" to="/bookings">
-            <span class="date-tile">
-              <strong>{{ new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({ day: 'numeric' }, booking)) }}</strong>
-              <small>{{ new Date(booking.starts_at).toLocaleDateString(undefined, displayTimeOptions({ month: 'short' }, booking)) }}</small>
-            </span>
-            <span class="list-row-main">
-              <strong>{{ displayName(booking.service_name) }}</strong>
-              <span>{{ booking.guest_name }} · {{ formatDate(booking) }}</span>
-            </span>
-            <span class="list-row-end">
-              <span class="upcoming-time tnum" :title="zone(booking)">{{ formatTime(booking) }}</span>
-              <span class="chip" :class="statusClass(booking.status)">{{ statusLabel[booking.status] || booking.status }}</span>
-              <AppIcon name="chevron" :size="16" />
-            </span>
-          </RouterLink>
-        </div>
-        <div v-else class="empty compact">
-          <span class="empty-icon"><AppIcon name="calendar" :size="20" /></span>
-          <h2>No upcoming bookings</h2>
-          <p>Your next confirmed appointment will appear here.</p>
-          <RouterLink v-if="!isDemo && !setup.isComplete" class="primary small" :to="nextStep.to">{{ nextStep.label }}</RouterLink>
-          <RouterLink v-else-if="!isDemo" class="secondary small-button" to="/bookings">Open bookings</RouterLink>
-        </div>
-      </article>
-
-      <aside class="dashboard-side">
-        <article v-if="setupComplete" class="card ready-card" data-tour="tour-overview-checklist">
-          <span class="icon-tile success"><AppIcon name="check" :size="18" /></span>
-          <div class="ready-copy">
-            <h2>{{ isDemo ? 'Demo is ready to explore' : 'You are ready to book' }}</h2>
-            <RouterLink :to="nextStep.to">{{ isDemo ? nextStep.label : 'View booking link' }} <AppIcon name="chevron" :size="14" /></RouterLink>
-            <button v-if="startTour" class="link-button" type="button" @click="startTour()">Replay the tour</button>
-          </div>
-        </article>
-        <article v-else class="card setup-card" data-tour="tour-overview-checklist">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Launch checklist</p>
-              <h2>{{ completedSteps }} of {{ setupSteps.length }} complete</h2>
-            </div>
-            <span class="progress-number tnum">{{ Math.round(setupProgress) }}%</span>
-          </div>
-          <div class="progress-track" aria-hidden="true"><span :style="{ width: `${setupProgress}%` }" /></div>
-          <div class="setup-list">
-            <RouterLink v-for="step in setupSteps" :key="step.label" :to="step.to" :class="{ done: step.done, current: !isDemo && !step.done && step.key === nextStep.key }" :aria-current="!isDemo && !step.done && step.key === nextStep.key ? 'step' : undefined">
-              <span><AppIcon :name="step.done ? 'check' : 'chevron'" :size="14" /></span>
-              <span class="step-text">{{ step.label }}<small v-if="step.lockedReason && !step.done">{{ step.lockedReason }}: set your hours first</small></span>
-              <span v-if="step.done" class="visually-hidden">Done</span>
-            </RouterLink>
-          </div>
-          <p v-if="!isDemo && nextStep.description" class="next-description"><strong>Next:</strong> {{ nextStep.description }}</p>
-          <RouterLink class="primary setup-action" :to="nextStep.to">{{ nextStep.label }}<AppIcon name="chevron" :size="14" /></RouterLink>
-        </article>
-
-        <article class="card link-card">
-          <span class="icon-tile"><AppIcon name="link" :size="20" /></span>
-          <div>
-            <p class="eyebrow">Booking link</p>
-            <h2>{{ isDemo ? 'Guest preview is ready' : linkExpired ? 'Your link has expired' : publicUrl ? 'Ready to share' : 'Create your public page' }}</h2>
-            <p class="muted">{{ isDemo ? 'Explore fictional services and times without creating a public link.' : 'Guests only see the services and times you make available.' }}</p>
-          </div>
-          <template v-if="linkExpired">
-            <p class="muted">Guests opening this link now see an expired-link page.</p>
-            <RouterLink class="primary" to="/settings">Create new link<AppIcon name="chevron" :size="15" /></RouterLink>
-          </template>
-          <template v-else-if="publicUrl">
-            <div class="link-row">
-              <input class="input" type="text" readonly :value="publicUrl" aria-label="Booking link" @focus="$event.target.select()" />
-              <button class="secondary icon-button" type="button" :aria-label="copied ? 'Copied' : 'Copy link'" @click="copyLink">
-                <AppIcon :name="copied ? 'check' : 'copy'" :size="18" />
-              </button>
-            </div>
-            <p v-if="copyError" class="notice error" role="alert">{{ copyError }}</p>
-            <a class="secondary" :href="publicUrl" target="_blank" rel="noreferrer">Preview<AppIcon name="external" :size="15" /></a>
-          </template>
-          <RouterLink v-else :class="isDemo ? 'secondary' : 'primary'" :to="isDemo ? '/demo/guest' : '/settings'">
-            {{ isDemo ? 'Open guest preview' : 'Create booking link' }}<AppIcon name="chevron" :size="15" />
-          </RouterLink>
-        </article>
+        <RouterLink v-else :to="isDemo ? '/demo/guest' : '/settings'" class="secondary compact-action">{{ isDemo ? 'Open guest preview' : 'Create booking link' }}</RouterLink>
+        <p v-if="copyError" class="notice error" role="alert">{{ copyError }}</p>
+        <div class="readiness"><strong>Client messages</strong><br />Prepare a message after booking. You choose when to send it.</div>
       </aside>
     </div>
   </section>
 </template>
 
 <style scoped>
-.overview { display: grid; gap: var(--space-4); }
-.overview .page-header { margin-bottom: 0; }
-.notice a { margin-left: 6px; color: var(--accent); font-weight: 700; }
-.stat-tile { min-width: 0; }
-.stat-tile .label { align-self: center; }
-.day-card .section-heading { margin-bottom: var(--space-3); }
-.section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-4); }
-.section-heading .eyebrow { margin-bottom: 4px; }
-.section-heading h2 { margin: 0; font-size: var(--text-lg); }
-.section-heading > a { min-height: 40px; display: flex; align-items: center; gap: 3px; color: var(--accent); font-size: var(--text-sm); font-weight: 700; text-decoration: none; }
-.tz-label { margin: 4px 0 0; font-size: var(--text-xs); }
-.day-list { margin: 0; padding: 0; display: grid; list-style: none; }
-.day-list li { padding: var(--space-3) 0; display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-bottom: 1px solid var(--line); }
-.day-list li:last-child { border: 0; }
-.day-time { color: var(--ink-soft); font-size: var(--text-sm); font-weight: 700; }
-.day-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
-.day-actions a { display: inline-flex; align-items: center; text-decoration: none; }
-.delete-link { color: var(--danger); }
-.day-actions :deep(.delete-link) { --button-fg: var(--danger); }
-.messages-card { display: flex; flex-direction: column; }
-.messages-card .section-heading h2 { display: flex; align-items: center; gap: 8px; }
-.msg-due-list li { grid-template-columns: minmax(0, 1fr) auto; }
-.more-due { margin: var(--space-2) 0 0; font-size: var(--text-sm); }
-.open-messages { margin-top: auto; align-self: flex-start; justify-content: center; text-decoration: none; }
-.messages-card > .empty, .messages-card > .msg-due-list { margin-bottom: var(--space-3); }
-.by-staff-card { grid-column: 1 / -1; }
-.staff-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--space-4); }
-.staff-group h3 { margin: 0 0 var(--space-2); display: flex; align-items: center; gap: 8px; font-size: var(--text-md); }
-.staff-dot { width: 10px; height: 10px; flex: none; border-radius: 50%; background: var(--accent); }
-.staff-free { margin: 0; font-size: var(--text-sm); }
-.staff-group .day-list li { grid-template-columns: 64px minmax(0, 1fr); }
-.upcoming-copy { min-width: 0; display: grid; gap: 2px; }
-.upcoming-copy strong, .upcoming-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upcoming-copy strong { font-size: var(--text-md); }
-.upcoming-copy small { color: var(--muted); font-size: var(--text-sm); }
-.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr); gap: var(--space-4); }
-.dashboard-side { display: grid; align-content: start; gap: var(--space-4); }
-.upcoming-row { min-height: 78px; }
-.date-tile { width: 48px; height: 52px; flex: none; display: grid; place-items: center; align-content: center; color: var(--accent); border-radius: 11px; background: var(--accent-soft); }
-.date-tile strong { font-size: 18px; line-height: 1; }
-.date-tile small { margin-top: 3px; font-size: var(--text-xs); font-weight: 800; text-transform: uppercase; }
-.upcoming-time { color: var(--ink-soft); font-size: var(--text-sm); font-weight: 700; }
-.list-row-end > svg { color: var(--muted); }
-.progress-number { color: var(--accent); font-size: var(--text-md); font-weight: 800; }
-.progress-track { height: 8px; margin: -4px 0 var(--space-4); overflow: hidden; border-radius: 99px; background: #e6e9f2; }
-.progress-track span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-panel) var(--ease); }
-.setup-list { display: grid; margin-bottom: var(--space-4); }
-.setup-list a { min-height: 44px; display: flex; align-items: center; gap: var(--space-3); color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: var(--text-sm); text-decoration: none; }
-.setup-list a > span { width: 24px; height: 24px; display: grid; place-items: center; color: var(--muted); border: 1px solid var(--line); border-radius: 50%; }
-.setup-list a.done { color: var(--muted); }
-.setup-list a.done > span { color: var(--success); border-color: var(--success); background: var(--success-soft); }
-.setup-action { width: 100%; justify-content: space-between; }
-.setup-list a > .step-text { width: auto; height: auto; display: grid; gap: 1px; border: 0; border-radius: 0; background: none; color: inherit; place-items: start; }
-.setup-list a > .step-text small { color: var(--muted); font-size: var(--text-xs); }
-.setup-list a.current { color: var(--ink); font-weight: 700; }
-.setup-list a.current > span:first-child { color: var(--accent); border-color: var(--accent); }
-.next-description { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); line-height: 1.45; }
-.link-button { padding: 0; width: fit-content; min-height: 32px; color: var(--muted); border: 0; background: none; font-size: var(--text-xs); text-decoration: underline; cursor: pointer; }
-.empty.compact .small-button, .empty.compact .small { margin-top: var(--space-2); }
-.section-heading h2 :deep(.gm-hint) { vertical-align: middle; }
-.ready-card { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-color: var(--success); background: var(--success-soft); }
-.ready-copy { min-width: 0; display: grid; gap: 2px; }
-.ready-copy h2 { margin: 0; font-size: var(--text-md); }
-.ready-copy a { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-size: var(--text-sm); font-weight: 700; text-decoration: none; }
-.link-card { display: grid; gap: var(--space-3); }
-.link-card h2 { margin: 0 0 4px; font-size: var(--text-lg); }
-.link-card .muted { margin: 0; font-size: var(--text-sm); }
-.link-row { display: flex; gap: var(--space-2); }
-.link-row .input { min-width: 0; flex: 1; font-family: var(--font-mono); font-size: var(--text-sm); text-overflow: ellipsis; }
-.icon-button { width: var(--control-h); padding: 0; flex: none; }
-.link-card > .primary, .link-card > .secondary { width: 100%; }
-@media (max-width: 1120px) {
-  .dashboard-grid { grid-template-columns: 1fr; }
-  .dashboard-side { grid-template-columns: 1fr 1fr; }
-}
-@media (max-width: 700px) {
-  .dashboard-side { grid-template-columns: 1fr; }
-  .day-list li { grid-template-columns: 64px minmax(0, 1fr); }
-  .day-actions { grid-column: 1 / -1; justify-content: flex-start; }
-  .day-list.msg-due-list li { grid-template-columns: minmax(0, 1fr) auto; }
-  .upcoming-row .chip { display: none; }
-}
+.owner-overview { display: grid; gap: 16px; color: #20242d; font-size: 13px; }
+.overview-header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #e5e7eb; }
+.overview-header h1 { margin: 0; font-size: 24px; line-height: 1.2; letter-spacing: -.025em; }
+.overview-header p { margin: 4px 0 0; color: #707580; font-size: 13px; }
+.overview-new { min-height: 40px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; border-radius: 7px; text-decoration: none; }
+.demo-note { margin: 0; }
+.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.metric { min-height: 76px; padding: 14px 16px; display: block; color: inherit; border-right: 1px solid #e5e7eb; text-decoration: none; }
+.metric:last-child { border-right: 0; }
+.metric span { display: block; color: #707580; font-size: 12px; }
+.metric strong { display: block; margin-top: 4px; font-size: 22px; letter-spacing: -.03em; }
+.overview-dashboard, .overview-lower { display: grid; grid-template-columns: minmax(0, 2fr) 320px; gap: 16px; }
+.overview-section { min-width: 0; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.section-head { min-height: 54px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5e7eb; }
+.section-head h2, .link-card h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
+.section-head a { color: #2336dc; font-size: 12px; font-weight: 650; text-decoration: none; }
+.table-wrap { overflow-x: auto; }
+.booking-table { width: 100%; min-width: 660px; border-collapse: collapse; table-layout: fixed; }
+.booking-table th { height: 34px; padding: 0 16px; color: #969ba5; text-align: left; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.booking-table td { height: 56px; padding: 0 16px; border-top: 1px solid #e5e7eb; }
+.booking-table th:nth-child(1) { width: 30%; }.booking-table th:nth-child(2) { width: 27%; }.booking-table th:nth-child(3) { width: 25%; }.booking-table th:nth-child(4) { width: 18%; }
+.booking-table td > a { color: #20242d; font-weight: 680; text-decoration: none; }
+.booking-table .date { color: #707580; font-variant-numeric: tabular-nums; }
+.service { display: flex; align-items: center; gap: 8px; color: #4d5460; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.service i { width: 8px; height: 8px; flex: none; border-radius: 2px; background: #6574e8; }.service i.sage { background: #59926f; }.service i.sand { background: #b77a46; }
+.status-badge { padding: 4px 8px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; color: #247552; background: #eaf6ef; font-size: 11px; font-weight: 700; }
+.status-badge i { width: 6px; height: 6px; border-radius: 50%; background: #38a169; }.status-badge.cancelled, .status-badge.no_show { color: #707580; background: #f1f2f4; }.status-badge.cancelled i, .status-badge.no_show i { background: #969ba5; }
+.availability-list { padding: 7px 16px 0; }
+.availability-row { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #f0f1f3; color: #4e5560; }
+.availability-row:last-child { border-bottom: 0; }.availability-row span:last-child { color: #707580; text-align: right; font-variant-numeric: tabular-nums; }.availability-row.closed span:last-child { color: #969ba5; }
+.timezone { margin: 8px 16px 13px; color: #969ba5; font-size: 11px; }
+.services-section { padding-bottom: 2px; }
+.service-row { min-height: 44px; padding: 0 16px; display: grid; grid-template-columns: minmax(0, 1.45fr) .75fr .85fr .55fr; align-items: center; gap: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; }
+.service-row > span { color: #707580; }.service-row strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }.service-row .active { color: #247552; font-weight: 650; }
+.link-card { padding: 15px 16px; }.link-card > p { margin: 4px 0 12px; color: #707580; font-size: 12px; }
+.url { width: 100%; height: 38px; padding: 0 10px; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 7px; color: #3e4652; background: #f5f6f8; font-family: var(--font-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.link-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.compact-action { min-height: 38px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #d5d8de; border-radius: 7px; color: #353a45; background: #fff; font-weight: 650; text-decoration: none; }
+.readiness { margin-top: 10px; padding: 10px 12px; border-left: 3px solid #c7cdd8; border-radius: 0 7px 7px 0; background: #f8f9fb; color: #5e6470; font-size: 12px; line-height: 1.45; }.readiness strong { color: #414854; }
+.overview-empty { min-height: 230px; padding: 28px; display: grid; place-content: center; justify-items: center; gap: 7px; color: #707580; text-align: center; }.overview-empty strong { color: #20242d; font-size: 14px; }.overview-empty a { color: #2336dc; font-weight: 650; }.compact-empty { min-height: 130px; }
+@media (max-width: 1080px) { .overview-dashboard, .overview-lower { grid-template-columns: 1fr; }.availability-section, .link-card { width: 100%; }.metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric:nth-child(2) { border-right: 0; }.metric:nth-child(-n+2) { border-bottom: 1px solid #e5e7eb; } }
+@media (max-width: 700px) { .overview-header { align-items: flex-start; flex-direction: column; padding-bottom: 16px; }.overview-new { width: 100%; justify-content: center; }.metrics { grid-template-columns: 1fr 1fr; }.metric { min-height: 68px; padding: 12px; }.metric strong { font-size: 20px; }.service-row { grid-template-columns: minmax(0, 1.2fr) .65fr .8fr; }.service-row .active { display: none; } }
+.overview-setup{margin:0 0 16px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;background:white}.overview-setup strong{font-size:14px}.overview-setup p{margin:4px 0 0;color:var(--muted);font-size:13px}
 </style>

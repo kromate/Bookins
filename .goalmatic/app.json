@@ -8,9 +8,9 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, organise a small team, and keep client history together. You open prefilled WhatsApp, SMS or email messages yourself; Bookins does not send them. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "releaseType": "minor",
-  "releaseNotes": "Improves workspace navigation, weekly-hours editing and mobile forms. Adds direct Gmail compose, clearer campaign previews and reporting labels, bounded availability recovery, linked Calendar reschedule/cancellation with retry, and owner agenda controls. Improves session persistence diagnostics. Calendar updates need the matching Goalmatic platform release; new schedule-status access is optional and subject to installation consent.",
+  "releaseNotes": "Redesigns the owner workspace and guest booking flow with consistent mobile layouts, right-side forms, searchable dropdowns and custom date/time pickers. Adds four booking themes and calendar preferences, faster page navigation, and booking-specific private links for secure guest rescheduling and cancellation. Adds the guest-management capability and two credential metadata fields; existing bookings retain host-assisted changes. Calendar-linked guest changes require host reconciliation.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
   "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
@@ -43,6 +43,14 @@
     "firebasestorage.googleapis.com"
   ],
   "publicRuntime": {
+    "routes": [
+      {
+        "id": "booking-page",
+        "path": "/book",
+        "page": "pages/Book.vue",
+        "grantDefinitionId": "booking-link"
+      }
+    ],
     "grants": [
       {
         "id": "booking-link",
@@ -173,16 +181,251 @@
               "type": "object"
             },
             "boundInput": {}
+          },
+          {
+            "id": "booking-create-managed",
+            "kind": "command",
+            "operationId": "booking.create-managed",
+            "capabilityId": "booking-guest-management",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "serviceId",
+                "startsAt",
+                "contact"
+              ],
+              "properties": {
+                "serviceId": {
+                  "type": "string"
+                },
+                "startsAt": {
+                  "type": "string"
+                },
+                "contact": {
+                  "type": "object"
+                },
+                "notes": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {
+              "profileTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "profiles"
+              },
+              "scheduleTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "schedules"
+              },
+              "serviceTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "services"
+              },
+              "bookingTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
+          },
+          {
+            "id": "booking-manage-get",
+            "kind": "query",
+            "operationId": "booking.guest-get",
+            "capabilityId": "booking-guest-management",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "bookingId",
+                "managementToken"
+              ],
+              "properties": {
+                "bookingId": {
+                  "type": "string"
+                },
+                "managementToken": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 64
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {
+              "profileTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "profiles"
+              },
+              "scheduleTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "schedules"
+              },
+              "serviceTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "services"
+              },
+              "bookingTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
+          },
+          {
+            "id": "booking-manage-openings",
+            "kind": "query",
+            "operationId": "booking.guest-openings",
+            "capabilityId": "booking-guest-management",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "bookingId",
+                "managementToken",
+                "fromDate",
+                "throughDate"
+              ],
+              "properties": {
+                "bookingId": {
+                  "type": "string"
+                },
+                "managementToken": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 64
+                },
+                "fromDate": {
+                  "type": "string"
+                },
+                "throughDate": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {
+              "profileTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "profiles"
+              },
+              "scheduleTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "schedules"
+              },
+              "serviceTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "services"
+              },
+              "bookingTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
+          },
+          {
+            "id": "booking-reschedule",
+            "kind": "command",
+            "operationId": "booking.guest-reschedule",
+            "capabilityId": "booking-guest-management",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "bookingId",
+                "managementToken",
+                "startsAt"
+              ],
+              "properties": {
+                "bookingId": {
+                  "type": "string"
+                },
+                "managementToken": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 64
+                },
+                "startsAt": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {
+              "profileTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "profiles"
+              },
+              "scheduleTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "schedules"
+              },
+              "serviceTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "services"
+              },
+              "bookingTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
+          },
+          {
+            "id": "booking-cancel",
+            "kind": "command",
+            "operationId": "booking.guest-cancel",
+            "capabilityId": "booking-guest-management",
+            "inputSchema": {
+              "type": "object",
+              "required": [
+                "bookingId",
+                "managementToken"
+              ],
+              "properties": {
+                "bookingId": {
+                  "type": "string"
+                },
+                "managementToken": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "minLength": 64
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputSchema": {
+              "type": "object"
+            },
+            "boundInput": {
+              "profileTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "profiles"
+              },
+              "scheduleTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "schedules"
+              },
+              "serviceTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "services"
+              },
+              "bookingTableId": {
+                "resourceKind": "table",
+                "logicalResourceId": "bookings"
+              }
+            }
           }
         ]
-      }
-    ],
-    "routes": [
-      {
-        "id": "booking-page",
-        "path": "/book",
-        "page": "pages/Book.vue",
-        "grantDefinitionId": "booking-link"
       }
     ]
   },
@@ -339,6 +582,20 @@
       ],
       "required": false,
       "logicalResourceId": "owner-daily-agenda"
+    },
+    {
+      "id": "booking-guest-management",
+      "kind": "tools",
+      "displayName": "Let guests manage their booking",
+      "description": "Issues a private, expiring link for one booking so its guest can view, reschedule or cancel it. Guests cannot access other bookings or private notes.",
+      "operations": [
+        "booking.create-managed",
+        "booking.guest-get",
+        "booking.guest-openings",
+        "booking.guest-reschedule",
+        "booking.guest-cancel"
+      ],
+      "required": true
     }
   ],
   "resources": {
@@ -388,6 +645,11 @@
           {
             "id": "message_templates_json",
             "name": "Message templates (versioned JSON)",
+            "type": "textarea"
+          },
+          {
+            "id": "booking_page_settings_json",
+            "name": "Booking page appearance (JSON)",
             "type": "textarea"
           }
         ]
@@ -746,6 +1008,16 @@
             "id": "calendar_sync_error",
             "name": "Calendar sync error",
             "type": "textarea"
+          },
+          {
+            "id": "management_token_hash",
+            "name": "Guest management token hash",
+            "type": "text"
+          },
+          {
+            "id": "management_expires_at",
+            "name": "Guest management expiry",
+            "type": "date"
           }
         ]
       },

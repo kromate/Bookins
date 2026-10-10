@@ -31,7 +31,7 @@ function guardDismiss(event) {
 // Toasts render above the dialog; using one (Dismiss / Undo) must not count as clicking outside the dialog.
 function guardOutside(event) {
   const target = event.detail?.originalEvent?.target || event.target
-  if (props.busy || (target instanceof Element && target.closest('.toast-region, [data-feedback-widget]'))) event.preventDefault()
+  if (props.busy || (target instanceof Element && target.closest('.toast-region, [data-feedback-widget], .gm-picker-content, .gm-select-content'))) event.preventDefault()
 }
 </script>
 
@@ -58,28 +58,46 @@ function guardOutside(event) {
 </template>
 
 <style>
-.gm-dialog-overlay { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; overflow-y: auto; overscroll-behavior: contain; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: rgb(16 25 40 / 50%); backdrop-filter: blur(3px); }
-.gm-dialog-content { box-sizing: border-box; min-width: 0; max-width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto; overscroll-behavior: contain; }
-.gm-dialog-overlay { padding-bottom: max(84px, env(safe-area-inset-bottom)); } /* strip under the card where toasts appear */
-.gm-dialog-content { max-height: calc(100dvh - 96px); }
-.gm-dialog-content:not(.modal) { width: min(620px, 100%); background: transparent; }
-.gm-dialog-content:not(.modal) > .modal { width: 100%; max-height: none; overflow: visible; }
+.gm-dialog-overlay.gm-dialog-overlay { position: fixed; inset: 0; z-index: 100; display: flex; justify-content: flex-end; align-items: stretch; overflow: hidden; overscroll-behavior: contain; padding: 0; background: rgb(16 25 40 / 50%); backdrop-filter: blur(3px); }
+.gm-dialog-content.gm-dialog-content { box-sizing: border-box; width: min(620px, 100vw); min-width: 0; max-width: 100vw; height: 100dvh; max-height: 100dvh; overflow-y: auto; overscroll-behavior: contain; border-radius: 0 !important; box-shadow: -16px 0 42px rgb(16 25 40 / 18%); }
+.gm-dialog-content:not(.modal) { background: transparent; }
+.gm-dialog-content.modal { display:flex; flex-direction:column; }
+.gm-dialog-content.modal > form { flex:1; display:flex; flex-direction:column; min-height:100%; }
+.gm-dialog-content.modal > form > .modal-footer { margin-top:auto; }
+
+.gm-dialog-content:not(.modal) > .modal { width: 100%; min-height: 100%; max-height: none; overflow: visible; border-radius: 0; }
+.gm-dialog-content.modal > .modal-header,
+.gm-dialog-content.modal > form > .modal-header,
+.gm-dialog-content:not(.modal) > .modal > .modal-header,
+.gm-dialog-content:not(.modal) > .modal > form > .modal-header,
+.gm-dialog-content:not(.modal) > .modal > .import-body > .modal-header {
+  position: sticky;
+  top: calc(var(--space-5, 24px) * -1);
+  z-index: 12;
+  margin: calc(var(--space-5, 24px) * -1) calc(var(--space-5, 24px) * -1) var(--space-4, 16px);
+  padding: var(--space-4, 16px) var(--space-5, 24px);
+  border-bottom: 1px solid var(--gm-color-border-subtle, #dce3ea);
+  background: var(--gm-color-surface, #fff);
+}
+.gm-dialog-content .modal-footer { z-index: 12; padding-bottom: max(var(--space-4, 16px), env(safe-area-inset-bottom)); background: var(--gm-color-surface, #fff); }
 .gm-dialog-content:focus, .gm-dialog-content:focus-visible { outline: none; }
 .gm-dialog-accessible-title { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 @media (prefers-reduced-motion: no-preference) {
   .gm-dialog-overlay[data-state="open"] { animation: gm-dialog-enter 160ms var(--ease, ease-out); }
-  .gm-dialog-content[data-state="open"] { animation: gm-dialog-pop var(--dur-panel, 200ms) var(--ease, ease-out); }
+  .gm-dialog-content[data-state="open"] { animation: gm-dialog-drawer var(--dur-panel, 200ms) var(--ease, ease-out); }
 }
-/* Phones: dialogs become bottom sheets. */
 @media (max-width: 700px) {
-  .gm-dialog-overlay { place-items: end center; padding: 0; }
-  /* Toasts sit at the top of the screen on phones: leave ~76px free above the sheet. */
-  .gm-dialog-content { width: 100%; max-height: calc(100dvh - 76px - env(safe-area-inset-top)); border-radius: 18px 18px 0 0 !important; padding-bottom: max(var(--space-4, 16px), env(safe-area-inset-bottom)); }
-  @media (prefers-reduced-motion: no-preference) {
-    .gm-dialog-content[data-state="open"] { animation-name: gm-dialog-sheet; }
+  .gm-dialog-content.gm-dialog-content { width: 100vw; max-width: 100vw; padding-bottom: env(safe-area-inset-bottom); }
+  .gm-dialog-content.modal > .modal-header,
+  .gm-dialog-content.modal > form > .modal-header,
+  .gm-dialog-content:not(.modal) > .modal > .modal-header,
+  .gm-dialog-content:not(.modal) > .modal > form > .modal-header,
+  .gm-dialog-content:not(.modal) > .modal > .import-body > .modal-header {
+    top: calc(var(--space-4, 16px) * -1);
+    margin: calc(var(--space-4, 16px) * -1) calc(var(--space-4, 16px) * -1) var(--space-4, 16px);
+    padding: max(var(--space-4, 16px), env(safe-area-inset-top)) max(var(--space-4, 16px), env(safe-area-inset-right)) var(--space-4, 16px) max(var(--space-4, 16px), env(safe-area-inset-left));
   }
 }
 @keyframes gm-dialog-enter { from { opacity: 0; } to { opacity: 1; } }
-@keyframes gm-dialog-pop { from { opacity: 0; transform: translateY(8px) scale(0.985); } to { opacity: 1; transform: none; } }
-@keyframes gm-dialog-sheet { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+@keyframes gm-dialog-drawer { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
 </style>
