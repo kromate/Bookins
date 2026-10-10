@@ -11,6 +11,18 @@
   list(data && data.services).forEach((s) => { if (s && s.id) services[s.id] = s; });
   const now = Date.now();
   const clean = (v) => String(v === null || v === undefined ? '' : v).replace(/[\r\n]+/g, ' ').trim();
+  const dateMs = (value) => {
+    if (value && typeof value.toDate === 'function') {
+      const date = value.toDate();
+      return date instanceof Date ? date.getTime() : NaN;
+    }
+    if (value && typeof value === 'object' && Number.isFinite(Number(value._seconds))) {
+      return Number(value._seconds) * 1000 + (Number(value._nanoseconds) || 0) / 1000000;
+    }
+    if (typeof value === 'number') return value >= 100000000000 ? value : value * 1000;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : NaN;
+  };
   const dayIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(0, 10); } };
   const timeIn = (ms, tz) => { try { return new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }).format(new Date(ms)); } catch (e) { return new Date(ms).toISOString().slice(11, 16) + ' UTC'; } };
   const nextDay = (day) => new Date(Date.parse(day + 'T12:00:00.000Z') + 86400000).toISOString().slice(0, 10);
@@ -56,7 +68,7 @@
   const reminderFor = (r, tz, start) => {
     const svc = services[clean(r.service_id)];
     const name = clean(r.guest_name);
-    const minutes = Math.round((Date.parse(r.ends_at) - start) / 60000);
+    const minutes = Math.round((dateMs(r.ends_at) - start) / 60000);
     const link = clean(profile.public_link_url);
     const vars = {
       guest_name: name, first_name: name.split(/\s+/)[0] || name, service: clean(r.service_name) || (svc ? clean(svc.name) : ''),
@@ -86,8 +98,8 @@
   bookings.forEach((r) => {
     if (!r) return;
     const tz = clean(r.timezone) || 'UTC';
-    const start = Date.parse(r.starts_at);
-    const end = Date.parse(r.ends_at);
+    const start = dateMs(r.starts_at);
+    const end = dateMs(r.ends_at);
     if (isNaN(start)) return;
     const status = clean(r.status);
     const todayKey = dayIn(now, tz);
@@ -97,7 +109,7 @@
     }
     const who = clean(r.staff_name) && clean(r.staff_name) !== business ? ' with ' + clean(r.staff_name) : '';
     if (status !== 'cancelled' && dayIn(start, tz) === todayKey) today.push({ start, line: timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + who + (clean(r.guest_phone) ? ', ' + clean(r.guest_phone) : '') + (email(r) ? ', ' + email(r) : '') + ' (' + tz + ', ' + clean(r.reference) + ')' });
-    const created = Date.parse(r.created_at);
+    const created = dateMs(r.created_at);
     if (!isNaN(created) && 86400000 >= now - created && status !== 'cancelled' && start > now) fresh.push({ start, line: dayIn(start, tz) + ' ' + timeIn(start, tz) + ' ' + clean(r.service_name) + ' - ' + (clean(r.guest_name) || 'Guest') + (clean(r.source) === 'owner' ? ' (added by you)' : '') + ' (' + tz + ')' });
     if (slotEnabled && status === 'confirmed' && dayIn(start, tz) === nextDay(todayKey) && !clean(r.reminder24_opened_at) && !clean(r.reminder_opened_at)) {
       const made = reminderFor(r, tz, start);
