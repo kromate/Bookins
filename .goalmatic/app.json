@@ -8,7 +8,7 @@
   "shortDescription": "Set availability, share a secure booking link, and manage appointments from one workspace.",
   "description": "Bookins helps African service businesses configure services, set weekly availability, share secure public booking links, manage appointments, organise a small team, and keep client history together. You open prefilled WhatsApp, SMS or email messages yourself; Bookins does not send them. Guest access is limited to release-pinned booking actions and never exposes the owner workspace.",
   "category": "productivity",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "releaseType": "minor",
   "releaseNotes": "Improves workspace navigation, weekly-hours editing and mobile forms. Adds direct Gmail compose, clearer campaign previews and reporting labels, bounded availability recovery, linked Calendar reschedule/cancellation with retry, and owner agenda controls. Improves session persistence diagnostics. Calendar updates need the matching Goalmatic platform release; new schedule-status access is optional and subject to installation consent.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
@@ -43,6 +43,14 @@
     "firebasestorage.googleapis.com"
   ],
   "publicRuntime": {
+    "routes": [
+      {
+        "id": "booking-page",
+        "path": "/book",
+        "page": "pages/Book.vue",
+        "grantDefinitionId": "booking-link"
+      }
+    ],
     "grants": [
       {
         "id": "booking-link",
@@ -175,14 +183,6 @@
             "boundInput": {}
           }
         ]
-      }
-    ],
-    "routes": [
-      {
-        "id": "booking-page",
-        "path": "/book",
-        "page": "pages/Book.vue",
-        "grantDefinitionId": "booking-link"
       }
     ]
   },
