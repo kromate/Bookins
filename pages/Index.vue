@@ -238,7 +238,7 @@ async function copyLink() {
 .overview-section { min-width: 0; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
 .section-head { min-height: 54px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5e7eb; }
 .section-head h2, .link-card h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
-.section-head a { color: #2336dc; font-size: 12px; font-weight: 650; text-decoration: none; }
+.section-head a { display: inline-flex; align-items: center; color: #2336dc; font-size: 12px; font-weight: 650; text-decoration: none; }
 .table-wrap { overflow-x: auto; }
 .booking-table { width: 100%; min-width: 660px; border-collapse: collapse; table-layout: fixed; }
 .booking-table th { height: 34px; padding: 0 16px; color: #969ba5; text-align: left; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
