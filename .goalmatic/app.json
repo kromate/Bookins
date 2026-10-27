@@ -13,7 +13,7 @@
   "releaseNotes": "Redesigns the owner workspace and guest booking flow with consistent mobile layouts, right-side forms, searchable dropdowns and custom date/time pickers. Adds four booking themes and calendar preferences, faster page navigation, and booking-specific private links for secure guest rescheduling and cancellation. Adds the guest-management capability and two credential metadata fields; existing bookings retain host-assisted changes. Calendar-linked guest changes require host reconciliation.",
   "sourceVersionId": "__LATEST_SAVED_VERSION__",
   "entrypoint": "/",
-  "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
+  "icon": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F2654f6023e99ab2ea810b577844abcdc683733e3f1784a81793c5ad82f11c8ab%2Ficon-512.png?alt=media&token=27ef14de-0df7-4fc6-af1f-242269f9e6fc",
   "accent": "#2336dc",
   "screenshots": [
     "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Flisting-screenshot%2Fc147a04ed275cc024c4ab4f351f04368a4dad01b7a93a3686aaf9bd611b97140%2Fscreenshot-1600x1000.png?alt=media&token=d42b983e-e58e-4cd4-a69e-d9ca2820f728",
@@ -34,7 +34,7 @@
   "seo": {
     "title": "Bookins",
     "description": "Set availability, share a secure booking link, and manage appointments from one workspace.",
-    "image": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F2f336ae3b4fe765df289b3ce811aa013b816a617de8778e5406a77d29215746e%2Fsocial-1200x630.png?alt=media&token=c7c7c767-90ca-4e70-acaa-15f080004b4c"
+    "image": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fsocial%2F6aec9bdb4ea0f1bf2f9044dff49e3f0e84edefcfcdafbffb02bbf4657fd7a141%2Fsocial-1200x630.png?alt=media&token=09b381ec-2849-42f0-9782-df994ec46889"
   },
   "privacyPolicyUrl": "https://goalmatic.io/privacy",
   "supportUrl": "https://goalmatic.io/support",
