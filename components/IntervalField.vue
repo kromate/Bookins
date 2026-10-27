@@ -1,10 +1,10 @@
-<script setup>
+<script setup lang="ts">
 // Start-time interval picker with the plain-language rule behind it. Shared by Availability (the owner and each
 // team member) and the Team dialog. `maxDuration` is the longest service this schedule has to fit.
 import { computed, ref } from 'vue'
 import GmHint from './ui/GmHint.vue'
 import GmSelect from './ui/GmSelect.vue'
-import { durationWords, intervalOptionsFor } from '../weekly-hours.js'
+import { durationWords, intervalOptionsFor } from '../weekly-hours.ts'
 
 const props = defineProps({
   id: { type: String, default: 'slot-interval' },
@@ -24,13 +24,17 @@ const root = ref(null)
 const options = computed(() => intervalOptionsFor(props.maxDuration, model.value, { strict: props.strict }))
 const tooShort = computed(() => props.maxDuration > model.value)
 const words = computed(() => durationWords(model.value))
+function updateModel(value: string | number | boolean | undefined) {
+  const number = Number(value)
+  if (Number.isFinite(number)) model.value = number
+}
 defineExpose({ el: root })
 </script>
 
 <template>
   <div ref="root" class="field interval-field" :class="{ highlight }">
     <label :for="id">Start-time interval <GmHint text="How far apart appointment start times are. With 60 minutes, guests can start at 9:00, 10:00, 11:00. A 30 minute service on a 60 minute interval leaves 30 minutes free before the next one. Long services (for example a 4 hour install) need an interval at least as long." label="About the start-time interval" /></label>
-    <GmSelect :id="id" v-model="model" :options="options" label="Start-time interval" :disabled="disabled" :described-by="`${id}-help`" />
+    <GmSelect :id="id" :model-value="model" :options="options" label="Start-time interval" :disabled="disabled" :described-by="`${id}-help`" @update:model-value="updateModel" />
     <p :id="`${id}-help`" class="field-hint" :class="{ 'field-error': tooShort && !strict }">
       <template v-if="maxDuration && tooShort && !strict">This is shorter than {{ longestName ? `${longestName}` : 'the longest service' }} ({{ maxDuration }} minutes), so that service cannot be offered on {{ who }} calendar until the interval is at least {{ maxDuration }} minutes. Raise it, or offer fewer services above.</template>
       <template v-else-if="maxDuration">Must be at least as long as {{ who }} longest active service ({{ longestName }}, {{ maxDuration }} minutes), so shorter intervals are unavailable.<template v-if="team"> To keep a shorter interval, choose which services this person offers on the <RouterLink to="/team">Team page</RouterLink> and leave the long ones off.</template></template>
@@ -50,5 +54,5 @@ defineExpose({ el: root })
 .interval-explain summary { min-height: 28px; display: flex; align-items: center; color: var(--accent); cursor: pointer; font-weight: 650; }
 .interval-explain p { margin: var(--space-1) 0 0; }
 .interval-field { border-radius: var(--radius-sm); transition: box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
-.interval-field.highlight { margin: calc(var(--space-2) * -1); padding: var(--space-2); background: rgb(35 54 220 / 6%); box-shadow: 0 0 0 2px var(--accent); }
+.interval-field.highlight { margin: calc(var(--space-2) * -1); padding: var(--space-2); background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
 </style>

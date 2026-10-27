@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts" generic="T extends string | number | boolean = string">
 import { computed, nextTick, ref, useId, watch, watchPostEffect } from 'vue'
 import {
   SelectRoot,
@@ -16,29 +16,13 @@ import {
 } from 'radix-vue'
 
 defineOptions({ inheritAttrs: false })
-/** @typedef {{ value: string | number | boolean, label: string, disabled?: boolean }} SelectOption */
-const props = defineProps({
-  modelValue: { type: [String, Number, Boolean], default: undefined },
-  options: { type: /** @type {import('vue').PropType<SelectOption[]>} */ (Array), required: true },
-  placeholder: { type: String, default: 'Select an option' },
-  label: { type: String, required: true },
-  name: { type: String, default: undefined },
-  form: { type: String, default: undefined },
-  autocomplete: { type: String, default: undefined },
-  disabled: Boolean,
-  required: Boolean,
-  loading: Boolean,
-  invalid: Boolean,
-  searchable: Boolean,
-  searchPlaceholder: { type: String, default: 'Search options' },
-  describedBy: { type: String, default: undefined },
-  theme: { type: String, default: 'light' },
-  portalTarget: { type: [String, Object], default: 'body' },
-})
-const emit = defineEmits(['update:modelValue', 'change', 'update:open', 'invalid'])
+type SelectValueType = string | number | boolean
+interface SelectOption<V extends SelectValueType> { value: V; label: string; disabled?: boolean }
+const props = withDefaults(defineProps<{ id?: string; modelValue?: T; options: SelectOption<T>[]; placeholder?: string; label: string; name?: string; form?: string; autocomplete?: string; disabled?: boolean; required?: boolean; loading?: boolean; invalid?: boolean; searchable?: boolean; searchPlaceholder?: string; describedBy?: string; theme?: 'light' | 'dark'; portalTarget?: string | HTMLElement }>(), { placeholder: 'Select an option', disabled: false, required: false, loading: false, invalid: false, searchable: false, searchPlaceholder: 'Search options', theme: 'light', portalTarget: 'body' })
+const emit = defineEmits<{ 'update:modelValue': [value: T]; change: [value: T]; 'update:open': [value: boolean]; invalid: [] }>()
 const missingRequired = ref(false)
 const open = ref(false)
-const searchInput = ref(/** @type {HTMLInputElement | null} */ (null))
+const searchInput = ref<HTMLInputElement | null>(null)
 const searchQuery = ref('')
 watch(open, async (value) => {
   emit('update:open', value)
@@ -50,9 +34,8 @@ watch(open, async (value) => {
   await nextTick()
   window.requestAnimationFrame(() => searchInput.value?.focus({ preventScroll: true }))
 })
-const nativeControl = ref(/** @type {HTMLSelectElement | null} */ (null))
+const nativeControl = ref<HTMLSelectElement | null>(null)
 // Form reset restores the initial value, not the current reactive selection.
-// eslint-disable-next-line vue/no-setup-props-destructure
 const initialValue = props.modelValue
 const errorId = useId() + '-select-error'
 const descriptionIds = computed(
@@ -66,13 +49,16 @@ watch(
     if (value !== undefined && value !== null && value !== '') missingRequired.value = false
   },
 )
-const onInvalid = (event) => {
+const onInvalid = (event: Event) => {
   if (!(event.target instanceof HTMLSelectElement)) return
   event.preventDefault()
   missingRequired.value = true
   const owner = event.target.form
-  const firstInvalid = owner ? [...owner.elements].find(control => control.willValidate && !control.validity.valid) : event.target
-  if (firstInvalid === event.target) event.currentTarget.querySelector('.gm-select-trigger')?.focus()
+  const firstInvalid = owner ? [...owner.elements].find((control) => {
+    if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement)) return false
+    return control.willValidate && !control.validity.valid
+  }) : event.target
+  if (firstInvalid === event.target && event.currentTarget instanceof Element) event.currentTarget.querySelector<HTMLElement>('.gm-select-trigger')?.focus()
   emit('invalid')
 }
 const selectedIndex = computed(() =>
@@ -86,19 +72,19 @@ const filteredOptions = computed(() => {
 })
 // HTML required selects treat only the first empty option as the missing-value placeholder.
 const nativeSelectedIndex = computed(() => props.required && props.modelValue === '' ? 0 : selectedIndex.value + 1)
-const optionKey = (value) => typeof value + ':' + String(value)
+const optionKey = (value: SelectValueType) => typeof value + ':' + String(value)
 const internalValue = computed(() => (selected.value ? optionKey(selected.value.value) : ''))
 const syncNativeSelection = () => {
   if (nativeControl.value) nativeControl.value.selectedIndex = nativeSelectedIndex.value
 }
 watchPostEffect(syncNativeSelection)
-const onFormReset = async (event) => {
+const onFormReset = async (event: Event) => {
   // A later listener can cancel reset; wait until dispatch finishes before changing the model.
   await Promise.resolve()
   if (event.defaultPrevented) return
   open.value = false
   missingRequired.value = false
-  emit('update:modelValue', initialValue)
+  emit('update:modelValue', (initialValue ?? '') as T)
   await nextTick()
   syncNativeSelection()
 }
@@ -116,7 +102,7 @@ watch(
     if (!props.required || props.disabled || props.loading) missingRequired.value = false
   },
 )
-const choose = (value) => {
+const choose = (value: string) => {
   const option = props.options.find((option) => optionKey(option.value) === value)
   if (
     option &&
@@ -129,11 +115,12 @@ const choose = (value) => {
     emit('change', option.value)
   }
 }
-const chooseNative = (event) => {
+const chooseNative = (event: Event) => {
+  if (!(event.target instanceof HTMLSelectElement)) return
   const option = props.options[event.target.selectedIndex - 1]
   if (option) choose(optionKey(option.value))
 }
-const onSearchKeydown = (event) => {
+const onSearchKeydown = (event: KeyboardEvent) => {
   event.stopPropagation()
   if (event.key === 'Escape') {
     event.preventDefault()
@@ -145,7 +132,7 @@ const onSearchKeydown = (event) => {
   const target = event.key === 'ArrowDown' ? options[0] : options.at(-1)
   if (!target) return
   event.preventDefault()
-  target.focus()
+  if (target instanceof HTMLElement) target.focus()
 }
 </script>
 
@@ -188,51 +175,44 @@ const onSearchKeydown = (event) => {
       :disabled="disabled || loading"
       @update:model-value="choose"
     >
-      <SelectTrigger
-        v-bind="$attrs"
-        class="gm-select-trigger"
-        :data-theme="theme"
-        :aria-label="label"
-        :aria-required="required || undefined"
-        :aria-describedby="descriptionIds"
-        :aria-invalid="invalid || missingRequired || undefined"
-        :aria-busy="loading || undefined"
-      >
-        <SelectValue
-          class="gm-select-value"
-          :placeholder="placeholder"
+      <SelectTrigger as-child>
+        <button
+          v-bind="$attrs"
+          :id="id"
+          type="button"
+          class="gm-select-trigger"
+          :class="{ 'gm-select--dark': theme === 'dark' }"
+          :disabled="disabled || loading"
+          :aria-label="label"
+          :aria-required="required || undefined"
+          :aria-describedby="descriptionIds"
+          :aria-invalid="invalid || missingRequired || undefined"
+          :aria-busy="loading || undefined"
         >
-          {{
-            selected?.label ||
-            (loading
-              ? 'Loading options…'
-              : modelValue !== undefined && modelValue !== null && modelValue !== ''
-                ? 'Selection unavailable'
-                : placeholder)
-          }}
-        </SelectValue>
-        <SelectIcon
-          class="gm-select-chevron"
-          aria-hidden="true"
-        >
-          <svg
-            class="gm-select-symbol"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            focusable="false"
+          <SelectValue
+            class="gm-select-value"
+            :placeholder="placeholder"
           >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </SelectIcon>
+            {{
+              selected?.label ||
+              (loading
+                ? 'Loading options…'
+                : modelValue !== undefined && modelValue !== null && modelValue !== ''
+                  ? 'Selection unavailable'
+                  : placeholder)
+            }}
+          </SelectValue>
+          <SelectIcon class="gm-select-chevron">
+            <svg class="gm-select-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </SelectIcon>
+        </button>
       </SelectTrigger>
       <SelectPortal :to="portalTarget">
         <SelectContent
           class="gm-select-content"
-          :data-theme="theme"
+          :class="{ 'gm-select--dark': theme === 'dark' }"
           position="popper"
           :side-offset="6"
           :collision-padding="12"
@@ -269,7 +249,6 @@ const onSearchKeydown = (event) => {
           </div>
           <SelectScrollUpButton
             class="gm-select-scroll"
-            aria-hidden="true"
           >
             <svg
               class="gm-select-symbol"
@@ -296,7 +275,6 @@ const onSearchKeydown = (event) => {
               <SelectItemText>{{ option.label }}</SelectItemText>
               <SelectItemIndicator
                 class="gm-select-check"
-                aria-hidden="true"
               >
                 <svg
                   class="gm-select-symbol"
@@ -320,7 +298,6 @@ const onSearchKeydown = (event) => {
           </SelectViewport>
           <SelectScrollDownButton
             class="gm-select-scroll"
-            aria-hidden="true"
           >
             <svg
               class="gm-select-symbol"
@@ -342,7 +319,7 @@ const onSearchKeydown = (event) => {
       v-if="missingRequired"
       :id="errorId"
       class="gm-select-error"
-      :data-theme="theme"
+      :class="{ 'gm-select--dark': theme === 'dark' }"
       role="alert"
       >Choose an option for {{ label.toLowerCase() }}.</p
     >
@@ -387,7 +364,7 @@ const onSearchKeydown = (event) => {
   font-size: 13px;
   line-height: 1.4;
 }
-.gm-select-error[data-theme='dark'] {
+.gm-select-error.gm-select--dark {
   color: #fca5a5;
 }
 .gm-select-trigger,
@@ -431,8 +408,8 @@ const onSearchKeydown = (event) => {
   outline-offset: 0;
 }
 .gm-select-search::-webkit-search-cancel-button { cursor: pointer; }
-.gm-select-trigger[data-theme='dark'],
-.gm-select-content[data-theme='dark'] {
+.gm-select-trigger.gm-select--dark,
+.gm-select-content.gm-select--dark {
   --select-bg: #201d28;
   --select-text: #f5f2fb;
   --select-border: #51495f;

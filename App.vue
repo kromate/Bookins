@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -7,11 +7,12 @@ import BookinsLogo from './components/BookinsLogo.vue'
 import ProductTour from './components/ProductTour.vue'
 import WorkspaceMenu from './components/WorkspaceMenu.vue'
 import CreditsPill from './components/CreditsPill.vue'
-import { APPS_URL, loadAccounts, loadCredits, resetShellRuntime } from './components/shell-runtime.js'
+import { APPS_URL, loadAccounts, loadCredits, resetShellRuntime } from './components/shell-runtime.ts'
 
 // Owner-only feedback widget: loaded lazily and never on the public /book page.
 const GoalmaticFeedback = defineAsyncComponent(() => import('./components/GoalmaticFeedback.vue'))
-import { copyText, isLocalPreview, loadOwnerWorkspace } from './booking.js'
+import { copyText, isActiveBooking, isLocalPreview, loadOwnerWorkspace, messageQueue } from './booking.ts'
+import { displayTimeZone } from './time-display.ts'
 import {
   demoSwitchError,
   isDemo,
@@ -20,10 +21,10 @@ import {
   registerModeCommitHandler,
   rememberLiveRoute,
   setDemoMode,
-} from './runtime.js'
+} from './runtime.ts'
 
 const route = useRoute()
-// The "Offline preview" runtime notice is only shown on loopback (see global.css).
+// The platform's "Offline preview" notice is only honest on loopback (see global.css).
 if (['localhost', '127.0.0.1'].includes(globalThis.location?.hostname))
   document.documentElement.classList.add('bookins-loopback')
 const router = useRouter()
@@ -31,17 +32,17 @@ const routePending = ref(false)
 const pendingPath = ref('')
 const navigationError = ref('')
 let navigationTimer = 0
-const preloadingPages = new Set()
-function preloadPage(path) {
+const preloadingPages = new Set<string>()
+function preloadPage(path: string) {
   if (!path || preloadingPages.has(path) || path === route.path) return Promise.resolve()
   const match = router.resolve(path).matched.at(-1)
   const loader = match?.components?.default
   if (typeof loader !== 'function') return Promise.resolve()
   preloadingPages.add(path)
-  return Promise.resolve().then(() => loader()).catch(() => { preloadingPages.delete(path) })
+  return Promise.resolve().then(() => (loader as () => unknown)()).catch(() => { preloadingPages.delete(path) })
 }
-function preloadFromLink(event) {
-  const link = event.target.closest?.('a[href]')
+function preloadFromLink(event: Event) {
+  const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null
   if (!link || link.origin !== window.location.origin || link.target === '_blank') return
   void preloadPage(link.pathname)
 }
@@ -67,10 +68,13 @@ function retryNavigation() { window.location.assign(router.resolve(pendingPath.v
 onBeforeUnmount(() => { clearNavigation(); stopBeforeNavigation(); stopAfterNavigation(); stopNavigationError() })
 
 const menuOpen = ref(false)
-const sideMenu = ref(null)
+interface ClosableInstance { close(): void }
+interface TourInstance { start(): Promise<unknown> | unknown }
+interface FeedbackInstance { open(): void }
+const sideMenu = ref<ClosableInstance | null>(null)
 const closeWorkspaceMenus = () => sideMenu.value?.close?.()
-const tour = ref(null)
-const feedback = ref(null)
+const tour = ref<TourInstance | null>(null)
+const feedback = ref<FeedbackInstance | null>(null)
 async function openFeedback() {
   await toggleMore(false)
   feedback.value?.open()
@@ -83,14 +87,17 @@ async function startTour() {
   closeWorkspaceMenus()
   menuOpen.value = false
   moreOpen.value = false
+  modeOpen.value = false
   await nextTick()
   await tour.value?.start()
 }
-const narrowScreen = ref(false)
-let navigationMedia
-const updateNavigationMedia = event => { narrowScreen.value = event.matches }
+// Read synchronously so the closed drawer is inert from the first render on phones.
+const NARROW = '(max-width: 900px)'
+const narrowScreen = ref(typeof window !== 'undefined' && Boolean(window.matchMedia?.(NARROW).matches))
+let navigationMedia: MediaQueryList | null = null
+const updateNavigationMedia = (event: MediaQueryList | MediaQueryListEvent) => { narrowScreen.value = event.matches }
 onMounted(() => {
-  navigationMedia = window.matchMedia('(max-width: 900px)')
+  navigationMedia = window.matchMedia(NARROW)
   updateNavigationMedia(navigationMedia)
   navigationMedia.addEventListener('change', updateNavigationMedia)
 })
@@ -102,9 +109,9 @@ watch(menuOpen, async open => {
   if (!narrowScreen.value) return
   if (open) moreOpen.value = false
   await nextTick()
-  document.querySelector(open ? '.sidebar-close' : '.mobile-menu')?.focus()
+  document.querySelector<HTMLElement>(open ? '.sidebar-close' : '.mobile-menu')?.focus()
 })
-function navigationKeydown(event) {
+function navigationKeydown(event: KeyboardEvent) {
   if (!narrowScreen.value || !menuOpen.value || event.defaultPrevented) return
   if (event.key === 'Escape') {
     event.preventDefault()
@@ -112,7 +119,8 @@ function navigationKeydown(event) {
     return
   }
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll('a[href], button, [tabindex]')]
+  if (!(event.currentTarget instanceof Element)) return
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('a[href], button, [tabindex]')]
     .filter(element => element.tabIndex >= 0 && !element.matches(':disabled') && element.getClientRects().length)
   const first = controls[0], last = controls.at(-1)
   if ((!event.shiftKey && document.activeElement === last) || (event.shiftKey && document.activeElement === first)) {
@@ -122,14 +130,14 @@ function navigationKeydown(event) {
 }
 const sessionWarning = ref('')
 const savingConnection = ref(false)
-const syncSessionWarning = () => { sessionWarning.value = window.GoalmaticAuth?.config?.sessionPersistenceWarning || '' }
+const syncSessionWarning = () => { sessionWarning.value = String(window.GoalmaticAuth?.config?.sessionPersistenceWarning || '') }
 async function retryRememberConnection() {
   if (savingConnection.value) return
   savingConnection.value = true
   try { await window.GoalmaticAuth?.retrySessionPersistence?.() }
   finally { savingConnection.value = false; syncSessionWarning() }
 }
-let unsubscribeSessionWarning
+let unsubscribeSessionWarning: (() => void) | void
 onMounted(() => {
   syncSessionWarning()
   unsubscribeSessionWarning = window.GoalmaticAuth?.onAuthChange?.(syncSessionWarning)
@@ -149,7 +157,7 @@ const transitioning = ref(isDemo.value)
 const modeRequesting = ref(false)
 const modeActionError = ref('')
 const routeKey = computed(() => (isDemo.value ? 'demo' : 'live'))
-const state = reactive({ profile: null, schedules: [], services: [], bookings: [], contacts: [] })
+const state = reactive<WorkspaceState>({ profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
 const localPreview = isLocalPreview()
 
 const removeLoadingGuard = registerDemoGuard('bookins-workspace-loading', () =>
@@ -157,80 +165,32 @@ const removeLoadingGuard = registerDemoGuard('bookins-workspace-loading', () =>
 )
 onBeforeUnmount(removeLoadingGuard)
 
-const navItems = [
-  { label: 'Overview', shortLabel: 'Home', to: '/', icon: 'dashboard', section: 'WORKSPACE' },
-  {
-    label: 'Services',
-    shortLabel: 'Services',
-    to: '/services',
-    icon: 'services',
-    section: 'WORKSPACE',
-  },
-  {
-    label: 'Availability',
-    shortLabel: 'Hours',
-    to: '/availability',
-    icon: 'availability',
-    section: 'WORKSPACE',
-  },
-  {
-    label: 'Bookings',
-    shortLabel: 'Bookings',
-    to: '/bookings',
-    icon: 'bookings',
-    section: 'WORKSPACE',
-  },
-  {
-    label: 'Messages',
-    shortLabel: 'Messages',
-    to: '/messages',
-    icon: 'messages',
-    section: 'WORKSPACE',
-  },
-  {
-    label: 'Insights',
-    shortLabel: 'Insights',
-    to: '/insights',
-    icon: 'sparkle',
-    section: 'WORKSPACE',
-  },
-  {
-    label: 'Team',
-    shortLabel: 'Team',
-    to: '/team',
-    icon: 'team',
-    section: 'MANAGE',
-  },
-  {
-    label: 'Campaigns',
-    shortLabel: 'Campaigns',
-    to: '/campaigns',
-    icon: 'campaigns',
-    section: 'MANAGE',
-  },
-  {
-    label: 'Contacts',
-    shortLabel: 'Contacts',
-    to: '/contacts',
-    icon: 'contacts',
-    section: 'MANAGE',
-  },
-  {
-    label: 'Settings',
-    shortLabel: 'Settings',
-    to: '/settings',
-    icon: 'settings',
-    section: 'MANAGE',
-  },
+// Navigation follows the owner's day: run today, then set up, then grow.
+interface NavItem { label: string; shortLabel: string; to: string; icon: string }
+const dailyNav: NavItem[] = [
+  { label: 'Today', shortLabel: 'Today', to: '/', icon: 'today' },
+  { label: 'Bookings', shortLabel: 'Bookings', to: '/bookings', icon: 'bookings' },
+  { label: 'Messages', shortLabel: 'Messages', to: '/messages', icon: 'messages' },
+  { label: 'Clients', shortLabel: 'Clients', to: '/contacts', icon: 'contacts' },
 ]
+const setupNav: NavItem[] = [
+  { label: 'Availability', shortLabel: 'Hours', to: '/availability', icon: 'availability' },
+  { label: 'Services', shortLabel: 'Services', to: '/services', icon: 'services' },
+  { label: 'Team', shortLabel: 'Team', to: '/team', icon: 'team' },
+]
+const growNav: NavItem[] = [
+  { label: 'Campaigns', shortLabel: 'Campaigns', to: '/campaigns', icon: 'campaigns' },
+  { label: 'Insights', shortLabel: 'Insights', to: '/insights', icon: 'chart' },
+]
+const settingsItem: NavItem = { label: 'Settings', shortLabel: 'Settings', to: '/settings', icon: 'settings' }
+const navItems = [...dailyNav, ...setupNav, ...growNav, settingsItem]
+const mobileNav = dailyNav
+const moreNav = [...setupNav, ...growNav, settingsItem]
+const isCurrent = (to: string) => (to === '/' ? route.path === '/' : route.path === to || route.path.startsWith(`${to}/`))
 
-const primaryNav = ['/', '/bookings', '/availability', '/services', '/messages', '/insights'].map(path => navItems.find(item => item.to === path))
-const manageNav = navItems.filter((item) => item.section === 'MANAGE' && item.to !== '/settings')
-const mobileNav = navItems.filter((item) => ['/', '/services', '/availability', '/bookings'].includes(item.to))
-const moreNav = navItems.filter((item) => !mobileNav.includes(item))
 const moreOpen = ref(false)
 const navigationOverlay = computed(() => narrowScreen.value && (menuOpen.value || moreOpen.value))
-let originalBodyOverflow = null
+let originalBodyOverflow: string | null = null
 watch(navigationOverlay, open => {
   if (open) {
     originalBodyOverflow = document.body.style.overflow
@@ -243,24 +203,25 @@ watch(navigationOverlay, open => {
 onBeforeUnmount(() => {
   if (originalBodyOverflow !== null) document.body.style.overflow = originalBodyOverflow
 })
-const moreCurrent = computed(() => moreNav.some((item) => route.path.startsWith(item.to)))
+const moreCurrent = computed(() => moreNav.some((item) => isCurrent(item.to)) || route.path === '/demo/guest')
 async function toggleMore(open = !moreOpen.value) {
   moreOpen.value = open
   await nextTick()
   if (open) {
     menuOpen.value = false
-    document.querySelector('.more-close')?.focus()
+    document.querySelector<HTMLElement>('.more-close')?.focus()
   }
-  else document.querySelector('.more-button')?.focus()
+  else document.querySelector<HTMLElement>('.more-button')?.focus()
 }
-function moreKeydown(event) {
+function moreKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     toggleMore(false)
     return
   }
   if (event.key !== 'Tab') return
-  const controls = [...event.currentTarget.querySelectorAll('a[href], button')]
+  if (!(event.currentTarget instanceof Element)) return
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('a[href], button')]
   const first = controls[0], last = controls.at(-1)
   if ((!event.shiftKey && document.activeElement === last) || (event.shiftKey && document.activeElement === first)) {
     event.preventDefault()
@@ -271,26 +232,33 @@ function moreKeydown(event) {
 // Toasts. `toast(message)` keeps working; options: { kind: 'success'|'error'|'info', duration (ms, 0 = until dismissed),
 // action: { label, onClick } }. Errors persist until dismissed and are announced assertively; identical consecutive
 // toasts are merged (their timer restarts). Helpers: toast.success / toast.error / toast.info.
-const toasts = ref([])
+interface ToastAction { label: string; onClick(): void }
+interface ToastItem { id: number; text: string; kind: 'success' | 'error' | 'info'; action: ToastAction | null }
+interface ToastOptions { kind?: ToastItem['kind']; duration?: number; action?: ToastAction }
+type ToastFunction = ((message: string, options?: ToastOptions) => number | undefined) & ToastApi & { dismiss(id: number): void }
+const toasts = ref<ToastItem[]>([])
 const MAX_TOASTS = 2
 let toastId = 0
-const toastBorn = new Map()
-const toastTimers = new Map()
-function dismissToast(id) {
+const toastBorn = new Map<number, number>()
+const toastTimers = new Map<number, number>()
+function dismissToast(id: number) {
   window.clearTimeout(toastTimers.get(id))
   toastTimers.delete(id)
   toastBorn.delete(id)
   toasts.value = toasts.value.filter((item) => item.id !== id)
 }
-function armToast(id, duration) {
+function armToast(id: number, duration: number) {
   window.clearTimeout(toastTimers.get(id))
   if (duration > 0) toastTimers.set(id, window.setTimeout(() => dismissToast(id), duration))
 }
-function toast(message, options = {}) {
+const toast = function toast(message: string, options: ToastOptions = {}) {
   const text = String(message || '').trim()
   if (!text) return
-  const kind = ['success', 'error', 'info'].includes(options.kind) ? options.kind : 'success'
-  const duration = Number.isFinite(options.duration) ? options.duration : kind === 'error' ? 0 : options.action ? 6000 : 3500
+  const requestedKind = options.kind
+  const kind: ToastItem['kind'] = requestedKind && ['success', 'error', 'info'].includes(requestedKind) ? requestedKind : 'success'
+  const duration = typeof options.duration === 'number' && Number.isFinite(options.duration)
+    ? options.duration
+    : kind === 'error' ? 0 : options.action ? 6000 : 3500
   const action = options.action?.label && typeof options.action.onClick === 'function' ? options.action : null
   const last = toasts.value.at(-1)
   if (last && last.text === text && last.kind === kind && !action && !last.action) {
@@ -302,6 +270,7 @@ function toast(message, options = {}) {
   let next = [...toasts.value, { id, text, kind, action }]
   while (next.length > MAX_TOASTS) {
     const drop = next.find((item) => item.kind !== 'error') || next[0]
+    if (!drop) break
     window.clearTimeout(toastTimers.get(drop.id))
     toastTimers.delete(drop.id)
     toastBorn.delete(drop.id)
@@ -310,8 +279,10 @@ function toast(message, options = {}) {
   toasts.value = next
   armToast(id, duration)
   return id
-}
-for (const kind of ['success', 'error', 'info']) toast[kind] = (message, options = {}) => toast(message, { ...options, kind })
+} as ToastFunction
+toast.success = (message: string) => { toast(message, { kind: 'success' }) }
+toast.error = (message: string) => { toast(message, { kind: 'error' }) }
+toast.info = (message: string) => { toast(message, { kind: 'info' }) }
 toast.dismiss = dismissToast
 // A toast is about the page it was raised on: drop the ones that outlived a navigation. Anything under 1.5s old stays
 // (a save that navigates on purpose, such as "Availability saved" -> Services, keeps its message).
@@ -319,37 +290,93 @@ function dropStaleToasts() {
   const now = Date.now()
   for (const item of [...toasts.value]) if (now - (toastBorn.get(item.id) || 0) > 1500) dismissToast(item.id)
 }
-function runToastAction(item) {
+function runToastAction(item: ToastItem) {
   dismissToast(item.id)
-  item.action.onClick()
+  item.action?.onClick()
 }
 onBeforeUnmount(() => toastTimers.forEach((timer) => window.clearTimeout(timer)))
 const politeToasts = computed(() => toasts.value.filter((item) => item.kind !== 'error'))
 const errorToasts = computed(() => toasts.value.filter((item) => item.kind === 'error'))
 const isPublicRoute = computed(() => route.path === '/book')
 const profileName = computed(() => state.profile?.display_name || 'Booking workspace')
-const initials = computed(
-  () =>
-    profileName.value
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0])
-      .join('')
-      .toUpperCase() || 'B',
-)
-const timezoneLabel = computed(() => state.profile?.timezone || state.schedules.find(item => item?.timezone)?.timezone || '')
 const publicUrl = computed(() => state.profile?.public_link_url || '')
-const currentPage = computed(
-  () =>
-    route.path === '/demo/guest'
-      ? { label: 'Guest preview' }
-      : navItems.find((item) =>
-      item.to === '/' ? route.path === '/' : route.path.startsWith(item.to),
-        ) || navItems[0],
-)
+const pendingRoutePath = computed(() => pendingPath.value.split('?')[0] || '/')
 
-let inFlight = null
+// ---- Today strip: local time, the next appointment, and messages due (marigold marks what is due) ----
+const clockNow = ref(Date.now())
+const clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 30_000)
+onBeforeUnmount(() => window.clearInterval(clockTimer))
+const workZone = computed(() => displayTimeZone(state.schedules.find((item) => item?.timezone)?.timezone || state.profile?.timezone))
+const startMs = (booking: BookingRecord) => Date.parse(String(booking.starts_at || ''))
+const stripClock = computed(() => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: workZone.value }).format(clockNow.value))
+const stripDate = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: workZone.value }).format(clockNow.value))
+const nextBooking = computed(() => state.bookings
+  .filter((item) => isActiveBooking(item) && item.status === 'confirmed' && startMs(item) > clockNow.value)
+  .sort((left, right) => startMs(left) - startMs(right))[0] || null)
+const dayKeyIn = (value: number) => new Intl.DateTimeFormat('en-CA', { timeZone: workZone.value, year: 'numeric', month: '2-digit', day: '2-digit' }).format(value)
+const nextLabel = computed(() => {
+  const booking = nextBooking.value
+  if (!booking) return ''
+  const start = startMs(booking)
+  const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: workZone.value }).format(start)
+  const day = dayKeyIn(start) === dayKeyIn(clockNow.value) ? '' : `${new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: workZone.value }).format(start)} `
+  return `${day}${time}`
+})
+const dueCount = computed(() => {
+  if (!loaded.value) return 0
+  try {
+    return messageQueue(state, { now: clockNow.value, timezone: workZone.value }).due.filter((item) => item.message.enabled !== false).length
+  } catch {
+    return 0
+  }
+})
+
+// ---- Mode chip: the one place the shell states Demo or local preview ----
+const modeOpen = ref(false)
+const modeWrap = ref<HTMLElement | null>(null)
+const modeLabel = computed(() => (isDemo.value ? 'Demo, read-only' : localPreview ? 'Sample data' : ''))
+function closeModeOnOutside(event: PointerEvent) {
+  if (modeOpen.value && event.target instanceof Node && !modeWrap.value?.contains(event.target)) modeOpen.value = false
+}
+
+// Menus built on <details data-menu> close on Escape and on a click outside them.
+function closeMenus(except: Element | null = null) {
+  for (const menu of document.querySelectorAll('details[data-menu][open]')) if (menu !== except) menu.removeAttribute('open')
+}
+function onDocumentPointer(event: PointerEvent) {
+  closeMenus(event.target instanceof Element ? event.target.closest('details[data-menu]') : null)
+  closeModeOnOutside(event)
+}
+function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  if (modeOpen.value) {
+    modeOpen.value = false
+    document.querySelector<HTMLElement>('.mode-chip')?.focus()
+  }
+  const open = document.querySelector('details[data-menu][open]')
+  if (!open || document.querySelector('.gm-confirm__pop')) return
+  open.removeAttribute('open')
+  open.querySelector<HTMLElement>('summary')?.focus()
+}
+function onMenuClick(event: MouseEvent) {
+  // Choosing an item in a menu closes it, except for controls that open a confirmation inside the menu.
+  const target = event.target instanceof Element ? event.target : null
+  const panel = target?.closest('details[data-menu] .menu-panel')
+  if (!panel || target?.closest('.gm-confirm, [data-keep-menu]')) return
+  if (target?.closest('a, button')) panel.closest('details')?.removeAttribute('open')
+}
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointer, true)
+  document.addEventListener('keydown', onDocumentKeydown)
+  document.addEventListener('click', onMenuClick)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onDocumentPointer, true)
+  document.removeEventListener('keydown', onDocumentKeydown)
+  document.removeEventListener('click', onMenuClick)
+})
+
+let inFlight: Promise<boolean> | null = null
 let rerun = false
 let rerunLoud = false
 let lastLoadedAt = 0
@@ -358,9 +385,9 @@ let lastLoadedAt = 0
 // A call made during a load waits for one more load so callers never read stale state.
 // `refresh({ silent: true })` is the background flavour (route change, focus, poll): no spinner, no error banner,
 // the current state stays if it fails. Any other call (including a click handler passing an event) is a loud refresh.
-function refresh(options) {
+function refresh(options?: { silent?: boolean } | Event): Promise<boolean> {
   if (isPublicRoute.value) return Promise.resolve(false)
-  const silent = options?.silent === true
+  const silent = !(options instanceof Event) && options?.silent === true
   if (inFlight) {
     rerun = true
     if (!silent) rerunLoud = true
@@ -391,42 +418,45 @@ let lastBackgroundAttempt = 0
 function backgroundBusy() {
   return Boolean(document.querySelector('.gm-dialog-overlay, [data-state="open"][role="dialog"]')) || document.body.classList.contains('bookins-tour-open')
 }
-function backgroundRefresh({ force = false } = {}) {
+function backgroundRefresh({ force = false }: { force?: boolean } = {}) {
   if (isDemo.value || isPublicRoute.value || document.visibilityState === 'hidden' || !loaded.value) return
   if (!force && (backgroundBusy() || Date.now() - Math.max(lastLoadedAt, lastBackgroundAttempt) < 10000)) return
   lastBackgroundAttempt = Date.now()
   void refresh({ silent: true })
 }
 function onVisibility() { if (document.visibilityState === 'visible') backgroundRefresh() }
+function onWindowFocus() { backgroundRefresh() }
 onMounted(() => {
-  window.addEventListener('focus', backgroundRefresh)
+  window.addEventListener('focus', onWindowFocus)
   document.addEventListener('visibilitychange', onVisibility)
-  pollTimer = window.setInterval(backgroundRefresh, POLL_MS)
+  pollTimer = window.setInterval(() => backgroundRefresh(), POLL_MS)
 })
 onBeforeUnmount(() => {
-  window.removeEventListener('focus', backgroundRefresh)
+  window.removeEventListener('focus', onWindowFocus)
   document.removeEventListener('visibilitychange', onVisibility)
   window.clearInterval(pollTimer)
 })
 
 // Real page headings while workspace data loads, so the first screen has the page's shape.
-const pageIntros = {
-  '/': { eyebrow: 'Workspace overview', title: 'Overview', layout: 'overview' },
-  '/services': { eyebrow: 'Your offerings', title: 'Services', layout: 'cards' },
-  '/availability': { eyebrow: 'Working hours', title: 'Availability', layout: 'split' },
-  '/bookings': { eyebrow: 'Appointments', title: 'Bookings', layout: 'list' },
-  '/messages': { eyebrow: 'Client messages', title: 'Messages', layout: 'list' },
-  '/insights': { eyebrow: 'Performance', title: 'Insights', layout: 'overview' },
-  '/team': { eyebrow: 'Your people', title: 'Team', layout: 'cards' },
-  '/campaigns': { eyebrow: 'Win clients back', title: 'Campaigns', layout: 'list' },
-  '/contacts': { eyebrow: 'Clients', title: 'Contacts', layout: 'list' },
-  '/settings': { eyebrow: 'Configuration', title: 'Settings', layout: 'split' },
+const pageIntros: Record<string, { title: string; layout: 'today' | 'split' | 'list' | 'cards' }> = {
+  '/': { title: 'Today', layout: 'today' },
+  '/services': { title: 'Services', layout: 'list' },
+  '/availability': { title: 'Availability', layout: 'split' },
+  '/bookings': { title: 'Bookings', layout: 'today' },
+  '/messages': { title: 'Messages', layout: 'list' },
+  '/insights': { title: 'Insights', layout: 'list' },
+  '/team': { title: 'Team', layout: 'list' },
+  '/campaigns': { title: 'Campaigns', layout: 'list' },
+  '/contacts': { title: 'Clients', layout: 'list' },
+  '/settings': { title: 'Settings', layout: 'split' },
 }
 const pageIntro = computed(
-  () => pageIntros[Object.keys(pageIntros).find((path) => path !== '/' && route.path.startsWith(path)) || '/'],
+  () => pageIntros[Object.keys(pageIntros).find((path) => path !== '/' && route.path.startsWith(path)) || '/']
+    || { title: 'Bookins', layout: 'cards' },
 )
+const wideRoute = computed(() => ['/', '/bookings'].includes(route.path))
 
-async function loadWorkspace({ silent = false } = {}) {
+async function loadWorkspace({ silent = false }: { silent?: boolean } = {}) {
   loadAttempted.value = true
   if (!silent) {
     loading.value = true
@@ -434,17 +464,19 @@ async function loadWorkspace({ silent = false } = {}) {
   }
   try {
     // The account label and workspace Tables are independent, so load them together.
-    const askUser = !isDemo.value && window.GoalmaticAuth?.getUser
-    const [user, workspace] = await Promise.all([
-      askUser ? window.GoalmaticAuth.getUser() : null,
+    const askUser = !isDemo.value ? window.GoalmaticAuth?.getUser : undefined
+    const [userResult, workspace] = await Promise.all([
+      askUser ? askUser() : null,
       loadOwnerWorkspace(),
     ])
+    const user = userResult && typeof userResult === 'object' ? userResult as UnknownRecord : null
+    const account = user?.account && typeof user.account === 'object' ? user.account as UnknownRecord : null
     if (isDemo.value) accountLabel.value = 'Demo workspace'
-    else if (askUser) accountLabel.value = user?.account?.name || user?.name || 'Goalmatic workspace'
+    else if (askUser) accountLabel.value = String(account?.name || user?.name || 'Goalmatic workspace')
     else if (localPreview) accountLabel.value = 'Sample workspace'
     if (askUser) {
-      userLabel.value = user?.name || user?.displayName || user?.email || ''
-      avatarUrl.value = user?.avatar || user?.photoURL || user?.photoUrl || ''
+      userLabel.value = String(user?.name || user?.displayName || user?.email || '')
+      avatarUrl.value = String(user?.avatar || user?.photoURL || user?.photoUrl || '')
     }
     Object.assign(state, workspace)
     loaded.value = true
@@ -453,7 +485,7 @@ async function loadWorkspace({ silent = false } = {}) {
     return true
   } catch (reason) {
     if (silent && loaded.value) { syncFailed.value = true; return false }
-    error.value = reason?.message || 'Bookins could not load this workspace.'
+    error.value = reason instanceof Error ? reason.message : 'Bookins could not load this workspace.'
     return false
   } finally {
     if (!silent) loading.value = false
@@ -461,14 +493,14 @@ async function loadWorkspace({ silent = false } = {}) {
 }
 
 const workspaceBusy = computed(() => modeRequesting.value || loading.value)
-// Sidebar status follows the real load state, never a hard-coded "Connected".
+// Sidebar status follows the real load state, never a hard-coded "Connected". Demo and local preview are stated once,
+// in the top bar's mode chip, so the footer only reports connection problems or the live connection.
 const workspaceFailed = computed(() => !loaded.value && !loading.value && loadAttempted.value && !isPublicRoute.value)
 const runtimeStatus = computed(() => {
   if (workspaceFailed.value) return { text: 'Could not load workspace', tone: 'error', retry: true }
   if (loading.value && !loaded.value) return { text: isDemo.value ? 'Loading demo…' : 'Connecting…', tone: 'pending', retry: false }
   if (syncFailed.value && !isDemo.value) return { text: 'Could not refresh. Showing last data', tone: 'error', retry: true }
-  if (isDemo.value) return { text: 'Demo · read-only', tone: 'idle', retry: false }
-  if (localPreview) return { text: 'Local sample data', tone: 'idle', retry: false }
+  if (isDemo.value || localPreview) return null
   return { text: 'Connected to Goalmatic', tone: 'live', retry: false }
 })
 const removeModeCommitHandler = registerModeCommitHandler(() => {
@@ -504,11 +536,12 @@ async function onWorkspaceSwitched() {
   void loadAccounts()
 }
 
-async function changeMode(enabled) {
+async function changeMode(enabled: boolean) {
   if (modeRequesting.value || enabled === isDemo.value) return
   closeWorkspaceMenus()
   menuOpen.value = false
   moreOpen.value = false
+  modeOpen.value = false
   modeActionError.value = ''
   if (!isDemo.value) rememberLiveRoute(route.fullPath)
   modeRequesting.value = true
@@ -520,7 +553,7 @@ async function changeMode(enabled) {
     const destination = enabled ? '/' : liveReturnRoute()
     if (router.currentRoute.value.fullPath !== destination) await router.replace(destination)
   } catch (reason) {
-    modeActionError.value = reason?.message || 'The view could not switch modes.'
+    modeActionError.value = reason instanceof Error ? reason.message : 'The view could not switch modes.'
   } finally {
     modeRequesting.value = false
     transitioning.value = false
@@ -545,12 +578,13 @@ provide('localPreview', localPreview)
 provide('bookingLoaded', loaded)
 provide('toast', toast)
 provide('startTour', startTour)
+provide('changeMode', changeMode)
 let warmupCancelled = false
 let warmupHandle = 0
 watch(loaded, ready => {
   if (!ready || isPublicRoute.value || navigator.connection?.saveData || /(^|-)2g$/.test(navigator.connection?.effectiveType || '')) return
   const warm = async () => {
-    for (const path of primaryNav.map(item => item.to).concat(manageNav.map(item => item.to), ['/settings'])) {
+    for (const path of navItems.map(item => item.to)) {
       if (warmupCancelled || document.visibilityState === 'hidden') return
       await preloadPage(path)
     }
@@ -564,6 +598,8 @@ watch(
   async (path, previous) => {
     menuOpen.value = false
     moreOpen.value = false
+    modeOpen.value = false
+    closeMenus()
     dropStaleToasts()
     // Returning from /book (or any page change) pulls in bookings made in the meantime.
     if (previous !== undefined) {
@@ -571,18 +607,18 @@ watch(
       if (!isPublicRoute.value && !loaded.value && !loading.value && !modeRequesting.value) void refresh()
       else backgroundRefresh({ force: previous === '/book' })
       await nextTick()
-      if (!route.hash) window.scrollTo({ top: 0, left: 0, behavior: 'instant' })
+      if (!route.hash) window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior })
     }
   },
 )
 
 // Demo: every disabled control explains itself (pages add richer GmHint text where it matters).
 const DEMO_REASON = 'Read-only in Demo. Switch to Live to make changes.'
-let demoObserver = null
+let demoObserver: MutationObserver | null = null
 let demoFrame = 0
 function labelDemoControls() {
   demoFrame = 0
-  for (const el of document.querySelectorAll('#main-content :is(button, input, select, textarea)[disabled], #main-content [aria-disabled="true"]')) {
+  for (const el of document.querySelectorAll<HTMLElement>('#main-content :is(button, input, select, textarea)[disabled], #main-content [aria-disabled="true"]')) {
     if (el.closest('.gm-walkthrough, .gm-hint') || el.hasAttribute('title') || el.hasAttribute('aria-describedby')) continue
     el.setAttribute('title', DEMO_REASON)
     el.dataset.demoTitle = ''
@@ -593,7 +629,7 @@ function syncDemoObserver() {
   demoObserver?.disconnect()
   demoObserver = null
   if (!isDemo.value) {
-    for (const el of document.querySelectorAll('[data-demo-title]')) { el.removeAttribute('title'); delete el.dataset.demoTitle }
+    for (const el of document.querySelectorAll<HTMLElement>('[data-demo-title]')) { el.removeAttribute('title'); delete el.dataset.demoTitle }
     return
   }
   demoObserver = new MutationObserver(scheduleDemoLabels)
@@ -605,30 +641,31 @@ onMounted(syncDemoObserver)
 onBeforeUnmount(() => { demoObserver?.disconnect(); window.cancelAnimationFrame(demoFrame) })
 
 // Scroll cue: rows that scroll sideways (tabs, filters) get `has-more-right` / `has-more-left` so CSS can fade the clipped edge.
-const SCROLL_ROWS = '.tab-bar, .segmented, .kind-row, .settings-nav, .period'
+const SCROLL_ROWS = '.tab-bar, .segmented, .kind-row, .settings-nav, .period, .day-strip'
 let cueFrame = 0
 function updateScrollCues() {
   cueFrame = 0
-  for (const el of document.querySelectorAll(SCROLL_ROWS)) {
+  for (const el of document.querySelectorAll<HTMLElement>(SCROLL_ROWS)) {
     const max = el.scrollWidth - el.clientWidth
     el.classList.toggle('has-more-right', max > 2 && el.scrollLeft < max - 2)
     el.classList.toggle('has-more-left', max > 2 && el.scrollLeft > 2)
   }
 }
 function scheduleScrollCues() { if (!cueFrame) cueFrame = window.requestAnimationFrame(updateScrollCues) }
-let cueObserver = null
+function onRowScroll(event: Event) { if (event.target instanceof Element && event.target.matches(SCROLL_ROWS)) scheduleScrollCues() }
+let cueObserver: MutationObserver | null = null
 onMounted(() => {
-  document.addEventListener('scroll', event => { if (event.target instanceof Element && event.target.matches(SCROLL_ROWS)) scheduleScrollCues() }, true)
+  document.addEventListener('scroll', onRowScroll, true)
   window.addEventListener('resize', scheduleScrollCues)
   cueObserver = new MutationObserver(scheduleScrollCues)
   cueObserver.observe(document.body, { subtree: true, childList: true })
   scheduleScrollCues()
 })
-onBeforeUnmount(() => { cueObserver?.disconnect(); window.removeEventListener('resize', scheduleScrollCues); window.cancelAnimationFrame(cueFrame) })
+onBeforeUnmount(() => { cueObserver?.disconnect(); document.removeEventListener('scroll', onRowScroll, true); window.removeEventListener('resize', scheduleScrollCues); window.cancelAnimationFrame(cueFrame) })
 
 // Radix hides everything outside an open dialog from assistive tech; toasts render above dialogs, so keep them exposed.
-let toastGuard = null
-const toastRegion = ref(null)
+let toastGuard: MutationObserver | null = null
+const toastRegion = ref<HTMLElement | null>(null)
 onMounted(() => {
   toastGuard = new MutationObserver(() => {
     const region = toastRegion.value
@@ -663,24 +700,14 @@ onMounted(async () => {
       :class="{ open: menuOpen }"
       :inert="narrowScreen && !menuOpen"
       :aria-hidden="narrowScreen && !menuOpen ? 'true' : undefined"
-      :role="narrowScreen ? 'dialog' : undefined"
+      :role="narrowScreen && menuOpen ? 'dialog' : undefined"
       :aria-modal="narrowScreen && menuOpen ? 'true' : undefined"
       aria-label="Navigation"
       @keydown="navigationKeydown"
     >
       <div class="sidebar-brand">
-        <RouterLink
-          to="/"
-          class="sidebar-identity"
-          aria-label="Bookins home"
-          ><BookinsLogo /></RouterLink>
-        <button
-          class="sidebar-close"
-          type="button"
-          aria-label="Close navigation"
-          @click="menuOpen = false"
-          ><AppIcon name="close"
-        /></button>
+        <RouterLink to="/" class="sidebar-identity" aria-label="Bookins, go to Today"><BookinsLogo /></RouterLink>
+        <button class="sidebar-close" type="button" aria-label="Close navigation" @click="menuOpen = false"><AppIcon name="close" /></button>
       </div>
 
       <WorkspaceMenu
@@ -695,172 +722,100 @@ onMounted(async () => {
         @toggle-mode="changeMode(!isDemo)"
         @switched="onWorkspaceSwitched"
       >
-        <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="menuOpen = false; closeWorkspaceMenus()">Guest preview</RouterLink>
+        <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="menuOpen = false; closeWorkspaceMenus()">Guest view (sample)</RouterLink>
       </WorkspaceMenu>
 
       <div class="sidebar-navigation">
-      <p class="nav-section-label">Workspace</p>
-      <nav
-        class="side-nav"
-        aria-label="Primary navigation"
-      >
-        <RouterLink
-          v-for="item in primaryNav"
-          :key="item.to"
-          :to="item.to"
-          @click="menuOpen = false"
-        >
-          <AppIcon
-            :name="item.icon"
-            :size="18"
-          />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
-
-      <div class="sidebar-divider" />
-      <p class="nav-section-label">Business</p>
-      <nav
-        class="side-nav"
-        aria-label="Management navigation"
-      >
-        <RouterLink
-          v-for="item in manageNav"
-          :key="item.to"
-          :to="item.to"
-          @click="menuOpen = false"
-        >
-          <AppIcon
-            :name="item.icon"
-            :size="18"
-          />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
-
+        <nav class="side-nav" aria-label="Your day">
+          <RouterLink v-for="item in dailyNav" :key="item.to" :to="item.to" :class="{ 'is-current': isCurrent(item.to) }" :aria-current="isCurrent(item.to) ? 'page' : undefined" @click="menuOpen = false">
+            <AppIcon :name="item.icon" :size="18" />
+            <span>{{ item.label }}</span>
+            <span v-if="item.to === '/messages' && dueCount" class="count-pill now" :aria-label="`${dueCount} due`">{{ dueCount }}</span>
+          </RouterLink>
+        </nav>
+        <p id="nav-setup" class="nav-section-label">Set up</p>
+        <nav class="side-nav" aria-labelledby="nav-setup">
+          <RouterLink v-for="item in setupNav" :key="item.to" :to="item.to" :class="{ 'is-current': isCurrent(item.to) }" :aria-current="isCurrent(item.to) ? 'page' : undefined" @click="menuOpen = false">
+            <AppIcon :name="item.icon" :size="18" />
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </nav>
+        <p id="nav-grow" class="nav-section-label">Grow</p>
+        <nav class="side-nav" aria-labelledby="nav-grow">
+          <RouterLink v-for="item in growNav" :key="item.to" :to="item.to" :class="{ 'is-current': isCurrent(item.to) }" :aria-current="isCurrent(item.to) ? 'page' : undefined" @click="menuOpen = false">
+            <AppIcon :name="item.icon" :size="18" />
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </nav>
       </div>
       <div class="sidebar-footer">
-        <div
-          v-if="publicUrl"
-          class="share-card"
-        >
-          <div class="share-card-header">
-            <a :href="publicUrl" target="_blank" rel="noopener noreferrer" class="share-card-label"><AppIcon name="link" :size="15" /><strong>Booking link</strong></a>
-            <div class="share-card-actions">
-              <button
-                type="button"
-                :aria-label="copied ? 'Booking link copied' : 'Copy booking link'"
-                :title="copied ? 'Copied' : 'Copy booking link'"
-                @click="copyPublicLink"
-                ><AppIcon
-                  :name="copied ? 'check' : 'copy'"
-                  :size="14"
-                /></button
-              >
-              <a
-                :href="publicUrl"
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Open booking page"
-                title="Open booking page"
-                ><AppIcon
-                  name="external"
-                  :size="14"
-                /></a
-              >
-            </div>
-          </div>
+        <div v-if="publicUrl" class="share-row">
+          <a :href="publicUrl" target="_blank" rel="noopener noreferrer"><AppIcon name="link" :size="16" /><span class="truncate">Your booking page</span></a>
+          <button type="button" :aria-label="copied ? 'Booking link copied' : 'Copy booking link'" :title="copied ? 'Copied' : 'Copy booking link'" @click="copyPublicLink"><AppIcon :name="copied ? 'check' : 'copy'" :size="16" /></button>
           <span class="visually-hidden" role="status">{{ copied ? 'Booking link copied' : '' }}</span>
         </div>
         <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
         <div class="sidebar-links">
-          <RouterLink class="sidebar-link" to="/settings" @click="menuOpen = false"><AppIcon name="settings" :size="18" />Settings</RouterLink>
-          <button
-            class="sidebar-link"
-            type="button"
-            data-tour="tour-help-button"
-            data-bookins-walkthrough-trigger
-            @click="startTour"
-          ><AppIcon name="help" :size="17" />Take a walkthrough</button>
-          <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="17" />Back to Apps</a>
+          <RouterLink class="sidebar-link" :class="{ 'is-current': isCurrent('/settings') }" to="/settings" @click="menuOpen = false"><AppIcon name="settings" :size="18" />Settings</RouterLink>
+          <button class="sidebar-link tour-help-button bookins-walkthrough-trigger" type="button" @click="startTour"><AppIcon name="help" :size="18" />Take a walkthrough</button>
+          <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="18" />Back to Apps</a>
         </div>
-        <div class="runtime-label" :class="`is-${runtimeStatus.tone}`" role="status"
-          ><span
-            class="runtime-dot"
-            :class="runtimeStatus.tone"
-          /><span class="runtime-text">{{ runtimeStatus.text }}</span
-          ><button
-            v-if="runtimeStatus.retry"
-            type="button"
-            class="runtime-retry"
-            :disabled="loading"
-            @click="refresh"
-          >Retry</button
-        ></div
-        >
+        <div v-if="runtimeStatus" class="runtime-label" :class="`is-${runtimeStatus.tone}`" role="status">
+          <span class="runtime-dot" :class="runtimeStatus.tone" aria-hidden="true" />
+          <span class="runtime-text">{{ runtimeStatus.text }}</span>
+          <button v-if="runtimeStatus.retry" type="button" class="runtime-retry" :disabled="loading" @click="refresh">Retry</button>
+        </div>
       </div>
     </aside>
 
-    <button
-      class="sidebar-scrim"
-      :class="{ open: menuOpen }"
-      type="button"
-      aria-label="Close navigation"
-      @click="menuOpen = false"
-    />
+    <button class="sidebar-scrim" :class="{ open: menuOpen }" type="button" aria-label="Close navigation" tabindex="-1" @click="menuOpen = false" />
 
     <div class="workspace" :inert="navigationOverlay" :aria-hidden="navigationOverlay ? 'true' : undefined">
       <header class="topbar">
-        <div class="topbar-actions">
-          <button
-            class="icon-button mobile-menu"
-            type="button"
-            aria-label="Open navigation"
-            aria-controls="app-navigation"
-            :aria-expanded="menuOpen"
-            @click="menuOpen = true"
-            ><AppIcon name="menu"
-          /></button>
-          <RouterLink
-            class="mobile-brand"
-            to="/"
-            ><BookinsLogo compact /><span>Bookins</span></RouterLink
-          >
+        <button
+          class="icon-button mobile-menu"
+          type="button"
+          aria-label="Open navigation"
+          aria-controls="app-navigation"
+          :aria-expanded="menuOpen"
+          @click="menuOpen = true"
+        ><AppIcon name="menu" /></button>
+        <RouterLink class="mobile-brand" to="/" aria-label="Bookins, go to Today"><BookinsLogo compact /></RouterLink>
+        <div class="today-strip" aria-label="Today at a glance">
+          <span class="strip-clock"><strong>{{ stripClock }}</strong><span>{{ stripDate }}</span></span>
+          <RouterLink v-if="nextBooking" class="strip-item strip-next" :to="{ path: '/bookings', query: { q: nextBooking.reference || nextBooking.guest_name } }">
+            <span class="strip-label">Next</span><b>{{ nextLabel }}</b><span class="truncate">{{ nextBooking.guest_name }}</span>
+          </RouterLink>
+          <RouterLink v-if="dueCount" class="strip-item strip-due" to="/messages">
+            <b>{{ dueCount }}</b><span>{{ dueCount === 1 ? 'message' : 'messages' }}<span class="strip-label-short"> due</span></span>
+          </RouterLink>
         </div>
-        <div class="topbar-title"
-          ><strong>{{ routePending ? (pageIntros[pendingPath.split('?')[0]]?.title || 'Loading') : currentPage.label }}</strong
-          ><small
-            >{{ profileName }} ·
-            <RouterLink v-if="loaded && !timezoneLabel" class="topbar-link" to="/settings">Set your timezone</RouterLink
-            ><template v-else>{{ timezoneLabel }}</template></small
-          ></div
-        >
         <div class="topbar-actions">
-          <span
-            v-if="isDemo"
-            class="preview-pill demo"
-            role="status"
-            title="Demo workspace. Read-only sample data; no real bookings are created."
-            ><AppIcon name="lock" :size="14" />Demo<span class="pill-long">· Read-only</span></span
-          >
-          <span
-            v-else-if="localPreview"
-            class="preview-pill"
-            role="status"
-            title="Local sample workspace. Changes stay in this browser and never reach your hosted App."
-            ><AppIcon name="info" :size="14" />Local preview<span class="pill-long">· not saved</span><span class="visually-hidden">. Local sample workspace. Changes stay in this browser and never reach your hosted App.</span></span
-          >
+          <div v-if="modeLabel" ref="modeWrap" class="mode-wrap">
+            <button class="mode-chip" type="button" :aria-expanded="modeOpen" aria-controls="mode-popover" @click="modeOpen = !modeOpen">
+              <AppIcon :name="isDemo ? 'lock' : 'info'" :size="14" />{{ modeLabel }}
+            </button>
+            <div v-if="modeOpen" id="mode-popover" class="mode-popover" role="region" aria-label="About this workspace">
+              <template v-if="isDemo">
+                <strong>Demo workspace</strong>
+                <p>Fictional sample data. Nothing you change here is saved, and nothing reaches a client.</p>
+                <button class="secondary small" type="button" :disabled="workspaceBusy" @click="changeMode(false)">Switch back to Live</button>
+              </template>
+              <template v-else>
+                <strong>Local preview</strong>
+                <p>This sample workspace lives in this browser only. Nothing is saved to Goalmatic, and account data and credits are not connected.</p>
+              </template>
+            </div>
+          </div>
           <button
             class="icon-button"
             :class="{ spinning: loading && loaded }"
             type="button"
             :disabled="loading"
             aria-label="Refresh workspace"
+            title="Refresh"
             @click="refresh"
-          ><AppIcon
-              name="refresh"
-              :size="18"
-          /></button>
+          ><AppIcon name="refresh" :size="18" /></button>
         </div>
       </header>
 
@@ -869,57 +824,33 @@ onMounted(async () => {
         <button type="button" :disabled="savingConnection" @click="retryRememberConnection">{{ savingConnection ? 'Saving connection…' : 'Retry saving connection' }}</button>
       </div>
       <p v-if="demoSwitchError || modeActionError" role="alert" class="mode-banner error">{{ demoSwitchError || modeActionError }}</p>
-      <div
-        v-if="error && loaded"
-        class="mode-banner error"
-        role="alert"
-        ><span>{{ error }}</span
-        ><button
-          type="button"
-          @click="refresh"
-          >Try again</button
-        ></div
-      >
+      <div v-if="error && loaded" class="mode-banner error" role="alert">
+        <span>{{ error }}</span>
+        <button type="button" @click="refresh">Try again</button>
+      </div>
 
-      <main id="main-content" :class="{ 'design-wide-page': ['/', '/bookings'].includes(route.path) }" tabindex="-1" :aria-busy="loading || transitioning || routePending">
+      <main id="main-content" :class="{ 'is-wide': wideRoute }" tabindex="-1" :aria-busy="loading || transitioning || routePending">
         <div v-if="loading && !loaded" class="page-skeleton">
           <span class="visually-hidden" role="status">Loading your workspace…</span>
-          <div class="page-header">
-            <div><p class="eyebrow">{{ pageIntro.eyebrow }}</p><h1>{{ pageIntro.title }}</h1></div>
-          </div>
-          <div v-if="pageIntro.layout === 'overview'" aria-hidden="true">
-            <div class="skeleton-cards skeleton-metrics"><span v-for="index in 4" :key="index" class="skeleton-block" /></div>
-            <div class="skeleton-split"><span class="skeleton-block skeleton-main" /><div class="skeleton-side"><span v-for="index in 2" :key="index" class="skeleton-block" /></div></div>
-          </div>
-          <div v-else-if="pageIntro.layout === 'split'" class="skeleton-split" aria-hidden="true">
-            <span class="skeleton-block skeleton-main" />
-            <div class="skeleton-side"><span v-for="index in 2" :key="index" class="skeleton-block" /></div>
-          </div>
-          <div v-else-if="pageIntro.layout === 'list'" class="skeleton-list" aria-hidden="true"><span v-for="index in 4" :key="index" class="skeleton-block" /></div>
+          <div class="page-header"><div><h1>{{ pageIntro.title }}</h1></div></div>
+          <div v-if="pageIntro.layout === 'today'" class="skeleton-rail" aria-hidden="true"><span class="skeleton-block" /><div class="skeleton-list"><span v-for="index in 4" :key="index" class="skeleton-block" /></div></div>
+          <div v-else-if="pageIntro.layout === 'split'" class="skeleton-split" aria-hidden="true"><span class="skeleton-block" /><div class="skeleton-list"><span v-for="index in 3" :key="index" class="skeleton-block" /></div></div>
+          <div v-else-if="pageIntro.layout === 'list'" class="skeleton-list" aria-hidden="true"><span v-for="index in 5" :key="index" class="skeleton-block" /></div>
           <div v-else class="skeleton-cards" aria-hidden="true"><span v-for="index in 3" :key="index" class="skeleton-block" /></div>
         </div>
-        <div
-          v-else-if="workspaceFailed && !transitioning"
-          class="card state-card"
-          role="alert"
-        >
-          <span class="empty-icon">!</span>
-          <h1>Bookins could not load.</h1>
-          <p class="muted">{{ error || 'Bookins could not load this workspace.' }}</p>
-          <button
-            class="primary"
-            type="button"
-            @click="refresh"
-            >Try again</button
-          >
+        <div v-else-if="workspaceFailed && !transitioning" class="state-card" role="alert">
+          <span class="empty-icon"><AppIcon name="alert" /></span>
+          <h1>Bookins could not load</h1>
+          <p class="muted">{{ error || 'Bookins could not load this workspace.' }} Check your connection, then try again.</p>
+          <button class="primary" type="button" @click="refresh">Try again</button>
         </div>
         <template v-else-if="!transitioning">
           <div v-if="routePending" class="route-loading" role="status" aria-live="polite">
-            <h1>{{ pageIntros[pendingPath.split('?')[0]]?.title || 'Loading page' }}</h1>
+            <h1>{{ pageIntros[pendingRoutePath]?.title || 'Loading page' }}</h1>
             <p>Loading…</p>
             <div class="route-loading-lines" aria-hidden="true"><span /><span /><span /></div>
           </div>
-          <div v-if="navigationError" class="notice error" role="alert"><span>{{ navigationError }}</span><button type="button" class="secondary small-button" @click="retryNavigation">Reload page</button></div>
+          <div v-if="navigationError" class="notice error" role="alert"><span>{{ navigationError }}</span><button type="button" class="secondary small" @click="retryNavigation">Reload page</button></div>
           <div v-show="!routePending" :inert="routePending"><RouterView v-slot="{ Component }"><component :is="Component" :key="`${routeKey}:${route.path}`" /></RouterView></div>
         </template>
         <p v-if="transitioning" class="mode-transition" role="status">Loading your workspace…</p>
@@ -927,26 +858,14 @@ onMounted(async () => {
       <ProductTour v-if="!transitioning && loaded" ref="tour" />
     </div>
 
-    <nav
-      class="mobile-bottom-nav"
-      :inert="navigationOverlay"
-      aria-label="Mobile navigation"
-    >
-      <RouterLink
-        v-for="item in mobileNav"
-        :key="item.to"
-        :to="item.to"
-      >
-        <AppIcon
-          :name="item.icon"
-          :size="19"
-        />
+    <nav class="mobile-bottom-nav" :inert="navigationOverlay" aria-label="Main">
+      <RouterLink v-for="item in mobileNav" :key="item.to" :to="item.to" :class="{ 'is-current': isCurrent(item.to) }" :aria-current="isCurrent(item.to) ? 'page' : undefined">
+        <AppIcon :name="item.icon" :size="20" />
         <small>{{ item.shortLabel }}</small>
+        <span v-if="item.to === '/messages' && dueCount" class="count-pill now" :aria-label="`${dueCount} due`">{{ dueCount }}</span>
       </RouterLink>
       <button
-        class="more-button"
-        data-tour="tour-help-button"
-        data-bookins-walkthrough-trigger
+        class="more-button tour-help-button bookins-walkthrough-trigger"
         :class="{ 'is-current': moreCurrent || moreOpen }"
         type="button"
         aria-haspopup="dialog"
@@ -954,21 +873,25 @@ onMounted(async () => {
         aria-controls="more-sheet"
         @click="toggleMore()"
       >
-        <AppIcon name="more" :size="19" />
+        <AppIcon name="more" :size="20" />
         <small>More</small>
       </button>
     </nav>
 
     <template v-if="moreOpen">
       <button class="more-sheet-scrim" type="button" aria-label="Close more menu" tabindex="-1" @click="toggleMore(false)" />
-      <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-label="More pages" @keydown="moreKeydown">
-        <div class="more-heading"><h2>More</h2><button class="icon-button more-close" type="button" aria-label="Close more menu" @click="toggleMore(false)"><AppIcon name="close" :size="20" /></button></div>
+      <div id="more-sheet" class="more-sheet" role="dialog" aria-modal="true" aria-labelledby="more-heading" @keydown="moreKeydown">
+        <div class="more-heading"><h2 id="more-heading">More</h2><button class="icon-button more-close" type="button" aria-label="Close more menu" @click="toggleMore(false)"><AppIcon name="close" :size="20" /></button></div>
         <div class="more-sheet-content">
           <nav class="more-pages" aria-label="More pages">
-            <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to" @click="toggleMore(false)">
+            <RouterLink v-for="item in moreNav" :key="item.to" :to="item.to" :class="{ 'is-current': isCurrent(item.to) }" @click="toggleMore(false)">
               <AppIcon :name="item.icon" :size="18" />{{ item.label }}
             </RouterLink>
           </nav>
+          <div v-if="publicUrl" class="share-row">
+            <a :href="publicUrl" target="_blank" rel="noopener noreferrer"><AppIcon name="link" :size="16" /><span class="truncate">Your booking page</span></a>
+            <button type="button" :aria-label="copied ? 'Booking link copied' : 'Copy booking link'" @click="copyPublicLink"><AppIcon :name="copied ? 'check' : 'copy'" :size="16" /></button>
+          </div>
           <section class="more-workspace" aria-labelledby="more-workspace-heading">
             <h2 id="more-workspace-heading">Workspace</h2>
             <WorkspaceMenu
@@ -982,16 +905,10 @@ onMounted(async () => {
               @toggle-mode="changeMode(!isDemo)"
               @switched="onWorkspaceSwitched"
             >
-              <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="moreOpen = false">Guest preview</RouterLink>
+              <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="moreOpen = false">Guest view (sample)</RouterLink>
             </WorkspaceMenu>
             <CreditsPill v-if="!isDemo" id-prefix="sheet-credits" />
           </section>
-          <div v-if="publicUrl" class="more-booking-link">
-            <a :href="publicUrl" target="_blank" rel="noopener noreferrer"><AppIcon name="link" :size="16" /><span>Booking link</span></a>
-            <button type="button" :aria-label="copied ? 'Booking link copied' : 'Copy booking link'" :title="copied ? 'Copied' : 'Copy booking link'" @click="copyPublicLink"><AppIcon :name="copied ? 'check' : 'copy'" :size="16" /></button>
-            <a :href="publicUrl" target="_blank" rel="noopener noreferrer" aria-label="Open booking page" title="Open booking page"><AppIcon name="external" :size="16" /></a>
-            <span class="visually-hidden" role="status">{{ copied ? 'Booking link copied' : '' }}</span>
-          </div>
         </div>
         <footer class="more-sheet-footer" aria-label="Help and account links">
           <button type="button" class="more-walkthrough" @click="startTour"><AppIcon name="help" :size="18" />Take a walkthrough</button>
@@ -1030,14 +947,3 @@ onMounted(async () => {
 
   <GoalmaticFeedback v-if="!isPublicRoute" ref="feedback" />
 </template>
-
-<style scoped>
-@media (max-width: 480px) { .mobile-brand span:last-child { display: none; } .preview-pill { padding: 0 10px; } }
-.demo-entry { min-height: 36px; white-space: nowrap; }
-.demo-mode-banner { align-items: center; justify-content: space-between; gap: 12px; }
-.demo-mode-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.demo-mode-actions .secondary { min-height: 40px; display: inline-flex; align-items: center; padding: 0 12px; border: 1px solid #cfd5ff; border-radius: 8px; background: #fff; color: #2336dc; font-size: 14px; font-weight: 700; }
-.demo-mode-actions button { min-height: 40px; padding: 0 12px; border: 1px solid #cfd5ff; border-radius: 8px; background: #fff; color: #2336dc; font: inherit; font-size: 14px; font-weight: 700; }
-.mode-transition { margin: 32px 0; color: var(--muted); text-align: center; }
-@media (max-width: 700px) { .demo-mode-banner { align-items: flex-start; flex-direction: column; } .demo-mode-actions { width: 100%; } .demo-mode-actions > * { flex: 1; justify-content: center; } }
-</style>

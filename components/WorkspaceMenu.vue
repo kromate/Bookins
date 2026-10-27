@@ -1,22 +1,14 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
-import { loadAccounts, switchAccount, workspaceAccounts } from './shell-runtime.js'
+import { loadAccounts, switchAccount, workspaceAccounts } from './shell-runtime.ts'
 
-const props = defineProps({
-  label: { type: String, required: true },
-  userLabel: { type: String, default: '' },
-  avatarUrl: { type: String, default: '' },
-  isDemo: Boolean,
-  localPreview: Boolean,
-  busy: Boolean,
-  inline: Boolean, // always-open list (mobile More sheet) instead of a dropdown
-  idPrefix: { type: String, default: 'workspace' },
-})
-const emit = defineEmits(['toggle-mode', 'switched', 'close'])
+interface WorkspaceAccount extends PlatformAccount { current?: boolean }
+const props = withDefaults(defineProps<{ label: string; userLabel?: string; avatarUrl?: string; isDemo?: boolean; localPreview?: boolean; busy?: boolean; inline?: boolean; idPrefix?: string }>(), { userLabel: '', avatarUrl: '', isDemo: false, localPreview: false, busy: false, inline: false, idPrefix: 'workspace' })
+const emit = defineEmits<{ 'toggle-mode': []; switched: [account: WorkspaceAccount]; close: [] }>()
 
-const root = ref(null)
-const trigger = ref(null)
+const root = ref<HTMLElement | null>(null)
+const trigger = ref<HTMLElement | null>(null)
 const open = ref(false)
 const switchingId = ref('')
 const error = ref('')
@@ -26,14 +18,13 @@ const currentAccount = computed(() => accounts.value.find((account) => account.c
 const initials = computed(
   () => props.label.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'G',
 )
+// Demo and local preview are stated once, in the top bar's mode chip; this line names the workspace itself.
 const subtitle = computed(() =>
   props.isDemo
-    ? 'Demo · Read-only'
+    ? 'Fictional sample business'
     : props.localPreview
-      ? 'Local preview'
-      : currentAccount.value?.name
-        ? `${currentAccount.value.name}${props.userLabel ? ` · ${props.userLabel}` : ''}`
-        : props.userLabel || 'Goalmatic workspace',
+      ? 'Sample workspace'
+      : currentAccount.value?.name || props.userLabel || 'Goalmatic workspace',
 )
 const menuId = computed(() => `${props.idPrefix}-menu`)
 const shown = computed(() => props.inline || open.value)
@@ -44,13 +35,13 @@ async function toggle() {
   if (!open.value) return
   void loadAccounts()
   await nextTick()
-  root.value?.querySelector('[role="menuitem"]')?.focus()
+  root.value?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()
 }
-function close({ restoreFocus = false } = {}) {
+function close({ restoreFocus = false }: { restoreFocus?: boolean } = {}) {
   open.value = false
   if (restoreFocus) trigger.value?.focus()
 }
-async function choose(account) {
+async function choose(account: WorkspaceAccount) {
   if (!account?.id || account.current || switchingId.value) return close()
   switchingId.value = account.id
   error.value = ''
@@ -59,7 +50,7 @@ async function choose(account) {
     close()
     emit('switched', account)
   } catch (reason) {
-    error.value = reason?.message || 'The workspace could not be switched.'
+    error.value = reason instanceof Error ? reason.message : 'The workspace could not be switched.'
   } finally {
     switchingId.value = ''
   }
@@ -68,7 +59,7 @@ function toggleMode() {
   close()
   emit('toggle-mode')
 }
-function keydown(event) {
+function keydown(event: KeyboardEvent) {
   if (props.inline) return
   if (event.key === 'Escape' && open.value) {
     event.preventDefault()
@@ -78,14 +69,18 @@ function keydown(event) {
   }
   if (event.key === 'Tab') { close(); return }
   if (!open.value || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
-  const items = [...root.value.querySelectorAll('[role^="menuitem"]:not(:disabled)')]
-  const index = items.indexOf(document.activeElement)
+  const items = [...(root.value?.querySelectorAll<HTMLElement>('[role^="menuitem"]:not(:disabled)') ?? [])]
+  const index = document.activeElement instanceof HTMLElement ? items.indexOf(document.activeElement) : -1
   event.preventDefault()
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length
   items[next]?.focus()
 }
-function outside(event) {
-  if (open.value && !root.value?.contains(event.target)) close()
+function outside(event: PointerEvent) {
+  if (open.value && !root.value?.contains(event.target as Node | null)) close()
+}
+function setTrigger(element: Element | { $el?: Element } | null) {
+  const rootElement = element && !(element instanceof Element) && '$el' in element ? element.$el : element
+  trigger.value = rootElement instanceof HTMLElement ? rootElement : null
 }
 onMounted(() => {
   document.addEventListener('pointerdown', outside, true)
@@ -99,7 +94,7 @@ defineExpose({ close })
   <div ref="root" class="ws-switcher" :class="{ inline }" @keydown="keydown">
     <component
       :is="inline ? 'div' : 'button'"
-      :ref="inline ? undefined : 'trigger'"
+      :ref="inline ? undefined : setTrigger"
       class="ws-card"
       :type="inline ? undefined : 'button'"
       :aria-haspopup="inline ? undefined : 'menu'"
@@ -140,7 +135,7 @@ defineExpose({ close })
           </button>
         </div>
       </template>
-      <p v-else-if="localPreview && !isDemo" class="ws-note">Sample workspace. Data stays in this browser.</p>
+      <p v-else-if="localPreview && !isDemo" class="ws-note">Changes stay in this browser.</p>
       <p v-if="error" class="ws-error" role="alert">{{ error }}</p>
     </div>
   </div>

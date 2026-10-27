@@ -1,6 +1,6 @@
-<script setup>
-import { formatDay } from '../format-date.js'
-import { csvCell } from '../csv.js'
+<script setup lang="ts">
+import { formatDay } from '../format-date.ts'
+import { csvCell } from '../csv.ts'
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, RouterLink, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
@@ -10,7 +10,7 @@ import GmDatePicker from '../components/ui/GmDatePicker.vue'
 import GmHint from '../components/ui/GmHint.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
 import GmTimePicker from '../components/ui/GmTimePicker.vue'
-import { useSetupState } from '../setup.js'
+import { useSetupState } from '../setup.ts'
 import {
   addBookingToCalendar,
   addBookingsToCalendar,
@@ -39,45 +39,48 @@ import {
   setBookingStatus,
   staffForBooking,
   teamMembers,
-} from '../booking.js'
-import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.js'
-import { composeMessage, gmailComposeUrl } from '../messaging.js'
-import { localFields, wallClockInstant } from '../scheduling.js'
-import { displayTimeZone } from '../time-display.js'
-import { isDemo, registerDemoGuard } from '../runtime.js'
+} from '../booking.ts'
+import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.ts'
+import { composeMessage, gmailComposeUrl } from '../messaging.ts'
+import { listOpenings, localFields, scheduleFromRecord, wallClockInstant } from '../scheduling.ts'
+import { displayTimeZone, zoneDisplayLabel } from '../time-display.ts'
+import { isDemo, registerDemoGuard } from '../runtime.ts'
+import { errorMessage } from '../error-message.ts'
+import { hourMarks, minutesOf, placeSpans, spanSize } from '../rail.ts'
 
-const state = inject('bookingState')
-const toast = inject('toast', null)
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const toast = inject<ToastApi | null>('toast', null)
 const setup = useSetupState()
-const ok = (message, options) => toast?.(message, options)
+const ok = (message: string, options?: ToastOptions) => toast?.(message, options)
 // Error toasts persist until dismissed, so the previous one is dismissed when the user tries again.
-let errorToastId = null
+let errorToastId: number | void | null = null
 const clearBad = () => {
   if (errorToastId != null) toast?.dismiss?.(errorToastId)
   errorToastId = null
 }
-const bad = (message) => {
+const bad = (message: string) => {
   clearBad()
   errorToastId = toast?.error ? toast.error(message) : toast?.(message, { kind: 'error' })
 }
-const info = (message) => (toast?.info ? toast.info(message) : toast?.(message))
+const info = (message: string) => (toast?.info ? toast.info(message) : toast?.(message))
 // Time off is stored as a booking but is never a client appointment.
-const isHidden = (booking) => isTimeOff(booking)
+const isHidden = (booking: BookingRecord) => isTimeOff(booking)
 const realBookings = computed(() => (state.bookings || []).filter((item) => !isHidden(item)))
 const timeOffBlocks = computed(() => (state.bookings || []).filter(isActiveTimeOff))
 // ---- team (everything below is inert, and no staff UI shows, until the first member is added) ----
 const team = computed(() => hasTeam(state))
 const members = computed(() => teamMembers(state, { includeInactive: true }))
 const activeMembers = computed(() => members.value.filter(isStaffActive))
-const memberFor = (booking) => staffForBooking(state, booking)
-const staffName = (booking) => memberName(memberFor(booking))
-const staffColor = (booking) => memberColor(memberFor(booking))
-const staffLabel = (member) => `${memberName(member)}${isStaffActive(member) ? '' : ' (inactive)'}`
-const refresh = inject('refreshBookings')
+const memberFor = (booking: BookingRecord) => staffForBooking(state, booking)
+const staffName = (booking: BookingRecord) => memberName(memberFor(booking))
+const staffColor = (booking: BookingRecord) => memberColor(memberFor(booking))
+const staffLabel = (member: StaffRecord) => `${memberName(member)}${isStaffActive(member) ? '' : ' (inactive)'}`
+const refresh = inject<RefreshWorkspace>('refreshBookings', async () => true)
 const router = useRouter()
 const route = useRoute()
-const activeTab = ref('upcoming')
-const view = ref('week')
+type BookingTab = 'upcoming' | 'past' | 'completed' | 'no_show' | 'cancelled' | 'all'
+const activeTab = ref<BookingTab>('upcoming')
+const view = ref<'week' | 'agenda'>('week')
 const query = ref('')
 const emailFilter = ref('')
 const serviceFilter = ref('')
@@ -85,28 +88,42 @@ const staffFilter = ref('')
 const fromDate = ref('')
 const toDate = ref('')
 const weekOffset = ref(0)
+const showCancelled = ref(false)
 // The open booking is looked up by id, so the dialog always reflects the latest state after any action or refresh.
 const selectedId = ref('')
 const selected = computed(() => realBookings.value.find((item) => item.id === selectedId.value) || null)
-const compactDetail = ref(window.matchMedia('(max-width: 1200px)').matches)
+// At 1200px and below the detail is a modal panel (a bottom sheet on phones) above a scrim that covers the page and the
+// bottom navigation; above 1200px it is a side panel next to the calendar.
 const detailMedia = window.matchMedia('(max-width: 1200px)')
-const updateDetailMedia = event => { compactDetail.value = event.matches }
-let detailOpener = null
+const compactDetail = ref(detailMedia.matches)
+const updateDetailMedia = (event: MediaQueryListEvent) => { compactDetail.value = event.matches }
+// Phones show one day of the week grid at a time, with a day strip to switch days.
+const phoneMedia = window.matchMedia('(max-width: 700px)')
+const phoneGrid = ref(phoneMedia.matches)
+const updatePhoneMedia = (event: MediaQueryListEvent) => { phoneGrid.value = event.matches }
+let detailOpener: HTMLElement | null = null
 watch(selectedId, async (value, previous) => {
-  if (value && !previous) detailOpener = document.activeElement
+  if (value && !previous && document.activeElement instanceof HTMLElement) detailOpener = document.activeElement
   await nextTick()
   if (value) document.getElementById('booking-detail-title')?.focus({ preventScroll: true })
   else if (detailOpener?.isConnected) detailOpener.focus({ preventScroll: true })
 })
-function detailKeydown(event) {
+function detailKeydown(event: KeyboardEvent) {
   if (!compactDetail.value || event.key !== 'Tab' || event.defaultPrevented) return
-  const controls = [...event.currentTarget.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')].filter(el => !el.disabled && el.getClientRects().length)
+  if (!(event.currentTarget instanceof HTMLElement)) return
+  const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex="0"]')].filter(el => !('disabled' in el) || !el.disabled).filter(el => el.getClientRects().length)
   const first = controls[0], last = controls.at(-1)
-  if (event.shiftKey && (document.activeElement === first || document.activeElement.id === 'booking-detail-title')) { event.preventDefault(); last?.focus() }
+  if (event.shiftKey && (document.activeElement === first || (document.activeElement instanceof HTMLElement && document.activeElement.id === 'booking-detail-title'))) { event.preventDefault(); last?.focus() }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
 }
-onMounted(() => detailMedia.addEventListener('change', updateDetailMedia))
-onBeforeUnmount(() => detailMedia.removeEventListener('change', updateDetailMedia))
+onMounted(() => {
+  detailMedia.addEventListener('change', updateDetailMedia)
+  phoneMedia.addEventListener('change', updatePhoneMedia)
+})
+onBeforeUnmount(() => {
+  detailMedia.removeEventListener('change', updateDetailMedia)
+  phoneMedia.removeEventListener('change', updatePhoneMedia)
+})
 const cancelOpen = ref(false)
 const discardOpen = ref(false)
 const cancellationReason = ref('')
@@ -126,8 +143,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onPageKeydown)
 })
 
-function onPageKeydown(event) {
-  if (event.key !== 'Escape' || event.defaultPrevented || cancelOpen.value || discardOpen.value || newDiscardOpen.value) return
+function onPageKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape' || event.defaultPrevented || discardOpen.value || newDiscardOpen.value) return
+  if (cancelOpen.value) { cancelOpen.value = false; return }
   if (newOpen.value) requestCloseNew()
   else if (selected.value) requestClose()
 }
@@ -139,17 +157,27 @@ const calendar = ref({ state: 'loading', message: '' })
 const calendarBusy = ref(false)
 const calendarNotice = ref('')
 const calendarError = ref('')
-const bulkOutcomes = ref([])
-const conflicts = ref(new Map())
+interface CalendarOutcome { id?: string; ok: boolean; skipped?: boolean; message?: string }
+const bulkOutcomes = ref<CalendarOutcome[]>([])
+const conflicts = ref<Map<string, string[]>>(new Map())
 const conflictNote = ref('')
 const calendarConnected = computed(() => calendar.value.state === 'connected')
+const calendarChip = computed(() => {
+  const value = calendar.value.state
+  if (value === 'connected') return 'Calendar connected'
+  if (value === 'loading') return 'Checking Calendar'
+  if (value === 'not-connected') return 'Calendar not connected'
+  if (value === 'error') return 'Calendar not checked'
+  return 'Calendar unavailable here'
+})
 const calendarHint = computed(() => {
   const { state, message } = calendar.value
-  if (state === 'preview') return 'Not available in local preview. Launch Bookins from Goalmatic to connect Google Calendar.'
+  if (state === 'preview') return 'Not available in local preview. Open Bookins from Goalmatic to connect Google Calendar.'
   if (state === 'demo') return 'Not available in the demo. Exit Demo and open Bookins from Goalmatic to connect Google Calendar.'
   if (state === 'unavailable') return message
-  if (state === 'not-connected') return 'Connect Google Calendar to see clashes and add bookings to your calendar.'
+  if (state === 'not-connected') return 'Connect Google Calendar to see clashes and add bookings to your calendar when you choose.'
   if (state === 'error') return message || 'Google Calendar could not be checked right now.'
+  if (state === 'connected') return 'Add bookings to Google Calendar when you choose. Linked events follow moves and cancellations. Clients are never invited.'
   return ''
 })
 
@@ -163,7 +191,7 @@ async function loadCalendarStatus() {
   try {
     calendar.value = await getCalendarStatus()
   } catch (reason) {
-    calendar.value = { state: 'error', message: reason?.message || '' }
+    calendar.value = { state: 'error', message: errorMessage(reason) }
   }
 }
 
@@ -177,7 +205,7 @@ async function connectCalendar() {
       calendarError.value = 'Google Calendar was not connected. Finish the Google sign-in window and try again.'
     } else ok('Google Calendar connected')
   } catch (reason) {
-    calendarError.value = reason?.message || 'Google Calendar could not be connected.'
+    calendarError.value = errorMessage(reason, 'Google Calendar could not be connected.')
   } finally {
     calendarBusy.value = false
   }
@@ -202,26 +230,26 @@ async function loadConflicts() {
   } catch (reason) {
     if (seq !== conflictSeq) return
     conflicts.value = new Map()
-    conflictNote.value = `Calendar clashes could not be checked: ${reason?.message || 'try again later.'}`
+    conflictNote.value = `Calendar clashes could not be checked: ${errorMessage(reason, 'try again later.')}`
   }
 }
 watch([calendarConnected, realBookings], loadConflicts)
 onMounted(loadCalendarStatus)
 watch(isDemo, loadCalendarStatus)
 
-const onCalendar = (booking) => Boolean(booking.calendar_event_id)
-const calendarNeedsSync = booking => onCalendar(booking) && ['pending', 'failed'].includes(booking.calendar_sync_status)
-const conflictTitles = (booking) => conflicts.value.get(booking.id) || []
+const onCalendar = (booking: BookingRecord) => Boolean(booking.calendar_event_id)
+const calendarNeedsSync = (booking: BookingRecord) => onCalendar(booking) && ['pending', 'failed'].includes(String(booking.calendar_sync_status))
+const conflictTitles = (booking: BookingRecord) => conflicts.value.get(String(booking.id || '')) || []
 const needsCalendar = computed(() => realBookings.value.filter((item) => isUpcoming(item) && item.status === 'confirmed' && !onCalendar(item)))
 
-function flash(message) {
+function flash(message: string) {
   calendarNotice.value = message
   window.setTimeout(() => {
     if (calendarNotice.value === message) calendarNotice.value = ''
   }, 4000)
 }
 
-async function addToCalendar(booking) {
+async function addToCalendar(booking: BookingRecord) {
   clearBad()
   calendarBusy.value = true
   calendarError.value = ''
@@ -230,12 +258,11 @@ async function addToCalendar(booking) {
     const result = await addBookingToCalendar(booking)
     await refresh()
     const text = result.alreadyOnCalendar ? 'Already on your calendar.' : 'Added to Google Calendar.'
-    // One visible message: inline inside the open dialog, otherwise a toast.
+    // One visible message: inline inside the open panel, otherwise a toast.
     if (selected.value) detailNotice.value = text
     else ok(text)
   } catch (reason) {
-    const text = reason?.message || 'The booking could not be added to Google Calendar.'
-    // One visible message, where the user is looking: inside the dialog when it is open, else beside the calendar panel.
+    const text = errorMessage(reason, 'The booking could not be added to Google Calendar.')
     if (selected.value) error.value = text
     else calendarError.value = text
   } finally {
@@ -274,42 +301,34 @@ async function addAllToCalendar() {
     if (failed) calendarError.value = text
     else ok(text)
   } catch (reason) {
-    const text = reason?.message || 'The bookings could not be added to Google Calendar.'
-    calendarError.value = text
+    calendarError.value = errorMessage(reason, 'The bookings could not be added to Google Calendar.')
   } finally {
     calendarBusy.value = false
   }
 }
-const bulkLabel = (outcome) => {
+const bulkLabel = (outcome: CalendarOutcome) => {
   const booking = realBookings.value.find((item) => item.id === outcome.id)
   return booking ? `${booking.service_name} with ${booking.guest_name}` : outcome.id
 }
+const calendarOpen = ref(false)
 
-const zone = (booking) => displayTimeZone(booking.timezone || state.schedules?.[0]?.timezone)
-const scheduleZone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
-const displayTimeOptions = (options, booking) => ({ ...options, timeZone: zone(booking) })
+// One zone for the calendar: the owner's own schedule, never a team member's (B7).
+const scheduleZone = computed(() => displayTimeZone(scheduleOf(state, ownerStaff(state))?.timezone || state.schedules?.[0]?.timezone))
+const zone = (booking: BookingRecord) => displayTimeZone(booking.timezone || scheduleZone.value)
+const displayTimeOptions = (options: Intl.DateTimeFormatOptions, booking: BookingRecord): Intl.DateTimeFormatOptions => ({ ...options, timeZone: zone(booking) })
 
-function zoneAbbr(booking) {
-  try {
-    const part = new Intl.DateTimeFormat('en', { timeZone: zone(booking), timeZoneName: 'short' })
-      .formatToParts(new Date(booking.starts_at))
-      .find((item) => item.type === 'timeZoneName')
-    return part?.value || ''
-  } catch {
-    return ''
-  }
-}
-const zoneLabel = (booking) => {
-  const abbr = zoneAbbr(booking)
-  return abbr && abbr !== zone(booking) ? `${abbr} (${zone(booking)})` : zone(booking)
+// One zone label everywhere, e.g. "Africa/Lagos (GMT+1)", taken at the booking's own date.
+const zoneLabel = (booking: BookingRecord) => {
+  const at = new Date(String(booking.starts_at || ''))
+  return zoneDisplayLabel(zone(booking), 'en', Number.isFinite(at.getTime()) ? at : new Date())
 }
 
 // Calendar day (yyyy-mm-dd) of a booking in the booking's own timezone.
-function dayKey(booking, at = booking.starts_at) {
+function dayKey(booking: BookingRecord, at: TimestampInput = booking.starts_at) {
   try {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: zone(booking), year: 'numeric', month: '2-digit', day: '2-digit',
-    }).format(new Date(at))
+    }).format(new Date(String(at || '')))
   } catch {
     return String(at).slice(0, 10)
   }
@@ -319,35 +338,48 @@ const todayKey = computed(() =>
     timeZone: scheduleZone.value, year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(new Date(now.value)),
 )
-const startMs = (booking) => Date.parse(booking.starts_at)
-const endMs = (booking) => Date.parse(booking.ends_at) || startMs(booking)
-const isCancelled = (booking) => booking.status === 'cancelled'
+const startMs = (booking: BookingRecord) => Date.parse(String(booking.starts_at || ''))
+const endMs = (booking: BookingRecord) => Date.parse(String(booking.ends_at || '')) || startMs(booking)
+const isCancelled = (booking: BookingRecord) => booking.status === 'cancelled'
 // In-progress bookings are still "upcoming" so they remain cancellable and visible.
-const isUpcoming = (booking) => !isCancelled(booking) && endMs(booking) > now.value
-const isPast = (booking) => !isCancelled(booking) && endMs(booking) <= now.value
-const canCancel = (booking) => isUpcoming(booking)
+const isUpcoming = (booking: BookingRecord) => !isCancelled(booking) && endMs(booking) > now.value
+const isPast = (booking: BookingRecord) => !isCancelled(booking) && endMs(booking) <= now.value
+const canCancel = (booking: BookingRecord) => isUpcoming(booking)
 
 watch(
   () => [route.query.q, route.query.email, route.query.staff, route.query.tab, route.query.from, route.query.to],
   ([q, email, staff, tab, from, to]) => {
-    const text = (value) => (Array.isArray(value) ? value[0] : value) || ''
+    const text = (value: unknown) => (Array.isArray(value) ? value[0] : value) || ''
     if (route.path !== '/bookings') return
     query.value = String(text(q))
     emailFilter.value = String(text(email)).trim().toLowerCase()
     staffFilter.value = String(text(staff))
     const requestedTab = String(text(tab))
-    if (['upcoming', 'past', 'completed', 'no_show', 'cancelled', 'all'].includes(requestedTab)) activeTab.value = requestedTab
-    else if (q || email || staff) activeTab.value = 'all'
+    if (['upcoming', 'past', 'completed', 'no_show', 'cancelled', 'all'].includes(requestedTab)) {
+      activeTab.value = requestedTab as BookingTab
+      view.value = 'agenda'
+    } else if (q || email || staff) {
+      activeTab.value = 'all'
+      view.value = 'agenda'
+    }
     fromDate.value = /^\d{4}-\d{2}-\d{2}$/.test(String(text(from))) ? String(text(from)) : ''
     toDate.value = /^\d{4}-\d{2}-\d{2}$/.test(String(text(to))) ? String(text(to)) : ''
   },
   { immediate: true },
 )
-
 function clearEmail() {
   emailFilter.value = ''
   router.replace({ path: '/bookings', query: { ...route.query, email: undefined } })
 }
+// B5: a phone-only client carries an internal placeholder address; name the client instead of showing it.
+const emailFilterLabel = computed(() => {
+  const email = emailFilter.value
+  if (!email) return ''
+  const match = realBookings.value.find((item) => String(item.guest_email || '').trim().toLowerCase() === email)
+  const name = match?.guest_name || ''
+  if (hasRealEmail(email)) return name ? `${name} (${email})` : email
+  return name ? `${name}${match?.guest_phone ? ` (${match.guest_phone})` : ''}` : 'this client'
+})
 
 onBeforeRouteLeave((to) => {
   if (allowLeave.value) {
@@ -375,17 +407,17 @@ onBeforeRouteLeave((to) => {
 })
 
 const serviceOptions = computed(() => {
-  const seen = new Map()
+  const seen = new Map<string, string>()
   for (const booking of realBookings.value) {
     const key = booking.service_id || booking.service_name
-    if (key && !seen.has(key)) seen.set(key, booking.service_name || 'Service')
+    if (key && !seen.has(key)) seen.set(key, displayName(booking.service_name) || 'Service')
   }
   return [...seen].map(([value, label]) => ({ value, label })).sort((a, b) => a.label.localeCompare(b.label))
 })
 const serviceFilterOptions = computed(() => [{ value: '', label: 'All services' }, ...serviceOptions.value])
 const staffFilterOptions = computed(() => [
   { value: '', label: 'Everyone' },
-  ...members.value.map((member) => ({ value: member.id, label: staffLabel(member) })),
+  ...members.value.map((member) => ({ value: member.id || '', label: staffLabel(member) })),
 ])
 
 // Everything except the status tab, so tab counts reflect the other filters.
@@ -405,16 +437,16 @@ const baseFiltered = computed(() => {
   })
 })
 
-const tabs = computed(() => [
+const tabs = computed<Array<{ id: BookingTab; label: string; count: number }>>(() => [
   { id: 'upcoming', label: 'Upcoming', count: baseFiltered.value.filter(isUpcoming).length },
   { id: 'past', label: 'Past', count: baseFiltered.value.filter(isPast).length },
-  { id: 'completed', label: 'Completed', count: baseFiltered.value.filter((item) => item.status === 'completed').length },
+  { id: 'completed', label: 'Came', count: baseFiltered.value.filter((item) => item.status === 'completed').length },
   { id: 'no_show', label: 'No-show', count: baseFiltered.value.filter((item) => item.status === 'no_show').length },
   { id: 'cancelled', label: 'Cancelled', count: baseFiltered.value.filter(isCancelled).length },
   { id: 'all', label: 'All', count: baseFiltered.value.length },
 ])
 
-const inTab = (item, tab) => {
+const inTab = (item: BookingRecord, tab: BookingTab) => {
   if (tab === 'upcoming') return isUpcoming(item)
   if (tab === 'past') return isPast(item)
   if (tab === 'cancelled') return isCancelled(item)
@@ -423,98 +455,139 @@ const inTab = (item, tab) => {
 }
 
 // Upcoming soonest-first; past, cancelled and "all" newest-first.
-const sortBookings = (list, tab) =>
+const sortBookings = (list: BookingRecord[], tab: BookingTab) =>
   [...list].sort((left, right) => (tab === 'upcoming' ? startMs(left) - startMs(right) : startMs(right) - startMs(left)))
 
 const filtered = computed(() => sortBookings(baseFiltered.value.filter((item) => inTab(item, activeTab.value)), activeTab.value))
 
 const groups = computed(() => {
-  const map = new Map()
+  const map = new Map<string, BookingRecord[]>()
   for (const booking of filtered.value) {
     const key = dayKey(booking)
     if (!map.has(key)) map.set(key, [])
-    map.get(key).push(booking)
+    map.get(key)?.push(booking)
   }
-  return [...map].map(([key, items]) => ({ key, items, label: dayLabel(key) }))
+  return [...map].map(([key, items]) => ({ key, items, label: dayLabel(key), today: key === todayKey.value }))
 })
 
-function dayLabel(key) {
-  const text = formatDay(key)
-  if (key === todayKey.value) return `Today · ${text}`
-  return text
+function dayLabel(key: string) {
+  return formatDay(key, 'UTC')
 }
 
-const addDays = (key, days) => {
-  const [y, m, d] = key.split('-').map(Number)
+const addDays = (key: string, days: number) => {
+  const [y = 1970, m = 1, d = 1] = key.split('-').map(Number)
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10)
 }
 const weekStart = computed(() => {
-  const [y, m, d] = todayKey.value.split('-').map(Number)
+  const [y = 1970, m = 1, d = 1] = todayKey.value.split('-').map(Number)
   const dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7 // Monday first
   return addDays(todayKey.value, -dow + weekOffset.value * 7)
 })
-const weekDays = computed(() => {
-  const showCancelled = activeTab.value === 'cancelled' || activeTab.value === 'all'
-  const statusTab = activeTab.value === 'completed' || activeTab.value === 'no_show'
-  const pool = baseFiltered.value.filter((item) => (statusTab ? inTab(item, activeTab.value) : showCancelled || !isCancelled(item)))
-  const showOff = !emailFilter.value && !query.value.trim() && !statusTab
-  return Array.from({ length: 7 }, (_, index) => {
-    const key = addDays(weekStart.value, index)
-    const [y, m, d] = key.split('-').map(Number)
-    const date = new Date(Date.UTC(y, m - 1, d))
-    return {
-      key,
-      today: key === todayKey.value,
-      weekday: date.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'short' }),
-      label: date.toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' }),
-      items: pool.filter((item) => dayKey(item) === key).sort((a, b) => startMs(a) - startMs(b)),
-      off: showOff ? timeOffBlocks.value.filter((item) => (!team.value || !staffFilter.value || memberFor(item).id === staffFilter.value) && dayKey(item) <= key && key <= dayKey(item, endMs(item) - 1)) : [],
-    }
-  })
-})
+// The week grid shows every appointment in the week (status tabs belong to the agenda list only).
+const weekPool = computed(() => baseFiltered.value.filter((item) => showCancelled.value || !isCancelled(item)))
+const showOff = computed(() => !emailFilter.value && !query.value.trim())
+const weekDays = computed(() => Array.from({ length: 7 }, (_, index) => {
+  const key = addDays(weekStart.value, index)
+  const [y = 1970, m = 1, d = 1] = key.split('-').map(Number)
+  const date = new Date(Date.UTC(y, m - 1, d))
+  return {
+    key,
+    index,
+    today: key === todayKey.value,
+    past: key < todayKey.value,
+    weekday: date.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'short' }),
+    day: date.getUTCDate(),
+    full: date.toLocaleDateString(undefined, { timeZone: 'UTC', weekday: 'long', day: 'numeric', month: 'long' }),
+    items: weekPool.value.filter((item) => dayKey(item) === key).sort((a, b) => startMs(a) - startMs(b)),
+    off: showOff.value ? timeOffBlocks.value.filter((item) => (!team.value || !staffFilter.value || memberFor(item).id === staffFilter.value) && dayKey(item) <= key && key <= dayKey(item, endMs(item) - 1)) : [],
+  }
+}))
+// Phones: one day at a time.
+const focusDay = ref(0)
+function resetFocusDay() {
+  const today = weekDays.value.findIndex((day) => day.today)
+  focusDay.value = today >= 0 ? today : 0
+}
+watch(weekOffset, resetFocusDay)
+onMounted(resetFocusDay)
+function focusWeekOn(booking: BookingRecord) {
+  const key = dayKey(booking)
+  const [y = 1970, m = 1, d = 1] = key.split('-').map(Number)
+  const [ty = 1970, tm = 1, td = 1] = weekStart.value.split('-').map(Number)
+  const diff = Math.floor((Date.UTC(y, m - 1, d) - Date.UTC(ty, tm - 1, td)) / 86_400_000)
+  weekOffset.value += Math.floor(diff / 7)
+  nextTick(() => { focusDay.value = ((diff % 7) + 7) % 7 })
+}
+const shownDays = computed(() => (phoneGrid.value ? weekDays.value.filter((day) => day.index === focusDay.value) : weekDays.value))
+// Today and other pages link straight to one booking with ?open=<id>.
+watch(
+  () => [route.query.open, realBookings.value.length] as const,
+  ([open]) => {
+    const id = String((Array.isArray(open) ? open[0] : open) || '')
+    if (!id || route.path !== '/bookings') return
+    const booking = realBookings.value.find((item) => item.id === id)
+    if (!booking) return
+    selectedId.value = booking.id || ''
+    focusWeekOn(booking)
+    router.replace({ path: '/bookings', query: { ...route.query, open: undefined } })
+  },
+  { immediate: true },
+)
 const weekRange = computed(() => {
-  const fmt = (key) => {
-    const [y, m, d] = key.split('-').map(Number)
+  const fmt = (key: string) => {
+    const [y = 1970, m = 1, d = 1] = key.split('-').map(Number)
     return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, { timeZone: 'UTC', month: 'short', day: 'numeric' })
   }
-  return `${fmt(weekStart.value)} – ${fmt(addDays(weekStart.value, 6))}`
+  return `${fmt(weekStart.value)} to ${fmt(addDays(weekStart.value, 6))}`
 })
 
 const calendarItems = computed(() => weekDays.value.flatMap((day) => day.items))
+const shownItems = computed(() => shownDays.value.flatMap((day) => day.items))
+const minuteOf = (booking: BookingRecord, at: TimestampInput) => minutesOf(localFields(at, zone(booking)).time)
 const calendarStartHour = computed(() => {
-  if (!calendarItems.value.length) return 9
-  return Math.max(0, Math.min(9, ...calendarItems.value.map((booking) => Number(localFields(booking.starts_at, zone(booking)).time.slice(0, 2)) || 0)))
+  if (!shownItems.value.length) return 8
+  return Math.max(0, Math.min(8, ...shownItems.value.map((booking) => Math.floor(minuteOf(booking, booking.starts_at) / 60) || 0)))
 })
 const calendarEndHour = computed(() => {
-  if (!calendarItems.value.length) return 17
-  return Math.min(24, Math.max(17, ...calendarItems.value.map((booking) => {
-    const fields = localFields(booking.ends_at || booking.starts_at, zone(booking))
-    const [hour, minute] = fields.time.split(':').map(Number)
-    return hour + (minute > 0 ? 1 : 0)
-  })))
+  if (!shownItems.value.length) return 18
+  return Math.min(24, Math.max(18, ...shownItems.value.map((booking) => Math.ceil(minuteOf(booking, booking.ends_at || booking.starts_at) / 60) || 0)))
 })
-const calendarHours = computed(() => Array.from(
-  { length: Math.max(1, calendarEndHour.value - calendarStartHour.value + 1) },
-  (_, index) => calendarStartHour.value + index,
-))
-const calendarHeight = computed(() => Math.max(320, (calendarEndHour.value - calendarStartHour.value) * 64))
-function calendarItemStyle(booking) {
-  const start = localFields(booking.starts_at, zone(booking)).time.split(':').map(Number)
-  const startMinute = start[0] * 60 + start[1]
-  const top = ((startMinute - calendarStartHour.value * 60) / 60) * 64
+const HOUR = 64
+const calendarHours = computed(() => hourMarks(calendarStartHour.value, calendarEndHour.value - 1))
+const calendarHeight = computed(() => Math.max(320, (calendarEndHour.value - calendarStartHour.value) * HOUR))
+const yOf = (minute: number) => ((minute - calendarStartHour.value * 60) / 60) * HOUR
+// B1: overlapping bookings sit side by side, each in its own column.
+function placedFor(day: { items: BookingRecord[] }) {
+  return placeSpans(day.items.map((booking) => {
+    const start = minuteOf(booking, booking.starts_at)
+    const end = Math.max(start + 15, minuteOf(booking, booking.ends_at || booking.starts_at) || start + 30)
+    return { start, end, item: booking }
+  }), 30)
+}
+function slotStyle(entry: { start: number; end: number; column: number; columns: number; item: BookingRecord }) {
   return {
-    top: `${Math.max(0, top)}px`,
-    height: `${Math.max(34, duration(booking) / 60 * 64)}px`,
-    '--booking-color': team.value ? staffColor(booking) : undefined,
+    top: `${Math.max(0, yOf(entry.start))}px`,
+    height: `${Math.max(30, yOf(entry.end) - yOf(entry.start) - 2)}px`,
+    left: `calc(${(entry.column / entry.columns) * 100}% + 3px)`,
+    width: `calc(${100 / entry.columns}% - 6px)`,
+    // B4: colour means the person (only once there is a team); status is shape and word.
+    '--slot-stem': team.value ? staffColor(entry.item) : undefined,
+    '--slot-fill': team.value ? `color-mix(in srgb, ${staffColor(entry.item)} 10%, var(--surface))` : undefined,
   }
 }
-function hourLabel(hour) {
-  return new Date(2000, 0, 1, hour).toLocaleTimeString(undefined, { hour: 'numeric' })
+const nowLine = computed(() => {
+  const minute = minutesOf(localFields(now.value, scheduleZone.value).time)
+  return minute >= calendarStartHour.value * 60 && minute <= calendarEndHour.value * 60 ? yOf(minute) : null
+})
+function hourLabel(hour: number) {
+  return new Date(Date.UTC(2000, 0, 1, hour)).toLocaleTimeString(undefined, { hour: 'numeric', timeZone: 'UTC' })
 }
 
 const hasFilters = computed(() =>
   Boolean(query.value.trim() || emailFilter.value || serviceFilter.value || (team.value && staffFilter.value) || fromDate.value || toDate.value),
 )
+const filtersOpen = ref(false)
+const activeFilterCount = computed(() => [query.value.trim(), serviceFilter.value, team.value && staffFilter.value, fromDate.value, toDate.value].filter(Boolean).length)
 function clearFilters() {
   query.value = ''
   serviceFilter.value = ''
@@ -527,30 +600,22 @@ function clearFilters() {
   }
 }
 
-function dateParts(booking) {
-  const date = new Date(booking.starts_at)
-  return {
-    day: date.toLocaleDateString(undefined, displayTimeOptions({ day: '2-digit' }, booking)),
-    month: date.toLocaleDateString(undefined, displayTimeOptions({ month: 'short' }, booking)),
-    weekday: date.toLocaleDateString(undefined, displayTimeOptions({ weekday: 'short' }, booking)),
-  }
+function when(booking: BookingRecord) {
+  return `${formatDay(booking.starts_at, zone(booking))}, ${time(booking)}`
 }
-
-function when(booking) {
-  return `${formatDay(booking.starts_at, zone(booking))}, ${new Date(booking.starts_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))}`
+function time(booking: BookingRecord) {
+  return new Date(String(booking.starts_at || '')).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))
 }
-
-function time(booking) {
-  return new Date(booking.starts_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))
+function endTime(booking: BookingRecord) {
+  return new Date(String(booking.ends_at || booking.starts_at || '')).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking))
 }
-
-function duration(booking) {
+function duration(booking: BookingRecord) {
   return Math.max(0, Math.round((endMs(booking) - startMs(booking)) / 60_000))
 }
 
 // ---- CSV export ----
 // Quote when needed, and neutralize spreadsheet formulas (= + - @, tab, CR) with a leading apostrophe.
-function downloadCsv(filename, rows) {
+function downloadCsv(filename: string, rows: unknown[][]) {
   const body = rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
   const blob = new Blob(['﻿' + body + '\r\n'], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -564,22 +629,22 @@ function downloadCsv(filename, rows) {
 }
 function exportCsv() {
   if (!filtered.value.length) return
-  const fmt = (booking, at) => {
+  const fmt = (booking: BookingRecord, at: TimestampInput) => {
     try {
       return new Intl.DateTimeFormat('en-GB', {
         timeZone: zone(booking), hour: '2-digit', minute: '2-digit', hour12: false,
-      }).format(new Date(at))
+      }).format(new Date(String(at || '')))
     } catch {
       return ''
     }
   }
   // The Staff column only exists once there is a team, so single-owner exports are unchanged.
   const withStaff = team.value
-  const staffText = (booking) => {
+  const staffText = (booking: BookingRecord) => {
     const member = memberFor(booking)
     return member.implicit ? String(state.profile?.display_name || '').trim() || 'Owner' : member.name || booking.staff_name || ''
   }
-  const rows = [[
+  const rows: unknown[][] = [[
     'Reference', 'Status', 'Service', ...(withStaff ? ['Staff'] : []), 'Date', 'Start', 'End', 'Timezone', 'Starts at (UTC)',
     'Guest name', 'Guest email', 'Guest phone', 'Notes', 'Private owner notes', 'Source', 'Cancellation reason',
   ]]
@@ -596,72 +661,72 @@ function exportCsv() {
     downloadCsv(`bookings-${activeTab.value}-${todayKey.value}.csv`, rows)
     ok(`Exported ${filtered.value.length} booking${filtered.value.length === 1 ? '' : 's'} to CSV`)
   } catch (reason) {
-    bad(reason?.message || 'The CSV file could not be created.')
+    bad(errorMessage(reason, 'The CSV file could not be created.'))
   }
 }
-
 
 // ---- shared helpers ----
 const actionBusy = ref(false)
-const scheduleFor = (booking) => (state.schedules || []).find((item) => item.id === booking?.schedule_id) || state.schedules?.[0]
-const serviceFor = (booking) => (state.services || []).find((item) => item.id === booking?.service_id)
-const hasStarted = (booking) => startMs(booking) <= now.value
-const isDone = (booking) => booking.status === 'completed' || booking.status === 'no_show'
-const statusLabel = (status) => (status === 'no_show' ? 'No-show' : status)
-const emailText = (booking) => (hasRealEmail(booking.guest_email) ? booking.guest_email : 'No email')
-const isSeries = (booking) => Boolean(booking.series_id)
-const canMove = (booking) => ['confirmed', 'completed', 'no_show'].includes(booking.status)
+const scheduleFor = (booking?: BookingRecord | ServiceRecord | null) => (state.schedules || []).find((item) => item.id === booking?.schedule_id) || state.schedules?.[0]
+const serviceFor = (booking: BookingRecord) => (state.services || []).find((item) => item.id === booking.service_id)
+const hasStarted = (booking: BookingRecord) => startMs(booking) <= now.value
+const isDone = (booking: BookingRecord) => booking.status === 'completed' || booking.status === 'no_show'
+const STATUS_WORDS: Record<string, string> = { confirmed: 'Confirmed', completed: 'Came', no_show: 'No-show', cancelled: 'Cancelled' }
+const statusLabel = (status: unknown) => STATUS_WORDS[String(status || '')] || String(status || '')
+const isSeries = (booking: BookingRecord) => Boolean(booking.series_id)
+const canMove = (booking: BookingRecord) => ['confirmed', 'completed', 'no_show'].includes(String(booking.status))
+const needsOutcome = (booking: BookingRecord) => booking.status === 'confirmed' && hasStarted(booking)
 const demoHint = computed(() => (isDemo.value ? 'The demo is read-only. Exit Demo to make changes.' : ''))
+const slotClasses = (booking: BookingRecord) => ({
+  'is-cancelled': isCancelled(booking),
+  'is-done': booking.status === 'completed',
+  'is-noshow': booking.status === 'no_show',
+  'is-selected': selected.value?.id === booking.id,
+})
 
-function reselect(id) {
-  selectedId.value = id
+function reselect(id: string | undefined) {
+  selectedId.value = id || ''
   notesDraft.value = selected.value?.owner_notes || ''
 }
-function openDetail(booking) {
+function openDetail(booking: BookingRecord) {
   detailNotice.value = ''
   error.value = ''
-  selectedId.value = booking.id
+  cancelOpen.value = false
+  selectedId.value = booking.id || ''
 }
-const STATUS_HELP = 'Confirmed: booked and still to come. Completed: the appointment happened. No-show: the client did not turn up. Cancelled: you cancelled it and the slot reopened. You can undo completed and no-show.'
-const TAB_HELP = {
+const STATUS_HELP = 'Confirmed: booked and still to come. Came: the appointment happened. No-show: the client did not turn up. Cancelled: you cancelled it and the slot reopened. You can undo Came and No-show.'
+const TAB_HELP: Record<BookingTab, string> = {
   upcoming: 'Appointments that have not finished yet, soonest first.',
-  past: 'Appointments whose time has passed and that were not cancelled. Confirmed ones here still need you to mark them completed or no-show; completed and no-show ones also appear in their own tabs.',
+  past: 'Finished appointments. Confirmed ones here still need you to mark whether the client came.',
   completed: 'Appointments you marked as having happened.',
   no_show: 'Appointments where the client did not turn up.',
   cancelled: 'Cancelled appointments stay here as history.',
-  all: 'Every client booking, newest first. Time off is not listed here.',
+  all: 'Every client booking, newest first. Time off is not listed.',
 }
 
-function describeError(reason, fallback) {
-  const code = reason?.code
+function describeError(reason: unknown, fallback: string) {
+  const record = reason && typeof reason === 'object' ? reason as UnknownRecord : {}
+  const code = record.code
   if (code === 'DEMO_READ_ONLY') return 'The demo is read-only. Exit Demo to make changes.'
-  if (code === 'BOOKING_SLOT_TAKEN') return `${reason.message || 'That time is already taken.'} Choose another time.`
-  if (code === 'BOOKING_CONTACT_INVALID') return reason.message || 'Check the client name, email, and phone number.'
-  if (code === 'BOOKING_TIME_INVALID') return reason.message || 'Choose a valid date and time.'
+  if (code === 'BOOKING_SLOT_TAKEN') return `${errorMessage(reason, 'That time is already taken.')} Choose another time.`
+  if (code === 'BOOKING_CONTACT_INVALID') return errorMessage(reason, 'Check the client name, email, and phone number.')
+  if (code === 'BOOKING_TIME_INVALID') return errorMessage(reason, 'Choose a valid date and time.')
   if (code === 'BOOKING_SERVICE_NOT_FOUND') return 'Choose a service for this booking.'
   if (code === 'BOOKING_SCHEDULE_UNAVAILABLE') return 'This service has no schedule yet. Set your availability first.'
   if (code === 'BOOKING_NOT_ACTIVE') return 'This booking is cancelled, so it cannot be changed.'
-  return reason?.message || fallback
+  return errorMessage(reason, fallback)
 }
 
-function zoneName(timezone) {
-  try {
-    const part = new Intl.DateTimeFormat('en', { timeZone: timezone, timeZoneName: 'short' })
-      .formatToParts(new Date()).find((item) => item.type === 'timeZoneName')
-    return part?.value && part.value !== timezone ? `${displayTimeZone(timezone)} (${part.value})` : displayTimeZone(timezone)
-  } catch {
-    return displayTimeZone(timezone)
-  }
-}
-const instantFor = (date, clock, timezone) => {
-  const [hours, minutes] = String(clock || '').split(':').map(Number)
+const zoneName = (timezone: string) => zoneDisplayLabel(displayTimeZone(timezone), 'en')
+const instantFor = (date: string, clock: string, timezone: string): { at?: string; error?: string } => {
+  const [hours = Number.NaN, minutes = Number.NaN] = String(clock || '').split(':').map(Number)
   if (!date || !Number.isInteger(hours) || !Number.isInteger(minutes)) return { error: 'Choose a date and time.' }
   const at = wallClockInstant(date, hours * 60 + minutes, timezone)
   return at ? { at: at.toISOString() } : { error: 'That local time does not exist because of a clock change. Choose another time.' }
 }
 
 // ---- status ----
-async function changeStatus(booking, status) {
+async function changeStatus(booking: BookingRecord, status: string) {
   if (isDemo.value || actionBusy.value) return
   clearBad()
   const fresh = realBookings.value.find((item) => item.id === booking.id) || booking
@@ -670,10 +735,11 @@ async function changeStatus(booking, status) {
   try {
     await setBookingStatus(fresh, status)
     await refresh()
-    const doneText = status === 'confirmed' ? 'Status set back to confirmed.' : `Marked as ${statusLabel(status).toLowerCase()}.`
+    const doneText = status === 'confirmed' ? 'Set back to confirmed.' : status === 'completed' ? 'Marked as came.' : 'Marked as no-show.'
     ok(doneText, status === 'confirmed' ? undefined : { action: { label: 'Undo', onClick: () => changeStatus(booking, 'confirmed') }, duration: 6000 })
   } catch (reason) {
     error.value = describeError(reason, 'The status could not be changed.')
+    if (!selected.value) bad(error.value)
   } finally {
     actionBusy.value = false
   }
@@ -682,7 +748,7 @@ async function changeStatus(booking, status) {
 // ---- private owner notes ----
 const notesDraft = ref('')
 const notesSaving = ref(false)
-const notesDirty = computed(() => Boolean(selected.value) && notesDraft.value !== (selected.value.owner_notes || ''))
+const notesDirty = computed(() => selected.value ? notesDraft.value !== (selected.value.owner_notes || '') : false)
 watch(() => selected.value?.id, () => {
   notesDraft.value = selected.value?.owner_notes || ''
   if (selected.value) messageKind.value = suggestedKind(selected.value)
@@ -716,11 +782,14 @@ const MESSAGE_KINDS = [
 ]
 const messageKind = ref('')
 // The most relevant template for a booking, preselected when its details open.
-const suggestedKind = (booking) => (isCancelled(booking) ? 'cancellation' : isPast(booking) ? 'followup' : 'confirmation')
-const SUGGESTED_WHY = { confirmation: 'this booking is coming up', followup: 'this booking is in the past', cancellation: 'this booking is cancelled' }
-const isSuggestedKind = (kind) => Boolean(selected.value) && kind === suggestedKind(selected.value)
+const suggestedKind = (booking: BookingRecord) => (isCancelled(booking) ? 'cancellation' : isPast(booking) ? 'followup' : 'confirmation')
+const SUGGESTED_WHY: Record<string, string> = { confirmation: 'it is coming up', followup: 'it is in the past', cancellation: 'it is cancelled' }
+const isSuggestedKind = (kind: string) => {
+  const booking = selected.value
+  return booking !== null && kind === suggestedKind(booking)
+}
 const messageNotice = ref('')
-function bookingLinkFor(booking) {
+function bookingLinkFor(booking: BookingRecord) {
   const service = serviceFor(booking)
   const expires = Date.parse(service?.public_link_expires_at || '')
   if (service?.public_link_url && !(Number.isFinite(expires) && expires < now.value)) return service.public_link_url
@@ -737,11 +806,11 @@ const composed = computed(() => {
   })
 })
 const phoneProblem = computed(() =>
-  selected.value?.guest_phone ? 'This phone number could not be read as an international number. Edit it in your phone app, or copy the message.' : 'No phone on this booking, so WhatsApp and SMS are not available.',
+  selected.value?.guest_phone ? 'This phone number could not be read as an international number. Copy the message instead.' : 'No phone number on this booking, so WhatsApp and SMS are not available.',
 )
 const emailUsable = computed(() => Boolean(composed.value?.email) && hasRealEmail(selected.value?.guest_email))
 const gmailUrl = computed(() => gmailComposeUrl(composed.value?.email))
-function openMessage(kind) {
+function openMessage(kind: string) {
   messageKind.value = kind
   messageNotice.value = ''
 }
@@ -752,16 +821,17 @@ async function copyMessage() {
     messageNotice.value = 'Message copied. Paste it into any app.'
     window.setTimeout(() => { messageNotice.value = '' }, 5000)
   } catch {
-    messageNotice.value = 'The message could not be copied. Select the text above and copy it yourself.'
+    messageNotice.value = 'The message could not be copied. Select the text and copy it yourself.'
   }
 }
-const openedApp = (app) => info(`Opening ${app} with the message ready. Press send there; Bookins cannot tell if it was sent.`)
+const openedApp = (app: string) => info(`Opening ${app} with the message ready. Press send there.`)
 
 // ---- new booking (walk-in / phone / recurring) ----
 const newOpen = ref(false)
 const newSaving = ref(false)
 const newError = ref('')
-const newResult = ref(null)
+interface NewBookingResult { created: BookingRecord[]; skipped: Array<{ startsAt: string; reason: string }> }
+const newResult = ref<NewBookingResult | null>(null)
 const newDiscardOpen = ref(false)
 const blankForm = () => ({ serviceId: '', staffId: '', date: '', time: '', name: '', email: '', phone: '', notes: '', ownerNotes: '', repeatWeeks: 0 })
 const form = ref(blankForm())
@@ -770,7 +840,7 @@ const bookableServices = computed(() => (state.services || []).filter((item) => 
 const formService = computed(() => (state.services || []).find((item) => item.id === form.value.serviceId))
 const formPriceLabel = computed(() => {
   const service = formService.value
-  if (!Number(service?.price)) return 'Free'
+  if (!service || !Number(service.price)) return 'Free'
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency', currency: service.currency || 'NGN', maximumFractionDigits: 0,
@@ -780,21 +850,49 @@ const formPriceLabel = computed(() => {
   }
 })
 const formDateLabel = computed(() => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(form.value.date)) return 'Choose a date'
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(form.value.date)) return ''
   return new Date(`${form.value.date}T12:00:00.000Z`).toLocaleDateString(undefined, {
-    timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short',
   })
 })
 const eligibleMembers = computed(() => {
-  if (!team.value || !formService.value) return []
+  const service = formService.value
+  if (!team.value || !service) return []
   return activeMembers.value
-    .filter((item) => servicesForStaff(state, item).some((service) => service.id === formService.value.id))
+    .filter((item) => servicesForStaff(state, item).some((candidate) => candidate.id === service.id))
     .map((item) => ({ member: item, hasHours: Boolean(scheduleOf(state, item)) }))
 })
 const formMember = computed(() => eligibleMembers.value.find((item) => item.member.id === form.value.staffId)?.member || null)
+const formSchedule = computed(() => (team.value && formMember.value ? scheduleOf(state, formMember.value) : scheduleFor(formService.value || null)) || null)
 const formZone = computed(() =>
-  (team.value && formMember.value ? scheduleOf(state, formMember.value)?.timezone : '') || scheduleFor(formService.value)?.timezone || state.schedules?.[0]?.timezone || 'UTC',
+  (team.value && formMember.value ? scheduleOf(state, formMember.value)?.timezone : '') || scheduleFor(formService.value || null)?.timezone || state.schedules?.[0]?.timezone || 'UTC',
 )
+// Open times on the chosen day for this service and person: their hours, minus bookings and time off on that calendar.
+// Owners may still book any other time with the time field (walk-ins and phone bookings).
+const openSlots = computed(() => {
+  const schedule = formSchedule.value
+  const service = formService.value
+  if (!schedule || !service || !/^\d{4}-\d{2}-\d{2}$/.test(form.value.date)) return []
+  try {
+    const model = { ...scheduleFromRecord(schedule), minimumNoticeMinutes: 0, bookingHorizonDays: 365 }
+    const busy = (state.bookings || [])
+      .filter((item) => item.schedule_id === schedule.id && item.status !== 'cancelled')
+      .flatMap((item) => {
+        const start = Date.parse(String(item.starts_at || ''))
+        const end = Date.parse(String(item.ends_at || ''))
+        return Number.isFinite(start) && Number.isFinite(end) ? [{ startsAt: new Date(start).toISOString(), endsAt: new Date(end).toISOString() }] : []
+      })
+    return listOpenings({ schedule: model, durationMinutes: Number(service.duration_minutes), fromDate: form.value.date, throughDate: form.value.date, now: new Date(), busy })
+  } catch {
+    return []
+  }
+})
+const slotText = (opening: Opening) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: displayTimeZone(formZone.value) }).format(Date.parse(opening.startsAt))
+const formTimeLabel = computed(() => {
+  if (!/^\d{2}:\d{2}$/.test(form.value.time)) return ''
+  const minute = minutesOf(form.value.time)
+  return new Date(Date.UTC(2000, 0, 1, Math.floor(minute / 60), minute % 60)).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' })
+})
 // Default person: whoever was chosen if still valid, else the owner, else the first person who offers it and has hours.
 function pickDefaultMember() {
   if (!team.value) { form.value.staffId = ''; return }
@@ -812,9 +910,9 @@ const newStaffReason = computed(() => {
 })
 const newBlocked = computed(() =>
   !setup.value.hasAvailability
-    ? { text: 'Bookings need your weekly hours first, then a service. Set your hours, then add a service, and you can add bookings here.', label: 'Set your availability', to: '/availability' }
+    ? { title: 'Set your hours first', text: 'Bookings sit inside your weekly hours. Set your hours, add a service, then you can add bookings here.', label: 'Set your availability', to: '/availability' }
     : !bookableServices.value.length
-      ? { text: 'Bookings are made for a service. Add one, then come back to add a booking here.', label: 'Add a service', to: '/services' }
+      ? { title: 'Add a service first', text: 'Every booking is for a service. Add one, then come back to add a booking.', label: 'Add a service', to: '/services' }
       : null,
 )
 const newDirty = computed(() => {
@@ -822,6 +920,17 @@ const newDirty = computed(() => {
   const f = form.value
   return Boolean(f.time || f.name.trim() || f.email.trim() || f.phone.trim() || f.notes.trim() || f.ownerNotes.trim() || Number(f.repeatWeeks) > 0)
 })
+const repeatOptions = Array.from({ length: 13 }, (_, weeks) => ({ value: weeks, label: weeks === 0 ? 'Does not repeat' : `Every week, ${weeks} more ${weeks === 1 ? 'time' : 'times'}` }))
+const setRepeat = (value: string | number | boolean) => { form.value.repeatWeeks = Math.max(0, Math.min(12, Math.floor(Number(value) || 0))) }
+const newServiceOptions = computed(() => bookableServices.value.map((item) => ({
+  value: item.id || '',
+  label: `${displayName(item.name)}, ${item.duration_minutes} min`,
+})))
+const newStaffOptions = computed(() => eligibleMembers.value.map((item) => ({
+  value: item.member.id || '',
+  label: `${memberName(item.member)}${isOwnerMember(item.member) ? ' (owner)' : ''}${item.hasHours ? '' : ' (set hours first)'}`,
+  disabled: !item.hasHours,
+})))
 
 function openNew() {
   if (isDemo.value) return
@@ -832,7 +941,9 @@ function openNew() {
   newError.value = ''
   newResult.value = null
   newDiscardOpen.value = false
+  selectedId.value = ''
   newOpen.value = true
+  nextTick(() => document.getElementById('new-booking-title')?.focus())
 }
 watch(
   () => route.query.new,
@@ -864,7 +975,7 @@ function requestCloseNew() {
   if (newDirty.value) newDiscardOpen.value = true
   else closeNew()
 }
-function newFail(message, field) {
+function newFail(message: string, field?: string) {
   newError.value = message
   if (field) window.setTimeout(() => document.getElementById(field)?.focus(), 0)
 }
@@ -876,9 +987,9 @@ async function submitNew() {
   if (!f.serviceId) return newFail('Choose a service for this booking.', 'new-service')
   if (team.value && !f.staffId) return newFail(newStaffReason.value || 'Choose who this booking is with.', 'new-staff')
   if (!f.date) return newFail('Choose a date.', 'new-date')
-  if (!f.time) return newFail('Choose a time.', 'new-time')
+  if (!f.time) return newFail('Choose a time: tap an open time, or set any time below.', 'new-time')
   if (!f.name.trim()) return newFail('Enter the client name.', 'new-name')
-  if (!f.email.trim() && !f.phone.trim()) return newFail('Enter an email address or a phone number so you can reach the client.', 'new-phone')
+  if (!f.email.trim() && !f.phone.trim()) return newFail('Add a phone number or an email address so you can reach the client.', 'new-phone')
   if (f.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())) return newFail('That email address does not look right. Check it, or leave it blank and use a phone number.', 'new-email')
   const when = instantFor(f.date, f.time, formZone.value)
   if (when.error) return newFail(when.error, 'new-time')
@@ -889,15 +1000,15 @@ async function submitNew() {
       serviceId: f.serviceId,
       // With a team the booking goes on the chosen person's own calendar; without one nothing changes.
       ...(team.value ? { staffId: f.staffId } : {}),
-      startsAt: when.at,
+      startsAt: when.at || '',
       contact: { name: f.name, email: f.email, phone: f.phone },
       notes: f.notes,
       ownerNotes: f.ownerNotes,
       repeatWeeks,
     })
     await refresh()
-    newResult.value = result
-    // The result panel inside the dialog is the one confirmation (no duplicate toast).
+    newResult.value = result as NewBookingResult
+    // The result panel is the one confirmation (no duplicate toast).
   } catch (reason) {
     newError.value = describeError(reason, 'The booking could not be saved.')
   } finally {
@@ -914,7 +1025,7 @@ function messageNewClient() {
     messageKind.value = 'confirmation'
   }, 0)
 }
-const skippedLabel = (item) =>
+const skippedLabel = (item: { startsAt: string; reason: string }) =>
   `${formatDay(item.startsAt, formZone.value)}, ${new Date(item.startsAt).toLocaleTimeString(undefined, { timeZone: formZone.value, hour: 'numeric', minute: '2-digit' })}`
 
 // ---- reschedule ----
@@ -950,17 +1061,19 @@ function startReschedule() {
   window.setTimeout(() => document.getElementById('move-date')?.focus(), 0)
 }
 // Warnings (not errors): the owner may still move the booking after confirming.
-function moveWarnings(atIso) {
-  const warnings = []
+function moveWarnings(atIso: string) {
+  const warnings: string[] = []
   if (Date.parse(atIso) < Date.now()) warnings.push('That time is in the past.')
   try {
     const schedule = scheduleFor(selected.value)
     const windows = JSON.parse(schedule?.weekly_windows_json || '[]')
     const f = localFields(atIso, moveZone.value)
     const weekday = new Date(`${f.date}T12:00:00.000Z`).getUTCDay()
-    const [h, m] = f.time.split(':').map(Number)
+    const [h = 0, m = 0] = f.time.split(':').map(Number)
     const startMin = h * 60 + m
-    const endMin = startMin + duration(selected.value)
+    const booking = selected.value
+    if (!booking) return warnings
+    const endMin = startMin + duration(booking)
     if (Array.isArray(windows) && windows.length && !windows.some((w) => w.weekday === weekday && startMin >= w.startMinute && endMin <= w.endMinute))
       warnings.push('That time is outside your weekly hours, so guests could not book it themselves.')
   } catch { /* hours unreadable: no warning */ }
@@ -972,8 +1085,8 @@ function requestMove() {
   rescheduleError.value = ''
   const when = instantFor(moveForm.value.date, moveForm.value.time, moveZone.value)
   if (when.error) return void (rescheduleError.value = when.error)
-  if (Date.parse(when.at) === startMs(selected.value)) return void (rescheduleError.value = 'That is the current time. Choose a different date or time.')
-  const warnings = moveWarnings(when.at)
+  if (Date.parse(when.at || '') === startMs(selected.value)) return void (rescheduleError.value = 'That is the current time. Choose a different date or time.')
+  const warnings = moveWarnings(when.at || '')
   if (warnings.length) {
     moveWarning.value = `${warnings.join(' ')} Move it anyway?`
     moveWarnOpen.value = true
@@ -991,12 +1104,12 @@ async function submitReschedule() {
   try {
     const id = selected.value.id
     const hadEvent = onCalendar(selected.value)
-    const outcome = await rescheduleBookingWithCalendar(state, selected.value, when.at)
+    const outcome = await rescheduleBookingWithCalendar(state, selected.value, when.at || '')
     await refresh()
     reselect(id)
     rescheduling.value = false
     messageKind.value = 'reschedule'
-    detailNotice.value = `Booking moved. The old time is free again.${hadEvent ? outcome.calendar.state === 'updated' ? ' Google Calendar was updated too.' : ' Google Calendar still needs updating. Use Retry Calendar update below.' : ''} Message the client below so they know. Bookins does not send it for you.`
+    detailNotice.value = `Booking moved; the old time is free again.${hadEvent ? outcome.calendar.state === 'updated' ? ' Google Calendar was updated too.' : ' Google Calendar still needs updating: use Retry Calendar update.' : ''} Let the client know with the message below.`
     scrollDetailTop()
   } catch (reason) {
     rescheduleError.value = describeError(reason, 'The booking could not be moved.')
@@ -1006,46 +1119,39 @@ async function submitReschedule() {
 }
 // ---- assign to a team member ----
 // Wording: you are "you"; "your calendar" / "Amaka's calendar".
-const toWho = (member) => (isOwnerMember(member) ? 'you' : memberFirstName(member))
-const whoseCalendar = (member) => (isOwnerMember(member) ? 'your calendar' : `${memberFirstName(member)}'s calendar`)
+const toWho = (member: StaffRecord | null) => member && isOwnerMember(member) ? 'you' : member ? memberFirstName(member) : 'that person'
+const whoseCalendar = (member: StaffRecord | null) => member && isOwnerMember(member) ? 'your calendar' : member ? `${memberFirstName(member)}'s calendar` : 'that calendar'
 const assignTo = ref('')
 const assignBusy = ref(false)
 watch(
   () => [selected.value?.id, selected.value?.staff_id, selected.value?.schedule_id],
   () => {
     const current = selected.value ? memberFor(selected.value) : null
-    assignTo.value = current && members.value.some((item) => item.id === current.id) ? current.id : ''
+    assignTo.value = current && members.value.some((item) => item.id === current.id) ? current.id || '' : ''
   },
   { immediate: true },
 )
-const assignOptions = computed(() =>
-  members.value
-    .filter((item) => isStaffActive(item) || item.id === assignTo.value)
+// The current person is shown above the picker, so the picker lists everyone else.
+const assignSelectOptions = computed(() => {
+  const current = selected.value ? memberFor(selected.value).id : ''
+  return members.value
+    .filter((item) => item.id !== current && isStaffActive(item))
     .map((item) => ({
-      id: item.id,
-      label: `${memberName(item)}${isOwnerMember(item) ? ' (owner)' : ''}${isStaffActive(item) ? '' : ' (inactive)'}${!scheduleOf(state, item) ? ' (no hours set)' : ''}`,
-      disabled: !isStaffActive(item) || (!scheduleOf(state, item) && selected.value?.status === 'confirmed'),
-    })),
-)
-const assignSelectOptions = computed(() => assignOptions.value.map((option) => ({ value: option.id, label: option.label, disabled: option.disabled })))
+      value: item.id || '',
+      label: `${memberName(item)}${!scheduleOf(state, item) ? ' (no hours set)' : ''}`,
+      disabled: !scheduleOf(state, item) && selected.value?.status === 'confirmed',
+    }))
+})
+const assignPick = ref('')
+watch(() => selected.value?.id, () => { assignPick.value = '' })
 const bulkMemberOptions = computed(() => activeMembers.value.map((member) => ({
-  value: member.id,
+  value: member.id || '',
   label: `${memberName(member)}${isOwnerMember(member) ? ' (owner)' : ''}${scheduleOf(state, member) ? '' : ' (no hours set)'}`,
-})))
-const newServiceOptions = computed(() => bookableServices.value.map((item) => ({
-  value: item.id,
-  label: `${displayName(item.name)} · ${item.duration_minutes} min`,
-})))
-const newStaffOptions = computed(() => eligibleMembers.value.map((item) => ({
-  value: item.member.id,
-  label: `${memberName(item.member)}${isOwnerMember(item.member) ? ' (owner)' : ''}${item.hasHours ? '' : ' (set hours first)'}`,
-  disabled: !item.hasHours,
 })))
 const assignReason = computed(() => {
   if (isDemo.value) return demoHint.value
   if (!selected.value) return ''
-  if (!assignTo.value) return 'Choose who should take this booking.'
-  if (assignTo.value === memberFor(selected.value).id) return `Already with ${toWho(memberFor(selected.value))}. Choose someone else.`
+  if (!assignPick.value) return 'Choose who should take this booking.'
   return ''
 })
 async function assignSelected() {
@@ -1055,17 +1161,18 @@ async function assignSelected() {
   error.value = ''
   detailNotice.value = ''
   const booking = selected.value
-  const member = members.value.find((item) => item.id === assignTo.value)
+  const member = members.value.find((item) => item.id === assignPick.value) || null
   try {
-    await assignBookingStaff(state, booking, assignTo.value)
+    await assignBookingStaff(state, booking, assignPick.value)
     await refresh()
+    assignPick.value = ''
     const text = booking.status === 'confirmed'
-      ? `Moved to ${whoseCalendar(member)}. The time is free again on the previous calendar.`
+      ? `Moved to ${whoseCalendar(member)}; the time is free again on the previous calendar.`
       : `Now recorded as ${toWho(member)}'s. Finished and cancelled bookings keep their calendar; only the name changes.`
     detailNotice.value = `${text} Nothing was sent to the client.`
   } catch (reason) {
     // Refusals (busy, time off, not active) come with the exact reason; show it where the owner is looking.
-    error.value = reason?.message || 'The booking could not be assigned.'
+    error.value = errorMessage(reason, 'The booking could not be assigned.')
   } finally {
     assignBusy.value = false
   }
@@ -1073,12 +1180,14 @@ async function assignSelected() {
 
 // ---- bulk assign (selection mode) ----
 const selecting = ref(false)
-const picked = ref([])
+const picked = ref<string[]>([])
 const bulkTo = ref('')
 const bulkBusy = ref(false)
 const bulkConfirmOpen = ref(false)
-const bulkResult = ref(null)
-const pickedBookings = computed(() => filtered.value.filter((item) => picked.value.includes(item.id)))
+interface BulkAssignResult { member: StaffRecord | null; moved: number; refused: Array<{ booking: BookingRecord; reason: string }>; total: number }
+const bulkResult = ref<BulkAssignResult | null>(null)
+const pickedBookings = computed(() => filtered.value.filter((item) => item.id && picked.value.includes(item.id)))
+const isPicked = (id: string | undefined) => Boolean(id && picked.value.includes(id))
 const allPicked = computed(() => filtered.value.length > 0 && pickedBookings.value.length === filtered.value.length)
 const bulkMember = computed(() => members.value.find((item) => item.id === bulkTo.value) || null)
 const bulkReason = computed(() => {
@@ -1092,46 +1201,49 @@ function startSelecting() {
   if (isDemo.value) return
   selecting.value = true
   bulkResult.value = null
-  if (!bulkTo.value) bulkTo.value = activeMembers.value.find((item) => !isOwnerMember(item))?.id || ownerStaff(state).id
+  if (!bulkTo.value) bulkTo.value = activeMembers.value.find((item) => !isOwnerMember(item))?.id || ownerStaff(state).id || ''
 }
 function stopSelecting() {
   selecting.value = false
   picked.value = []
   bulkConfirmOpen.value = false
 }
-function togglePick(id) {
+function togglePick(id: string | undefined) {
+  if (!id) return
   picked.value = picked.value.includes(id) ? picked.value.filter((item) => item !== id) : [...picked.value, id]
 }
-const toggleAllPicked = () => { picked.value = allPicked.value ? [] : filtered.value.map((item) => item.id) }
+const toggleAllPicked = () => { picked.value = allPicked.value ? [] : filtered.value.flatMap((item) => item.id ? [item.id] : []) }
 // A selection only means something for the rows on screen.
 watch([activeTab, view, query, emailFilter, serviceFilter, staffFilter, fromDate, toDate], () => { picked.value = []; bulkResult.value = null })
 watch(team, (value) => { if (!value) stopSelecting() })
+watch(view, (value) => { if (value === 'week') stopSelecting() })
 async function runBulk() {
   if (isDemo.value || bulkBusy.value || bulkReason.value) return
   clearBad()
   bulkBusy.value = true
   const member = bulkMember.value
   try {
+    if (!member?.id) return
     const result = await bulkAssignStaff(state, pickedBookings.value, member.id)
     await refresh()
     const moved = result.moved.length
     const refused = result.refused
     bulkResult.value = { member, moved, refused, total: moved + refused.length }
     // Refused rows stay ticked so the owner can try another person.
-    picked.value = refused.map((item) => item.booking.id)
+    picked.value = refused.flatMap((item) => item.booking.id ? [item.booking.id] : [])
     // Refusals are listed inline with their reasons; a clean run is a toast. Never both.
     if (!refused.length) {
       bulkResult.value = null
       ok(`Moved ${moved} booking${moved === 1 ? '' : 's'} to ${whoseCalendar(member)}.`)
     }
   } catch (reason) {
-    bad(reason?.message || 'The bookings could not be assigned.')
+    bad(errorMessage(reason, 'The bookings could not be assigned.'))
   } finally {
     bulkBusy.value = false
     bulkConfirmOpen.value = false
   }
 }
-const refusedLabel = (item) => `${item.booking.guest_name}, ${when(item.booking)}`
+const refusedLabel = (item: { booking: BookingRecord; reason: string }) => `${item.booking.guest_name}, ${when(item.booking)}`
 
 function scrollDetailTop() {
   window.setTimeout(() => document.querySelector('.booking-detail')?.scrollTo?.({ top: 0, behavior: 'smooth' }), 50)
@@ -1153,7 +1265,7 @@ function close() {
   cancellationReason.value = ''
   pendingRoute.value = ''
 }
-// Every way of closing (X, Close, Esc, overlay) goes through here so a typed note is never lost silently.
+// Every way of closing (X, Esc, scrim) goes through here so a typed note is never lost silently.
 function requestClose() {
   if (cancelling.value || actionBusy.value) return
   if (detailDirty.value) discardOpen.value = true
@@ -1172,9 +1284,15 @@ function discardDialog() {
   }
 }
 const cancelMessage = computed(() => {
-  const base = 'The appointment stays in history and the slot reopens. Bookins does not send a cancellation message; afterwards you can open one in your own WhatsApp, SMS, or email.'
-  return selected.value && onCalendar(selected.value) ? `${base} Its Google Calendar event will be marked cancelled, shown as free time, and have reminders disabled. If that fails, the booking stays cancelled and you can retry the Calendar update.` : base
+  const base = 'The appointment stays in history and the time opens up again. Afterwards you can open a cancellation message in your own WhatsApp, SMS or email.'
+  return selected.value && onCalendar(selected.value) ? `${base} Its Google Calendar event will be marked cancelled, shown as free time, and have reminders turned off.` : base
 })
+function askCancel() {
+  if (isDemo.value) return
+  rescheduling.value = false
+  cancelOpen.value = true
+  nextTick(() => document.getElementById('cancellation-reason')?.focus())
+}
 
 async function cancel() {
   if (isDemo.value || !selected.value || !canCancel(selected.value)) return
@@ -1187,20 +1305,21 @@ async function cancel() {
     await refresh()
     reselect(cancelledId)
     cancellationReason.value = ''
+    cancelOpen.value = false
     messageKind.value = 'cancellation'
     const calendarState = outcome.calendar.state
     detailNotice.value =
       calendarState === 'updated'
-        ? 'Booking cancelled and the slot reopened. The Google Calendar event is marked cancelled, shows free time, and has no reminders.'
+        ? 'Booking cancelled and the time opened up. The Google Calendar event is marked cancelled, shows free time, and has no reminders.'
         : calendarState === 'failed'
-          ? `Booking cancelled and the slot reopened, but the Google Calendar event was not updated (${outcome.calendar.message}). Use Retry Calendar update below.`
+          ? `Booking cancelled and the time opened up, but the Google Calendar event was not updated (${outcome.calendar.message}). Use Retry Calendar update.`
           : calendarState === 'skipped'
-            ? 'Booking cancelled and the slot reopened. Its Google Calendar event was not changed because Calendar is unavailable here; update it in Google Calendar.'
-            : 'Booking cancelled and the slot reopened.'
-    detailNotice.value += ' You can message the client below. Bookins does not send it for you.'
+            ? 'Booking cancelled and the time opened up. Its Google Calendar event was not changed because Calendar is unavailable here; update it in Google Calendar.'
+            : 'Booking cancelled and the time opened up.'
+    detailNotice.value += ' Let the client know with the message below.'
     scrollDetailTop()
   } catch (reason) {
-    error.value = reason?.message || 'The booking could not be cancelled.'
+    error.value = errorMessage(reason, 'The booking could not be cancelled.')
   } finally {
     cancelling.value = false
   }
@@ -1220,408 +1339,317 @@ async function copyShareLink() {
 }
 const exportReason = computed(() => (filtered.value.length ? '' : hasAnyBookings.value ? 'Nothing to export in this view. Pick another tab or clear the filters.' : 'No bookings yet, so there is nothing to export.'))
 const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every upcoming confirmed booking is already on your calendar.'))
+const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealEmail(booking.guest_email) ? booking.guest_email : 'No phone or email')
 </script>
 
 <template>
-  <section class="bookings-page" :class="{ 'is-creating': newOpen, 'has-detail': selected }">
-    <div class="page-header">
-      <div>
-        <h1>Bookings</h1>
-        <p class="lede">Your week, at a glance.</p>
-      </div>
-      <div class="page-header-actions">
-        <span class="booking-header-action"><GmButton variant="secondary" :disabled-reason="state.profile?.public_link_url ? '' : 'Create your booking link in Settings first.'" @click="copyShareLink"><template #leading><AppIcon name="link" :size="16" /></template>Share link</GmButton></span>
-        <span class="booking-header-action"><GmButton variant="secondary" :disabled-reason="exportReason" @click="exportCsv">Export CSV</GmButton></span>
-        <span class="booking-header-action booking-header-action--primary"><GmButton variant="primary" :disabled-reason="demoHint" @click="openNew"><template #leading><AppIcon name="plus" :size="16" /></template>New booking</GmButton></span>
-      </div>
-    </div>
+  <section class="bookings-page" :class="{ 'is-creating': newOpen, 'has-detail': selected && !compactDetail }">
+    <template v-if="!newOpen">
+      <header class="page-header">
+        <div>
+          <h1>Bookings</h1>
+          <p class="lede">{{ view === 'week' ? `Week of ${weekRange}` : 'Every appointment as a list' }}</p>
+        </div>
+        <div class="page-header-actions">
+          <div class="calendar-status">
+            <button class="chip-button" :class="{ connected: calendarConnected }" type="button" :aria-expanded="calendarOpen" aria-controls="calendar-panel" @click="calendarOpen = !calendarOpen">
+              <span class="calendar-dot" aria-hidden="true" />{{ calendarChip }}
+            </button>
+          </div>
+          <details class="menu" data-menu>
+            <summary class="secondary">More<AppIcon class="chevron-down" name="chevron" :size="14" /></summary>
+            <div class="menu-panel">
+              <GmButton variant="ghost" size="sm" :disabled-reason="state.profile?.public_link_url ? '' : 'Create your booking link in Settings first.'" @click="copyShareLink"><template #leading><AppIcon name="link" :size="16" /></template>Copy booking link</GmButton>
+              <GmButton variant="ghost" size="sm" :disabled-reason="exportReason" @click="exportCsv"><template #leading><AppIcon name="download" :size="16" /></template>Export this list (CSV)</GmButton>
+            </div>
+          </details>
+          <GmButton variant="primary" :disabled-reason="demoHint" @click="openNew"><template #leading><AppIcon name="plus" :size="16" /></template>New booking</GmButton>
+        </div>
+      </header>
 
-    <p v-if="isDemo" class="muted demo-note">{{ demoHint }} You can still open message links, which only prepare text in your own apps.</p>
-    <div v-if="error && !selected" class="notice error" role="alert">{{ error }}</div>
-
-    <div class="card calendar-panel" :class="{ 'is-connected': calendarConnected }">
-      <div class="calendar-copy">
-        <strong>
-          <span class="calendar-heading">
-            <span class="calendar-title"><AppIcon name="calendar" :size="18" /> Google Calendar</span>
-            <GmHint text="Optional. Add a booking to Google Calendar when you choose. Later moves and cancellations update its linked event. Goalmatic may request approval according to your workspace policy. Clients are never invited." label="About Google Calendar" />
-          </span>
-          <span class="chip dot" :class="calendarConnected ? 'confirmed' : 'neutral'">{{ calendarConnected ? 'Connected' : calendar.state === 'loading' ? 'Checking' : 'Not connected' }}</span>
-        </strong>
-        <p v-if="calendarHint" class="muted">{{ calendarHint }}</p>
-        <p v-else-if="calendarConnected" class="muted">Add bookings to Google Calendar when you choose. Linked events follow moves and cancellations. Clients are never invited.</p>
-      </div>
-      <div class="calendar-actions">
-        <button v-if="calendar.state === 'not-connected'" class="primary small-button" type="button" :disabled="calendarBusy" @click="connectCalendar">{{ calendarBusy ? 'Connecting…' : 'Connect Google Calendar' }}</button>
-        <button v-if="calendar.state === 'error'" class="secondary small-button" type="button" @click="loadCalendarStatus">Check again</button>
-        <GmButton
-          v-if="calendarConnected"
-          variant="secondary"
-          size="sm"
-          :disabled="calendarBusy"
-          :disabled-reason="calendarBusy ? '' : addAllReason"
-          @click="addAllToCalendar"
-        >{{ calendarBusy ? 'Working…' : `Add all upcoming (${needsCalendar.length})` }}</GmButton>
-      </div>
-      <p v-if="calendarNotice" class="calendar-line" role="status">{{ calendarNotice }}</p>
-      <p v-if="calendarError" class="calendar-line error-text" role="alert">{{ calendarError }}</p>
-      <p v-if="conflictNote" class="calendar-line muted">{{ conflictNote }}</p>
+      <section v-if="calendarOpen" id="calendar-panel" class="calendar-panel" aria-label="Google Calendar">
+        <p>{{ calendarHint }}</p>
+        <div class="cluster">
+          <button v-if="calendar.state === 'not-connected'" class="primary small" type="button" :disabled="calendarBusy" @click="connectCalendar">{{ calendarBusy ? 'Connecting…' : 'Connect Google Calendar' }}</button>
+          <button v-if="calendar.state === 'error'" class="secondary small" type="button" @click="loadCalendarStatus">Check again</button>
+          <GmButton v-if="calendarConnected" variant="secondary" size="sm" :disabled="calendarBusy" :disabled-reason="calendarBusy ? '' : addAllReason" @click="addAllToCalendar">{{ calendarBusy ? 'Working…' : `Add all upcoming (${needsCalendar.length})` }}</GmButton>
+          <GmHint text="Optional. Goalmatic may ask for approval according to your workspace policy. Clients are never invited." label="About Google Calendar" />
+        </div>
+      </section>
+      <p v-if="calendarNotice" class="notice success" role="status">{{ calendarNotice }}</p>
+      <p v-if="calendarError" class="notice error" role="alert">{{ calendarError }}</p>
+      <p v-if="conflictNote" class="notice warning" role="status">{{ conflictNote }}</p>
       <ul v-if="bulkOutcomes.length" class="calendar-outcomes">
         <li v-for="outcome in bulkOutcomes" :key="outcome.id" :class="{ 'error-text': !outcome.ok }">{{ bulkLabel(outcome) }}: {{ outcome.ok ? (outcome.skipped ? 'already on calendar' : 'added') : outcome.message }}</li>
       </ul>
-    </div>
+      <p v-if="isDemo" class="demo-note">{{ demoHint }} Message links still open, because they only prepare text in your own apps.</p>
+      <div v-if="error && !selected" class="notice error" role="alert">{{ error }}</div>
 
-    <div data-tour="tour-bookings-list">
-    <div class="filter-bar">
-      <label class="search-field booking-search">
-        <AppIcon name="search" :size="17" /><span class="visually-hidden">Search bookings</span>
-        <input v-model="query" type="search" placeholder="Search bookings" />
-      </label>
-      <div class="field">
-        <label for="filter-service">Service</label>
-        <GmSelect id="filter-service" v-model="serviceFilter" class="input" :options="serviceFilterOptions" label="Filter by service" />
-      </div>
-      <div v-if="team" class="field">
-        <label for="filter-staff">Team member</label>
-        <GmSelect id="filter-staff" v-model="staffFilter" class="input" :options="staffFilterOptions" label="Filter by team member" />
-      </div>
-      <div class="field">
-        <label for="filter-from">From</label>
-        <GmDatePicker id="filter-from" v-model="fromDate" class="input" label="Filter from date" :max="toDate" />
-      </div>
-      <div class="field">
-        <label for="filter-to">To</label>
-        <GmDatePicker id="filter-to" v-model="toDate" class="input" label="Filter to date" :min="fromDate" />
-      </div>
-      <button v-if="hasFilters" class="ghost small-button" type="button" @click="clearFilters">Clear filters</button>
-      <div class="filter-tail">
-        <GmButton
-          v-if="team && view === 'agenda' && !selecting"
-          variant="secondary"
-          size="sm"
-          :disabled-reason="isDemo ? demoHint : !groups.length ? 'No bookings in this view to select.' : ''"
-          @click="startSelecting"
-        >Select bookings</GmButton>
-        <div class="segmented filter-view" role="group" aria-label="View">
-          <button type="button" :class="{ 'is-active': view === 'agenda' }" :aria-pressed="view === 'agenda'" @click="view = 'agenda'">Agenda</button>
-          <button type="button" :class="{ 'is-active': view === 'week' }" :aria-pressed="view === 'week'" @click="view = 'week'">Week</button>
+      <div data-tour="tour-bookings-list">
+        <div class="toolbar booking-toolbar">
+          <div class="segmented" role="group" aria-label="View">
+            <button type="button" :aria-pressed="view === 'week'" @click="view = 'week'"><AppIcon name="calendar" :size="16" />Week</button>
+            <button type="button" :aria-pressed="view === 'agenda'" @click="view = 'agenda'"><AppIcon name="bookings" :size="16" />List</button>
+          </div>
+          <!-- Phones: search and filters sit behind one button so the calendar starts on the first screen. -->
+          <button v-if="phoneGrid" class="secondary filters-toggle" type="button" :aria-expanded="filtersOpen" aria-controls="booking-filters" @click="filtersOpen = !filtersOpen">
+            <AppIcon name="search" :size="16" />Search and filters<span v-if="activeFilterCount" class="count-pill" :aria-label="`${activeFilterCount} active`">{{ activeFilterCount }}</span>
+          </button>
+          <div v-show="!phoneGrid || filtersOpen" id="booking-filters" class="booking-filters">
+            <label class="search-field">
+              <AppIcon name="search" :size="17" /><span class="visually-hidden">Search bookings</span>
+              <input v-model="query" type="search" placeholder="Client, service or reference" />
+            </label>
+            <div class="field">
+              <label for="filter-service" class="visually-hidden">Service</label>
+              <GmSelect id="filter-service" v-model="serviceFilter" class="input" :options="serviceFilterOptions" label="Filter by service" />
+            </div>
+            <div v-if="team" class="field">
+              <label for="filter-staff" class="visually-hidden">Team member</label>
+              <GmSelect id="filter-staff" v-model="staffFilter" class="input" :options="staffFilterOptions" label="Filter by team member" />
+            </div>
+            <template v-if="view === 'agenda'">
+              <div class="field date-field">
+                <label for="filter-from">From</label>
+                <GmDatePicker id="filter-from" v-model="fromDate" class="input" label="From date" :max="toDate" />
+              </div>
+              <div class="field date-field">
+                <label for="filter-to">To</label>
+                <GmDatePicker id="filter-to" v-model="toDate" class="input" label="To date" :min="fromDate" />
+              </div>
+            </template>
+            <button v-if="hasFilters" class="ghost small" type="button" @click="clearFilters">Clear filters</button>
+          </div>
         </div>
-      </div>
-    </div>
-    <p v-if="emailFilter" class="email-filter">Showing history for <strong>{{ emailFilter }}</strong><button class="ghost small-button" type="button" @click="clearEmail">Show everyone</button></p>
+        <p v-if="emailFilter" class="filter-line">Showing history for <strong>{{ emailFilterLabel }}</strong><button class="ghost small" type="button" @click="clearEmail">Show everyone</button></p>
 
-    <div class="tab-bar" role="tablist" aria-label="Booking status">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        role="tab"
-        :aria-selected="activeTab === tab.id"
-        :class="{ 'is-active': activeTab === tab.id }"
-        @click="activeTab = tab.id"
-      ><span>{{ tab.label }}</span><span class="count-pill">{{ tab.count }}</span></button>
-    </div>
-    <p class="tab-help muted">{{ TAB_HELP[activeTab] }} <GmHint :text="STATUS_HELP" label="What the statuses mean" /></p>
+        <!-- Week: time drawn to scale, overlaps side by side -->
+        <div v-if="view === 'week'" class="panel week-panel">
+          <div class="week-nav">
+            <button class="icon-button" type="button" aria-label="Previous week" @click="weekOffset -= 1"><AppIcon name="arrow-left" :size="16" /></button>
+            <button class="icon-button" type="button" aria-label="Next week" @click="weekOffset += 1"><AppIcon name="chevron" :size="16" /></button>
+            <strong class="tnum">{{ weekRange }}</strong>
+            <button v-if="weekOffset !== 0" class="ghost small" type="button" @click="weekOffset = 0">This week</button>
+            <span class="week-meta">{{ calendarItems.length }} {{ calendarItems.length === 1 ? 'appointment' : 'appointments' }}</span>
+            <label class="inline-check week-toggle"><input v-model="showCancelled" type="checkbox" />Show cancelled</label>
+          </div>
+          <div v-if="phoneGrid" class="day-strip" role="group" aria-label="Day">
+            <button v-for="day in weekDays" :key="`strip-${day.key}`" type="button" :class="{ today: day.today }" :aria-pressed="focusDay === day.index" :aria-label="`${day.full}, ${day.items.length} ${day.items.length === 1 ? 'appointment' : 'appointments'}`" @click="focusDay = day.index">
+              <small>{{ day.weekday }}</small><b class="tnum">{{ day.day }}</b><i v-if="day.items.length" aria-hidden="true" />
+            </button>
+          </div>
+          <ul v-if="team" class="week-legend" aria-label="Who is who">
+            <li v-for="member in members" :key="member.id"><i class="legend-stem" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ staffLabel(member) }}</li>
+          </ul>
+          <div class="calendar-scroll">
+            <div class="calendar-week" :style="{ '--calendar-height': `${calendarHeight}px`, '--days': shownDays.length }">
+              <div class="calendar-corner" aria-hidden="true" />
+              <div v-for="day in shownDays" :key="`head-${day.key}`" class="calendar-day-head" :class="{ today: day.today, past: day.past }">
+                <span>{{ day.weekday }}</span><b class="tnum">{{ day.day }}</b><small v-if="day.today">Today</small>
+              </div>
+              <div class="calendar-time-axis" :style="{ height: `${calendarHeight}px` }" aria-hidden="true">
+                <span v-for="hour in calendarHours" :key="hour" :style="{ top: `${yOf(hour * 60)}px` }">{{ hourLabel(hour) }}</span>
+              </div>
+              <div v-for="day in shownDays" :key="day.key" class="calendar-day-column" :class="{ today: day.today }" role="group" :aria-label="day.full" :style="{ height: `${calendarHeight}px` }">
+                <i v-for="hour in calendarHours.slice(1)" :key="hour" class="calendar-grid-line" :style="{ top: `${yOf(hour * 60)}px` }" aria-hidden="true" />
+                <RouterLink
+                  v-if="day.off.length"
+                  to="/availability"
+                  class="calendar-time-off"
+                  :aria-label="`${day.off.length} time off ${day.off.length === 1 ? 'block' : 'blocks'} on ${day.full}. Manage in Availability.`"
+                >Time off</RouterLink>
+                <button
+                  v-for="entry in placedFor(day)"
+                  :key="entry.item.id"
+                  type="button"
+                  class="slot calendar-booking"
+                  :class="[slotClasses(entry.item), `is-${spanSize(entry.end - entry.start)}`]"
+                  :style="slotStyle(entry)"
+                  :aria-label="`${time(entry.item)} to ${endTime(entry.item)}, ${entry.item.guest_name}, ${displayName(entry.item.service_name)}${team ? ', with ' + staffName(entry.item) : ''}, ${statusLabel(entry.item.status)}`"
+                  @click="openDetail(entry.item)"
+                ><span class="tnum">{{ time(entry.item) }}</span><strong>{{ entry.item.guest_name }}</strong><small>{{ displayName(entry.item.service_name) }}</small><small v-if="team" class="week-staff">{{ memberFirstName(memberFor(entry.item)) }}</small></button>
+                <div v-if="day.today && nowLine !== null" class="calendar-now" :style="{ top: `${nowLine}px` }" aria-hidden="true" />
+              </div>
+            </div>
+          </div>
+          <p v-if="!calendarItems.length" class="week-empty">{{ hasFilters ? 'No appointments match your filters this week.' : 'No appointments this week.' }} <button v-if="hasFilters" class="link-button" type="button" @click="clearFilters">Clear filters</button></p>
+          <footer class="week-foot"><span>Times in {{ scheduleZone }}</span><span class="legend-shapes"><span class="status completed">Came</span><span class="status no_show">No-show</span><span class="status cancelled">Cancelled</span></span></footer>
+        </div>
 
-    <div v-if="team && selecting && view === 'agenda'" class="card bulk-bar" role="region" aria-label="Assign selected bookings">
-      <div class="bulk-top">
-        <strong class="tnum">{{ pickedBookings.length }} selected</strong>
-        <button class="ghost small-button" type="button" :disabled="!filtered.length" @click="toggleAllPicked">{{ allPicked ? 'Clear selection' : `Select all ${filtered.length} shown` }}</button>
-        <button class="ghost small-button bulk-done" type="button" :disabled="bulkBusy" @click="stopSelecting">Done</button>
+        <!-- List: the front-desk ledger -->
+        <template v-else>
+          <div class="tab-bar" role="group" aria-label="Show">
+            <button
+              v-for="tab in tabs"
+              :key="tab.id"
+              type="button"
+              :aria-pressed="activeTab === tab.id"
+              @click="activeTab = tab.id"
+            >{{ tab.label }}<span class="count-pill">{{ tab.count }}</span></button>
+          </div>
+          <p class="tab-help">{{ TAB_HELP[activeTab] }} <GmHint :text="STATUS_HELP" label="What the statuses mean" /></p>
+
+          <div v-if="team" class="select-row">
+            <GmButton
+              v-if="!selecting"
+              variant="secondary"
+              size="sm"
+              :disabled-reason="isDemo ? demoHint : !groups.length ? 'No bookings in this view to select.' : ''"
+              @click="startSelecting"
+            >Assign several to someone</GmButton>
+          </div>
+          <div v-if="team && selecting" class="bulk-bar" role="region" aria-label="Assign selected bookings">
+            <div class="bulk-top">
+              <strong class="tnum">{{ pickedBookings.length }} selected</strong>
+              <button class="ghost small" type="button" :disabled="!filtered.length" @click="toggleAllPicked">{{ allPicked ? 'Clear selection' : `Select all ${filtered.length} shown` }}</button>
+              <button class="ghost small bulk-done" type="button" :disabled="bulkBusy" @click="stopSelecting">Done</button>
+            </div>
+            <div class="bulk-controls">
+              <div class="field">
+                <label for="bulk-to">Assign to <GmHint text="Confirmed bookings move onto that person's own calendar, and each one is refused if they are busy or on time off then. Finished and cancelled bookings only change who is recorded. Clients are not messaged." label="About assigning" /></label>
+                <GmSelect id="bulk-to" v-model="bulkTo" class="input" :options="bulkMemberOptions" label="Assign selected bookings to" />
+              </div>
+              <GmConfirm
+                v-model:open="bulkConfirmOpen"
+                :title="`Assign ${pickedBookings.length} booking${pickedBookings.length === 1 ? '' : 's'} to ${bulkMember ? toWho(bulkMember) : 'them'}?`"
+                :message="`Confirmed bookings move onto ${bulkMember ? whoseCalendar(bulkMember) : 'their calendar'}. Any that clash with ${bulkMember && !isOwnerMember(bulkMember) ? memberFirstName(bulkMember) + '\'s' : 'your'} bookings or time off are refused one by one and left where they are. Nothing is sent to clients.`"
+                confirm-label="Assign"
+                cancel-label="Cancel"
+                :busy="bulkBusy"
+                @confirm="runBulk"
+              >
+                <GmButton variant="primary" :pending="bulkBusy" pending-label="Assigning…" :disabled-reason="bulkReason" @click="bulkConfirmOpen = true">Assign selected</GmButton>
+              </GmConfirm>
+            </div>
+            <div v-if="bulkResult" class="bulk-result" role="status">
+              <p><strong>{{ bulkResult.moved }} of {{ bulkResult.total }} moved</strong> to {{ whoseCalendar(bulkResult.member) }}<template v-if="bulkResult.refused.length">, {{ bulkResult.refused.length }} refused</template>.</p>
+              <ul v-if="bulkResult.refused.length" class="refused">
+                <li v-for="item in bulkResult.refused" :key="item.booking.id"><strong>{{ refusedLabel(item) }}</strong>: {{ item.reason }}</li>
+              </ul>
+              <p v-if="bulkResult.refused.length" class="muted">Refused bookings stay ticked and where they were. Choose someone else, or move them one by one.</p>
+              <button class="ghost small" type="button" @click="bulkResult = null">Dismiss</button>
+            </div>
+          </div>
+
+          <div v-if="groups.length" class="agenda">
+            <section v-for="group in groups" :key="group.key" class="day-group" :aria-labelledby="`day-${group.key}`">
+              <h2 :id="`day-${group.key}`" class="day-heading" :class="{ today: group.today }">{{ group.label }}<span v-if="group.today" class="chip now">Today</span><small class="tnum">{{ group.items.length }}</small></h2>
+              <ul class="ledger">
+                <li v-for="booking in group.items" :key="booking.id" class="agenda-row" :class="{ selecting, 'is-picked': isPicked(booking.id), 'is-cancelled': isCancelled(booking) }">
+                  <label v-if="selecting" class="pick-box">
+                    <input type="checkbox" :checked="isPicked(booking.id)" :aria-label="`Select ${booking.guest_name}, ${booking.service_name}, ${when(booking)}`" @change="togglePick(booking.id)" />
+                  </label>
+                  <button type="button" class="agenda-open" @click="openDetail(booking)">
+                    <span class="agenda-time tnum"><b>{{ time(booking) }}</b><small>{{ duration(booking) }} min</small></span>
+                    <span class="agenda-stem" :style="team ? { background: staffColor(booking) } : undefined" aria-hidden="true" />
+                    <span class="agenda-main">
+                      <h3>{{ booking.guest_name }}</h3>
+                      <span class="agenda-meta">{{ displayName(booking.service_name) }}<template v-if="team"> with {{ staffName(booking) }}</template></span>
+                      <span class="agenda-contact">{{ contactLine(booking) }}</span>
+                    </span>
+                    <span class="agenda-flags">
+                      <span class="status" :class="booking.status">{{ statusLabel(booking.status) }}</span>
+                      <span v-if="isSeries(booking)" class="chip neutral">Weekly</span>
+                      <span v-if="calendarNeedsSync(booking)" class="chip warning">Calendar needs update</span>
+                      <span v-if="conflictTitles(booking).length" class="chip warning">Calendar clash</span>
+                    </span>
+                  </button>
+                  <span v-if="needsOutcome(booking)" class="agenda-actions">
+                    <span class="agenda-question">Did they come?</span>
+                    <button class="secondary small" type="button" :disabled="actionBusy || isDemo" :title="isDemo ? demoHint : undefined" @click="changeStatus(booking, 'completed')">Came</button>
+                    <button class="secondary small" type="button" :disabled="actionBusy || isDemo" :title="isDemo ? demoHint : undefined" @click="changeStatus(booking, 'no_show')">No-show</button>
+                  </span>
+                </li>
+              </ul>
+            </section>
+          </div>
+
+          <div v-else class="empty">
+            <span class="empty-icon"><AppIcon name="bookings" /></span>
+            <h2>{{ hasFilters ? 'No bookings match your filters' : !hasAnyBookings ? 'No bookings yet' : `No ${tabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || activeTab} bookings` }}</h2>
+            <p v-if="hasFilters">Try a client name, phone, service, reference, or a wider date range.</p>
+            <p v-else-if="!hasAnyBookings">{{ setup.hasLink ? 'Share your booking link and bookings appear here as soon as a guest books. You can also add a walk-in or phone booking yourself.' : `Guests book through your booking link, which is ready once setup is done. Next: ${(setup.nextStep?.label || 'finish setup').toLowerCase()}. You can also add a booking yourself.` }}</p>
+            <p v-else>Nothing here right now. Other tabs may have bookings.</p>
+            <div class="empty-actions">
+              <GmButton v-if="hasFilters" variant="secondary" @click="clearFilters">Clear filters</GmButton>
+              <template v-else-if="!hasAnyBookings">
+                <GmButton v-if="setup.hasLink" variant="primary" @click="copyShareLink">Copy your booking link</GmButton>
+                <RouterLink v-else class="primary" :to="setup.nextStep?.to || '/settings'">{{ setup.nextStep?.label || 'Finish setup' }}</RouterLink>
+                <GmButton variant="secondary" :disabled-reason="demoHint" @click="openNew">New booking</GmButton>
+              </template>
+              <GmButton v-else-if="activeTab !== 'all'" variant="secondary" @click="activeTab = 'all'">Show all bookings</GmButton>
+            </div>
+          </div>
+        </template>
       </div>
-      <div class="bulk-controls">
-        <div class="field">
-          <label for="bulk-to">Assign to <GmHint text="Confirmed bookings move onto that person's own calendar, and each one is refused if they are busy or on time off then. Completed, no-show and cancelled bookings only change who is recorded. Clients are not messaged." label="About assigning" /></label>
-          <GmSelect id="bulk-to" v-model="bulkTo" class="input" :options="bulkMemberOptions" label="Assign selected bookings to" />
+    </template>
+
+    <!-- Booking detail: side panel above 1200px, modal panel with a scrim below, bottom sheet on phones -->
+    <button v-if="selected && compactDetail" class="detail-scrim" type="button" aria-label="Close booking details" tabindex="-1" @click="requestClose"></button>
+    <aside v-if="selected" class="booking-detail" :role="compactDetail ? 'dialog' : 'region'" :aria-modal="compactDetail ? 'true' : undefined" aria-labelledby="booking-detail-title" @keydown="detailKeydown">
+      <header class="detail-head">
+        <div class="detail-title">
+          <h2 id="booking-detail-title" tabindex="-1">{{ selected.guest_name }}</h2>
+          <p>{{ displayName(selected.service_name) }}<template v-if="team"> with {{ staffName(selected) }}</template></p>
         </div>
         <GmConfirm
-          v-model:open="bulkConfirmOpen"
-          :title="`Assign ${pickedBookings.length} booking${pickedBookings.length === 1 ? '' : 's'} to ${bulkMember ? toWho(bulkMember) : 'them'}?`"
-          :message="`Confirmed bookings move onto ${bulkMember ? whoseCalendar(bulkMember) : 'their calendar'}. Any that clash with ${bulkMember && !isOwnerMember(bulkMember) ? memberFirstName(bulkMember) + '\'s' : 'your'} bookings or time off are refused one by one and left where they are. Nothing is sent to clients.`"
-          confirm-label="Assign"
-          cancel-label="Cancel"
-          :busy="bulkBusy"
-          @confirm="runBulk"
+          v-model:open="discardOpen"
+          title="Discard unsaved changes?"
+          :message="discardMessage"
+          confirm-label="Discard and close"
+          cancel-label="Keep editing"
+          tone="danger"
+          placement="bottom"
+          @confirm="discardDialog"
+          @cancel="keepEditing"
         >
-          <GmButton variant="primary" :pending="bulkBusy" pending-label="Assigning…" :disabled-reason="bulkReason" @click="bulkConfirmOpen = true">Assign selected</GmButton>
+          <button class="icon-button" type="button" aria-label="Close booking details" @click="requestClose"><AppIcon name="close" /></button>
         </GmConfirm>
-      </div>
-      <div v-if="bulkResult" class="bulk-result" role="status">
-        <p><strong>{{ bulkResult.moved }} of {{ bulkResult.total }} moved</strong> to {{ whoseCalendar(bulkResult.member) }}<template v-if="bulkResult.refused.length">, {{ bulkResult.refused.length }} refused</template>.</p>
-        <ul v-if="bulkResult.refused.length" class="refused">
-          <li v-for="item in bulkResult.refused" :key="item.booking.id"><strong>{{ refusedLabel(item) }}</strong>: {{ item.reason }}</li>
-        </ul>
-        <p v-if="bulkResult.refused.length" class="muted">Refused bookings stay ticked and where they were. Choose someone else above, or move them one by one.</p>
-        <button class="ghost small-button" type="button" @click="bulkResult = null">Dismiss</button>
-      </div>
-    </div>
+      </header>
 
-    <div v-if="view === 'week'" class="week owner-calendar">
-      <div class="week-nav">
-        <button class="secondary small-button today-button" type="button" :disabled="weekOffset === 0" @click="weekOffset = 0">Today</button>
-        <button class="secondary icon-button" type="button" aria-label="Previous week" @click="weekOffset -= 1"><AppIcon name="arrow-left" :size="16" /></button>
-        <button class="secondary icon-button" type="button" aria-label="Next week" @click="weekOffset += 1"><AppIcon name="chevron" :size="16" /></button>
-        <strong>{{ weekRange }}</strong>
-        <span class="muted">{{ scheduleZone }}</span>
-      </div>
-      <ul v-if="team" class="week-legend" aria-label="Team colours">
-        <li v-for="member in members" :key="member.id"><i class="staff-dot" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ staffLabel(member) }}</li>
-        <li class="legend-off"><i class="legend-swatch" aria-hidden="true" />Time off</li>
-      </ul>
-      <div class="calendar-scroll">
-        <div class="calendar-week" :style="{ '--calendar-height': `${calendarHeight}px` }">
-          <div class="calendar-corner"><span>{{ scheduleZone }}</span></div>
-          <header v-for="day in weekDays" :key="`head-${day.key}`" class="calendar-day-head" :class="{ today: day.today }">
-            <span>{{ day.weekday }}</span><strong>{{ day.label }}</strong>
-          </header>
-          <div class="calendar-time-axis" :style="{ height: `${calendarHeight}px` }">
-            <span v-for="hour in calendarHours" :key="hour" :style="{ top: `${(hour - calendarStartHour) * 64}px` }">{{ hourLabel(hour) }}</span>
-          </div>
-          <div v-for="day in weekDays" :key="day.key" class="calendar-day-column" :class="{ today: day.today }" :style="{ height: `${calendarHeight}px` }">
-            <i v-for="hour in calendarHours.slice(1)" :key="hour" class="calendar-grid-line" :style="{ top: `${(hour - calendarStartHour) * 64}px` }" aria-hidden="true"></i>
-            <RouterLink
-              v-if="day.off.length"
-              to="/availability"
-              class="calendar-time-off"
-              :title="`${day.off.length} time-off block${day.off.length === 1 ? '' : 's'}. Manage in Availability.`"
-            >Time off</RouterLink>
-            <button
-              v-for="booking in day.items"
-              :key="booking.id"
-              type="button"
-              class="calendar-booking"
-              :class="[booking.status, { selected: selected?.id === booking.id, 'has-staff': team }]"
-              :style="calendarItemStyle(booking)"
-              :title="`${booking.service_name} · ${booking.guest_name}${team ? ' · with ' + staffName(booking) : ''} · ${zoneLabel(booking)}`"
-              @click="openDetail(booking)"
-            ><span class="tnum">{{ time(booking) }}–{{ new Date(booking.ends_at).toLocaleTimeString(undefined, displayTimeOptions({ hour: 'numeric', minute: '2-digit' }, booking)) }}</span><strong>{{ booking.guest_name }}</strong><small>{{ displayName(booking.service_name) }}</small><small v-if="team" class="week-staff">{{ memberFirstName(memberFor(booking)) }}</small></button>
+      <div class="detail-body">
+        <div class="detail-summary" :class="{ cancelled: isCancelled(selected) }">
+          <p class="detail-when tnum"><strong>{{ when(selected) }}</strong> to {{ endTime(selected) }}</p>
+          <p class="detail-sub">{{ duration(selected) }} minutes, {{ zoneLabel(selected) }}</p>
+          <p class="detail-status"><span class="status" :class="selected.status">{{ statusLabel(selected.status) }}</span><span v-if="selected.source === 'owner'" class="chip neutral">Added by you</span><span v-if="isSeries(selected)" class="chip neutral">Repeats weekly</span><span class="detail-ref mono">{{ selected.reference }}</span></p>
+        </div>
+
+        <div v-if="error" class="notice error" role="alert"><AppIcon name="alert" :size="18" /><span>{{ error }}</span></div>
+        <div v-if="detailNotice" class="notice success" role="status"><AppIcon name="check" :size="18" /><span>{{ detailNotice }}</span></div>
+
+        <!-- The decision at the desk -->
+        <div v-if="canMove(selected) && hasStarted(selected) && !rescheduling" class="outcome" role="group" aria-labelledby="outcome-q">
+          <p id="outcome-q">{{ isDone(selected) ? `Recorded as ${statusLabel(selected.status).toLowerCase()}.` : 'Did they come?' }}</p>
+          <div class="cluster">
+            <GmButton v-if="selected.status !== 'completed'" :variant="isDone(selected) ? 'secondary' : 'primary'" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'completed')">Came</GmButton>
+            <GmButton v-if="selected.status !== 'no_show'" variant="secondary" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'no_show')">No-show</GmButton>
+            <GmButton v-if="isDone(selected)" variant="ghost" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'confirmed')">Undo</GmButton>
           </div>
         </div>
-      </div>
-      <footer class="calendar-footer"><span>{{ calendarItems.length }} booking{{ calendarItems.length === 1 ? '' : 's' }} this week</span><span v-if="calendarConnected" class="calendar-connected"><i />Calendar connected</span></footer>
-    </div>
-
-    <div v-else-if="groups.length" class="booking-list">
-      <section v-for="group in groups" :key="group.key" class="day-group">
-        <h3 class="day-heading">{{ group.label }}<small>{{ group.items.length }}</small></h3>
-        <div v-for="booking in group.items" :key="booking.id" class="booking-row" :class="{ selecting }">
-        <label v-if="selecting" class="pick-box" :title="`Select ${booking.guest_name}, ${when(booking)}`">
-          <input type="checkbox" :checked="picked.includes(booking.id)" :aria-label="`Select ${booking.guest_name}, ${booking.service_name}, ${when(booking)}`" @change="togglePick(booking.id)" />
-        </label>
-        <article class="card booking-card" :class="{ 'is-cancelled': isCancelled(booking), 'is-picked': picked.includes(booking.id) }">
-          <div class="date-tile"><small>{{ dateParts(booking).weekday }}</small><strong>{{ dateParts(booking).day }}</strong><span>{{ dateParts(booking).month }}</span></div>
-          <div class="booking-main">
-            <div class="booking-title">
-              <h2>{{ booking.service_name }}</h2>
-              <span class="chip" :class="booking.status">{{ statusLabel(booking.status) }}</span>
-              <span v-if="team" class="chip staff-chip" :title="`With ${staffName(booking)}`"><i class="staff-dot" :style="{ background: staffColor(booking) }" aria-hidden="true" />{{ staffName(booking) }}</span>
-              <span v-if="booking.source === 'owner'" class="chip accent">Added by you</span>
-              <span v-if="isSeries(booking)" class="chip accent">Repeats weekly</span>
-              <span v-if="calendarNeedsSync(booking)" class="chip warning">Calendar needs updating</span>
-              <span v-else-if="onCalendar(booking) && !isCancelled(booking)" class="chip success">Linked to Calendar</span>
-              <template v-if="conflictTitles(booking).length">
-                <span class="chip warning">Clashes with calendar</span>
-                <GmHint :text="`This booking overlaps another event on your Google Calendar: ${conflictTitles(booking).join(', ')}. Check it, or move one of them.`" label="About the calendar clash" />
-              </template>
-            </div>
-            <p>
-              <AppIcon name="clock" :size="16" /><span class="tnum">{{ time(booking) }} · {{ duration(booking) }} min · {{ zoneLabel(booking) }}</span>
-            </p>
-            <div class="guest-line">
-              <span class="guest-avatar">{{ String(booking.guest_name || '?').slice(0, 1).toUpperCase() }}</span>
-              <span><strong>{{ booking.guest_name }}</strong><small>{{ emailText(booking) }}<template v-if="booking.guest_phone"> · {{ booking.guest_phone }}</template></small></span>
-            </div>
-          </div>
-          <div class="booking-end">
-            <small class="ref">{{ booking.reference }}</small>
-            <span v-if="booking.status === 'confirmed' && hasStarted(booking)" class="quick-actions">
-              <span class="quick-label">Did it happen?</span>
-              <GmHint wrap :text="isDemo ? demoHint : 'Use when the appointment took place. You can undo this.'" v-slot="{ describedby }">
-                <button class="secondary small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'completed')">Mark completed</button>
-              </GmHint>
-              <GmHint wrap :text="isDemo ? demoHint : 'Use when the client did not turn up. You can undo this.'" v-slot="{ describedby }">
-                <button class="secondary small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'no_show')">Mark no-show</button>
-              </GmHint>
-            </span>
-            <span v-else-if="isDone(booking)" class="quick-actions">
-              <GmHint wrap :text="isDemo ? demoHint : 'Puts this booking back to confirmed.'" v-slot="{ describedby }">
-                <button class="ghost small-button" type="button" :disabled="actionBusy" :aria-disabled="isDemo || undefined" :aria-describedby="describedby" @click="changeStatus(booking, 'confirmed')">Undo {{ booking.status === 'no_show' ? 'no-show' : 'completed' }}</button>
-              </GmHint>
-            </span>
-            <button class="secondary small-button" type="button" @click="openDetail(booking)">View details<AppIcon name="chevron" :size="16" /></button>
-          </div>
-        </article>
+        <div v-else-if="!rescheduling && !cancelOpen && (canMove(selected) || canCancel(selected))" class="quick-row">
+          <GmButton v-if="canMove(selected)" variant="secondary" size="sm" :disabled-reason="demoHint" @click="startReschedule"><template #leading><AppIcon name="calendar" :size="16" /></template>Reschedule</GmButton>
+          <GmButton v-if="canCancel(selected)" variant="ghost" size="sm" class="cancel-trigger" :disabled-reason="demoHint" @click="askCancel">Cancel booking</GmButton>
         </div>
-      </section>
-    </div>
 
-    <div v-else class="empty">
-      <span class="empty-icon"><AppIcon name="bookings" /></span>
-      <h2>{{
-        hasFilters
-          ? 'No bookings match your filters'
-          : !hasAnyBookings
-            ? 'No bookings yet'
-            : `No ${tabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || activeTab} bookings`
-      }}</h2>
-      <p v-if="hasFilters">Try a guest name, email, service, booking reference, or a wider date range.</p>
-      <p v-else-if="!hasAnyBookings">
-        {{ setup.hasLink
-          ? 'Share your booking link and bookings will appear here as soon as a guest books a slot. You can also add a booking yourself for a walk-in or phone call.'
-          : `Guests book through your public booking link, which is ready once setup is done. Next step: ${(setup.nextStep?.label || 'finish setup').toLowerCase()}. You can also add a booking yourself.` }}
-      </p>
-      <p v-else>Nothing here right now. Other tabs may have bookings.</p>
-      <div class="empty-actions">
-        <GmButton v-if="hasFilters" variant="secondary" @click="clearFilters">Clear filters</GmButton>
-        <template v-else-if="!hasAnyBookings">
-          <GmButton v-if="setup.hasLink" variant="primary" @click="copyShareLink">Copy your booking link</GmButton>
-          <RouterLink v-else class="primary button-link" :to="setup.nextStep?.to || '/settings'">{{ setup.nextStep?.label || 'Finish setup' }}</RouterLink>
-          <GmButton variant="secondary" :disabled-reason="demoHint" @click="openNew">New booking</GmButton>
-        </template>
-        <template v-else>
-          <GmButton v-if="activeTab !== 'all'" variant="secondary" @click="activeTab = 'all'">View all bookings</GmButton>
-          <GmButton v-if="setup.hasLink" variant="secondary" @click="copyShareLink">Copy your booking link</GmButton>
-        </template>
-      </div>
-    </div>
-    </div>
-
-    <button v-if="selected" class="detail-scrim" type="button" aria-label="Close booking details" @click="requestClose"></button>
-    <aside v-if="selected" class="card booking-detail" role="dialog" :aria-modal="compactDetail ? 'true' : 'false'" aria-labelledby="booking-detail-title" @keydown="detailKeydown">
-      <template v-if="selected">
-        <div class="modal-header">
-          <div>
-            <p class="eyebrow">Booking {{ selected.reference }}</p>
-            <h2 id="booking-detail-title" tabindex="-1">{{ selected.service_name }}</h2>
+        <!-- Cancel: one confirm step with an optional private reason -->
+        <section v-if="cancelOpen && canCancel(selected)" class="cancel-box" aria-labelledby="cancel-title">
+          <h3 id="cancel-title">Cancel this booking?</h3>
+          <p>{{ cancelMessage }}</p>
+          <div class="field">
+            <label for="cancellation-reason">Reason <span class="optional">(optional, only you see it)</span></label>
+            <textarea id="cancellation-reason" v-model.trim="cancellationReason" maxlength="500" rows="2"></textarea>
           </div>
-          <button class="icon-button" type="button" aria-label="Close" @click="requestClose"><AppIcon name="close" /></button>
-        </div>
-        <div v-if="error" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ error }}</div>
-        <div class="detail-when">
-          <span><AppIcon name="calendar" :size="20" /></span>
-          <div>
-            <strong>{{ when(selected) }}</strong>
-            <small>{{ duration(selected) }} minutes · {{ zoneLabel(selected) }}</small>
-          </div>
-          <span class="status-cell">
-            <span class="chip" :class="selected.status">{{ statusLabel(selected.status) }}</span>
-            <GmHint :text="STATUS_HELP" label="What the statuses mean" />
-          </span>
-        </div>
-        <div v-if="detailNotice" class="notice success" role="status"><AppIcon name="check" :size="18" />{{ detailNotice }}</div>
-
-        <section v-if="team" class="panel-box staff-panel" aria-labelledby="staff-heading">
-          <h3 id="staff-heading">Team member <GmHint text="Who is doing this booking. Assigning a confirmed booking moves it onto that person's own calendar, so it is refused if they are busy or on time off at that time. Finished or cancelled bookings only change the name recorded." label="About assigning a booking" /></h3>
-          <p class="staff-now"><span class="chip staff-chip"><i class="staff-dot" :style="{ background: staffColor(selected) }" aria-hidden="true" />{{ staffName(selected) }}</span><small v-if="memberFor(selected).removed" class="muted">No longer on your team</small><small v-else-if="!isStaffActive(memberFor(selected))" class="muted">Inactive</small></p>
-          <div class="assign-row">
-            <div class="field">
-              <label for="assign-to">Assign to…</label>
-              <GmSelect id="assign-to" v-model="assignTo" :options="assignSelectOptions" label="Assign booking to" placeholder="Choose a person" :disabled="isDemo || assignBusy" />
-            </div>
-            <GmButton variant="secondary" size="sm" :pending="assignBusy" pending-label="Assigning…" :disabled-reason="assignReason" @click="assignSelected">Assign</GmButton>
-          </div>
-        </section>
-
-        <section
-          v-if="canMove(selected) && hasStarted(selected) && !rescheduling"
-          class="panel-box"
-          aria-labelledby="happened-heading"
-        >
-          <h3 id="happened-heading">Did this appointment happen?</h3>
           <div class="form-actions">
-            <GmButton v-if="selected.status !== 'completed'" variant="secondary" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'completed')">Mark completed</GmButton>
-            <GmButton v-if="selected.status !== 'no_show'" variant="secondary" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'no_show')">Mark no-show</GmButton>
-            <GmButton v-if="isDone(selected)" variant="ghost" size="sm" :disabled="actionBusy" :disabled-reason="demoHint" @click="changeStatus(selected, 'confirmed')">Undo (back to confirmed)</GmButton>
-            <GmHint text="No-show means the client did not turn up. It stays in history and you can undo it." label="About no-show" />
+            <GmButton variant="danger" :pending="cancelling" pending-label="Cancelling…" :disabled-reason="demoHint" @click="cancel">Cancel booking</GmButton>
+            <GmButton variant="ghost" :disabled="cancelling" @click="cancelOpen = false">Keep booking</GmButton>
           </div>
         </section>
 
-        <p v-if="selected.source === 'owner' || isSeries(selected)" class="badge-row">
-          <span v-if="selected.source === 'owner'" class="chip accent">Added by you</span>
-          <span v-if="isSeries(selected)" class="chip accent">Repeats weekly</span>
-        </p>
-        <p v-if="conflictTitles(selected).length && isUpcoming(selected)" class="muted error-text">
-          Overlaps on your Google Calendar: {{ conflictTitles(selected).join(', ') }}.
-          <GmHint text="Your Google Calendar has another event at the same time as this booking. Check it, or reschedule one of them." label="About the calendar clash" />
-        </p>
-        <div v-if="calendarNeedsSync(selected)" class="notice warning" role="status">
-          <span>{{ selected.calendar_sync_error || 'This booking changed. Its Google Calendar event still needs updating.' }}</span>
-          <GmButton variant="secondary" :pending="calendarBusy" :disabled="isDemo" @click="retryCalendarSync">Retry Calendar update</GmButton>
-        </div>
-        <p v-else-if="onCalendar(selected)" class="muted">{{ selected.calendar_sync_status === 'synced' ? isCancelled(selected) ? 'Calendar updated: free time, with reminders disabled.' : 'Google Calendar is up to date.' : 'Linked to Google Calendar.' }}</p>
-
-        <section class="detail-section" aria-labelledby="guest-heading">
-          <h3 id="guest-heading">Guest</h3>
-          <dl class="detail-list">
-            <dt>Name</dt><dd>{{ selected.guest_name }}</dd>
-            <dt>Email</dt>
-            <dd><a v-if="hasRealEmail(selected.guest_email)" :href="`mailto:${selected.guest_email}`">{{ selected.guest_email }}</a><template v-else>No email</template></dd>
-            <dt>Phone</dt><dd>{{ selected.guest_phone || 'Not supplied' }}</dd>
-            <dt>Notes</dt><dd>{{ selected.notes || 'No notes supplied.' }}</dd>
-          </dl>
-        </section>
-        <section class="panel-box" aria-labelledby="owner-notes-label">
-          <label id="owner-notes-label" for="owner-notes">
-            <h3>Private owner notes</h3><span class="private-tag">Private — guests never see this</span>
-            <GmHint text="Only you can see this. It is stored in your own Bookins data and is never shown to the client or included in messages. Save it before you close this window." label="About private notes" />
-          </label>
-          <textarea
-            id="owner-notes"
-            v-model="notesDraft"
-            class="input"
-            maxlength="4000"
-            :disabled="isDemo || notesSaving"
-            placeholder="Add a note for yourself, such as preferences or follow-ups"
-          ></textarea>
-          <div class="form-actions">
-            <GmButton variant="secondary" size="sm" :pending="notesSaving" pending-label="Saving…" :disabled-reason="isDemo ? demoHint : !notesDirty ? 'Type a note to save it.' : ''" @click="saveNotes">Save note</GmButton>
-            <span v-if="notesDirty" class="muted unsaved" role="status">Not saved yet</span>
-          </div>
-        </section>
-
-        <section v-if="!rescheduling" class="panel-box" aria-labelledby="message-heading">
-          <h3 id="message-heading">Message client <GmHint text="Each option opens your own WhatsApp, SMS or email app with the text already written. You press send there. Bookins sends nothing and cannot tell whether you did." label="How messages work" /></h3>
-          <p class="muted">Pick a message, then open it in your own WhatsApp, SMS or email app. Bookins does not send anything.</p>
-          <div class="segmented kind-row" role="group" aria-label="Message type">
-            <button
-              v-for="kind in MESSAGE_KINDS"
-              :key="kind.id"
-              type="button"
-              :class="{ 'is-active': messageKind === kind.id }"
-              :aria-pressed="messageKind === kind.id"
-              @click="openMessage(kind.id)"
-            >{{ kind.label }}<span v-if="isSuggestedKind(kind.id)" class="suggested-dot" aria-hidden="true"></span></button>
-          </div>
-          <p v-if="composed" class="muted hint message-cue">Showing: {{ MESSAGE_KINDS.find((kind) => kind.id === messageKind)?.label }}.<template v-if="isSuggestedKind(messageKind)"> Suggested because {{ SUGGESTED_WHY[messageKind] }}.</template> Pick another type above to change it.</p>
-          <p v-else class="muted hint">Choose a message type above to preview it.</p>
-          <div v-if="composed" class="message-preview">
-            <p class="message-text" tabindex="0" aria-label="Message text">{{ composed.text }}</p>
-            <div class="form-actions">
-              <GmHint v-if="composed.whatsapp" wrap text="Opens your own WhatsApp with this message ready. You press send there." v-slot="{ describedby }">
-                <a class="secondary small-button link-button" :href="composed.whatsapp" target="_blank" rel="noopener noreferrer" :aria-describedby="describedby" @click="openedApp('WhatsApp')">Open WhatsApp</a>
-              </GmHint>
-              <GmHint v-if="composed.sms" wrap text="Opens the SMS app on this device with the message filled in. You press send there." v-slot="{ describedby }">
-                <a class="secondary small-button link-button" :href="composed.sms" :aria-describedby="describedby" @click="openedApp('SMS')">Open SMS</a>
-              </GmHint>
-              <GmHint v-if="emailUsable" wrap text="Opens your own mail app with the message filled in. You press send there." v-slot="{ describedby }">
-                <a class="secondary small-button link-button" :href="composed.email" :aria-describedby="describedby" @click="openedApp('your mail app')">Open mail app</a>
-              </GmHint>
-              <GmHint v-if="emailUsable" wrap text="Opens Gmail in your browser with this message filled in. You press send there." v-slot="{ describedby }">
-                <a class="secondary small-button link-button" :href="gmailUrl" target="_blank" rel="noopener noreferrer" :aria-describedby="describedby" @click="openedApp('Gmail')">Open Gmail</a>
-              </GmHint>
-              <button class="secondary small-button" type="button" @click="copyMessage">Copy message</button>
-            </div>
-            <p v-if="!composed.whatsapp" class="muted hint">{{ phoneProblem }}</p>
-            <p v-if="!emailUsable" class="muted hint">No email on this booking, so Open email is not available.</p>
-            <p v-if="messageNotice" class="muted" role="status">{{ messageNotice }}</p>
-          </div>
-        </section>
-
-        <form v-if="rescheduling && canMove(selected)" class="panel-box" @submit.prevent="requestMove">
-          <h3>Reschedule</h3>
-          <p class="muted">Times are in {{ zoneName(moveZone) }}. The booking keeps its {{ duration(selected) }} minute length. You will be warned if the new time is in the past or outside your weekly hours.</p>
-          <p v-if="onCalendar(selected)" class="muted">The linked Google Calendar event will move too. If Calendar cannot be updated, the booking stays saved and you can retry.</p>
-          <div v-if="rescheduleError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ rescheduleError }}</div>
+        <!-- Reschedule -->
+        <form v-if="rescheduling && canMove(selected)" class="move-box" @submit.prevent="requestMove">
+          <h3>Move to a new time</h3>
+          <p class="field-hint">Times are in {{ zoneName(moveZone) }}. The booking keeps its {{ duration(selected) }} minutes.<template v-if="onCalendar(selected)"> The linked Google Calendar event moves too.</template></p>
+          <div v-if="rescheduleError" class="notice error" role="alert"><AppIcon name="alert" :size="18" /><span>{{ rescheduleError }}</span></div>
           <div class="field-row">
             <div class="field">
               <label for="move-date">New date</label>
@@ -1632,7 +1660,7 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
               <GmTimePicker id="move-time" v-model="moveForm.time" label="New time" required />
             </div>
           </div>
-          <div class="form-actions modal-footer">
+          <div class="form-actions">
             <GmConfirm
               v-model:open="moveWarnOpen"
               title="Move this booking anyway?"
@@ -1643,95 +1671,130 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
             >
               <GmButton variant="primary" type="submit" :pending="rescheduleSaving" pending-label="Moving…" :disabled-reason="demoHint">Move booking</GmButton>
             </GmConfirm>
-            <GmButton variant="secondary" :disabled="rescheduleSaving" @click="rescheduling = false">Keep current time</GmButton>
+            <GmButton variant="ghost" :disabled="rescheduleSaving" @click="rescheduling = false">Keep current time</GmButton>
           </div>
         </form>
 
-        <div v-if="canCancel(selected) && !isDemo" class="field cancel-reason">
-          <label for="cancellation-reason">If you cancel: reason (optional, private)</label>
-          <textarea id="cancellation-reason" v-model.trim="cancellationReason" maxlength="500" placeholder="Add a private note for your records"></textarea>
-        </div>
+        <!-- Message the client: opened in the owner's own app -->
+        <section v-if="!rescheduling" class="detail-section message-box" aria-labelledby="message-heading">
+          <h3 id="message-heading">Message {{ selected.guest_name?.split(' ')[0] || 'the client' }}</h3>
+          <div class="segmented kind-row" role="group" aria-label="Message type">
+            <button
+              v-for="kind in MESSAGE_KINDS"
+              :key="kind.id"
+              type="button"
+              :aria-pressed="messageKind === kind.id"
+              @click="openMessage(kind.id)"
+            >{{ kind.label }}</button>
+          </div>
+          <template v-if="composed">
+            <p v-if="isSuggestedKind(messageKind)" class="field-hint">Suggested because {{ SUGGESTED_WHY[messageKind] }}.</p>
+            <p class="message-text" tabindex="0" aria-label="Message text">{{ composed.text }}</p>
+            <div class="form-actions">
+              <a v-if="composed.whatsapp" class="primary small" :href="composed.whatsapp" target="_blank" rel="noopener noreferrer" @click="openedApp('WhatsApp')"><AppIcon name="messages" :size="16" />Open WhatsApp</a>
+              <a v-if="composed.sms" class="secondary small" :href="composed.sms" @click="openedApp('SMS')">Open SMS</a>
+              <a v-if="emailUsable" class="secondary small" :href="composed.email" @click="openedApp('your mail app')">Open mail app</a>
+              <a v-if="emailUsable && gmailUrl" class="secondary small" :href="gmailUrl" target="_blank" rel="noopener noreferrer" @click="openedApp('Gmail')">Open Gmail</a>
+              <button class="ghost small" type="button" @click="copyMessage"><AppIcon name="copy" :size="16" />Copy</button>
+            </div>
+            <p class="field-hint">Opens in your own app with the text ready. You press send; Bookins cannot see whether it was sent.</p>
+            <p v-if="!composed.whatsapp" class="field-hint">{{ phoneProblem }}</p>
+            <p v-if="messageNotice" class="field-hint" role="status">{{ messageNotice }}</p>
+          </template>
+        </section>
 
-        <p v-if="selected.status !== 'cancelled' && !canCancel(selected)" class="muted past-note">This appointment has already happened, so it can no longer be cancelled.</p>
-        <div class="form-actions modal-footer detail-actions">
+        <section class="detail-section" aria-labelledby="guest-heading">
+          <h3 id="guest-heading">Client</h3>
+          <dl class="detail-list">
+            <dt>Phone</dt><dd>{{ selected.guest_phone || 'Not given' }}</dd>
+            <dt>Email</dt>
+            <dd><a v-if="hasRealEmail(selected.guest_email)" :href="`mailto:${selected.guest_email}`">{{ selected.guest_email }}</a><template v-else>Not given</template></dd>
+            <dt>Their note</dt><dd>{{ selected.notes || 'None' }}</dd>
+          </dl>
+          <RouterLink v-if="selected.guest_email" class="text-link" :to="{ path: '/bookings', query: { email: String(selected.guest_email).toLowerCase() } }" @click="close">See their history</RouterLink>
+        </section>
+
+        <section class="detail-section" aria-labelledby="owner-notes-label">
+          <h3 id="owner-notes-label">Private note</h3>
+          <div class="field">
+            <label for="owner-notes" class="field-hint">Only you see this. It never goes into messages to the client.</label>
+            <textarea id="owner-notes" v-model="notesDraft" maxlength="4000" :disabled="isDemo || notesSaving" placeholder="Preferences, follow-ups, what was used"></textarea>
+          </div>
+          <div class="form-actions">
+            <GmButton variant="secondary" size="sm" :pending="notesSaving" pending-label="Saving…" :disabled-reason="isDemo ? demoHint : !notesDirty ? 'Type a note to save it.' : ''" @click="saveNotes">Save note</GmButton>
+            <span v-if="notesDirty" class="unsaved" role="status">Not saved yet</span>
+          </div>
+        </section>
+
+        <section v-if="team" class="detail-section" aria-labelledby="staff-heading">
+          <h3 id="staff-heading">Who it is with</h3>
+          <p class="staff-now"><i class="legend-stem" :style="{ background: staffColor(selected) }" aria-hidden="true" />{{ staffName(selected) }}<small v-if="memberFor(selected).removed" class="muted"> (no longer on your team)</small><small v-else-if="!isStaffActive(memberFor(selected))" class="muted"> (inactive)</small></p>
+          <div class="assign-row">
+            <div class="field">
+              <label for="assign-to">Give it to <GmHint text="Assigning a confirmed booking moves it onto that person's own calendar, so it is refused if they are busy or on time off then. Finished or cancelled bookings only change the name recorded." label="About assigning a booking" /></label>
+              <GmSelect id="assign-to" v-model="assignPick" :options="assignSelectOptions" label="Give this booking to" placeholder="Choose a person" :disabled="isDemo || assignBusy || !assignSelectOptions.length" />
+            </div>
+            <GmButton variant="secondary" size="sm" :pending="assignBusy" pending-label="Assigning…" :disabled-reason="assignReason" @click="assignSelected">Assign</GmButton>
+          </div>
+        </section>
+
+        <section v-if="onCalendar(selected) || calendarConnected || conflictTitles(selected).length" class="detail-section" aria-labelledby="cal-heading">
+          <h3 id="cal-heading">Google Calendar</h3>
+          <p v-if="conflictTitles(selected).length && isUpcoming(selected)" class="notice warning">Clashes with {{ conflictTitles(selected).join(', ') }} on your Google Calendar.</p>
+          <div v-if="calendarNeedsSync(selected)" class="notice warning" role="status">
+            <span>{{ selected.calendar_sync_error || 'This booking changed. Its Google Calendar event still needs updating.' }}</span>
+            <GmButton variant="secondary" size="sm" :pending="calendarBusy" :disabled="isDemo" @click="retryCalendarSync">Retry Calendar update</GmButton>
+          </div>
+          <p v-else-if="onCalendar(selected)" class="field-hint">{{ selected.calendar_sync_status === 'synced' ? isCancelled(selected) ? 'Calendar updated: free time, reminders off.' : 'Google Calendar is up to date.' : 'Linked to Google Calendar.' }}</p>
           <GmButton
             v-if="calendarConnected && canCancel(selected) && selected.status === 'confirmed' && !onCalendar(selected)"
             variant="secondary"
+            size="sm"
             :pending="calendarBusy"
             pending-label="Adding…"
             @click="addToCalendar(selected)"
           >Add to Google Calendar</GmButton>
-          <GmButton v-if="canMove(selected) && !rescheduling" variant="secondary" :disabled-reason="demoHint" @click="startReschedule">Reschedule</GmButton>
-          <GmConfirm
-            v-if="canCancel(selected)"
-            v-model:open="cancelOpen"
-            title="Cancel and reopen this slot?"
-            :message="cancelMessage"
-            confirm-label="Cancel booking"
-            cancel-label="Keep booking"
-            tone="danger"
-            :busy="cancelling"
-            @confirm="cancel"
-          >
-            <GmButton variant="danger" :pending="cancelling" pending-label="Cancelling…" :disabled-reason="demoHint" @click="cancelOpen = true">Cancel booking</GmButton>
-          </GmConfirm>
-          <GmButton
-            v-else-if="selected.status !== 'cancelled'"
-            variant="danger"
-            disabled-reason="This appointment has already happened, so it can no longer be cancelled."
-          >Cancel booking</GmButton>
-          <GmConfirm
-            v-model:open="discardOpen"
-            title="Discard unsaved changes?"
-            :message="discardMessage"
-            confirm-label="Discard and close"
-            cancel-label="Keep editing"
-            tone="danger"
-            @confirm="discardDialog"
-            @cancel="keepEditing"
-          >
-            <GmButton variant="secondary" @click="requestClose">Close</GmButton>
-          </GmConfirm>
-        </div>
-      </template>
+        </section>
+
+        <p v-if="selected.status !== 'cancelled' && !canCancel(selected) && !hasStarted(selected)" class="field-hint">This appointment can no longer be cancelled.</p>
+        <p v-if="selected.cancellation_reason && isCancelled(selected)" class="field-hint">Cancellation reason: {{ selected.cancellation_reason }}</p>
+      </div>
     </aside>
 
-    <section v-if="newOpen" class="new-booking-surface" aria-labelledby="new-booking-title">
-      <header class="new-booking-header">
-        <nav aria-label="Breadcrumb"><button type="button" @click="requestCloseNew">Bookings</button><AppIcon name="chevron" :size="13" /><strong>New booking</strong></nav>
-        <h1 id="new-booking-title">New booking</h1>
-        <p>Add a walk-in or phone booking.</p>
-      </header>
-      <div class="new-booking-layout">
-      <form class="card new-booking-form" novalidate @submit.prevent="submitNew">
-        <div class="new-form-heading"><h2>Appointment</h2></div>
+    <!-- New booking: one column, real open times, the summary docked at the bottom -->
+    <section v-if="newOpen" class="new-booking" aria-labelledby="new-booking-title">
+      <nav class="crumbs" aria-label="Breadcrumb"><button type="button" class="link-button" @click="requestCloseNew">Bookings</button><AppIcon name="chevron" :size="14" /><span aria-current="page">New booking</span></nav>
+      <h1 id="new-booking-title" tabindex="-1">New booking</h1>
+      <p class="lede">For a walk-in or a phone booking. Nothing is sent to the client.</p>
 
-        <template v-if="newResult">
-          <div class="notice success" role="status"><AppIcon name="check" :size="18" />Saved {{ newResult.created.length }} booking{{ newResult.created.length === 1 ? '' : 's' }}. Nothing was sent to the client.</div>
-          <div v-if="newResult.skipped.length" class="panel-box" role="status">
-            <strong>{{ newResult.skipped.length }} repeat{{ newResult.skipped.length === 1 ? '' : 's' }} skipped</strong>
-            <ul class="skipped"><li v-for="item in newResult.skipped" :key="item.startsAt">{{ skippedLabel(item) }}: {{ item.reason }}</li></ul>
-          </div>
-          <div class="form-actions modal-footer">
-            <GmButton v-if="newResult.created.length" variant="primary" @click="messageNewClient">Message client</GmButton>
-            <GmButton variant="secondary" @click="closeNew">Done</GmButton>
-          </div>
-        </template>
-
-        <div v-else-if="newBlocked" class="empty empty-inline">
-          <span class="empty-icon"><AppIcon name="bookings" /></span>
-          <h2>{{ !setup.hasAvailability ? 'Set your hours first' : 'Add a service first' }}</h2>
-          <p>{{ newBlocked.text }}</p>
-          <div class="empty-actions">
-            <RouterLink class="primary button-link" :to="newBlocked.to">{{ newBlocked.label }}</RouterLink>
-            <GmButton variant="secondary" @click="closeNew">Close</GmButton>
-          </div>
+      <div v-if="newResult" class="new-result">
+        <div class="notice success" role="status"><AppIcon name="check" :size="18" /><span>Saved {{ newResult.created.length }} booking{{ newResult.created.length === 1 ? '' : 's' }}. Nothing was sent to the client.</span></div>
+        <div v-if="newResult.skipped.length" class="notice warning" role="status">
+          <div><strong>{{ newResult.skipped.length }} repeat{{ newResult.skipped.length === 1 ? '' : 's' }} skipped</strong>
+            <ul class="skipped"><li v-for="item in newResult.skipped" :key="item.startsAt">{{ skippedLabel(item) }}: {{ item.reason }}</li></ul></div>
         </div>
+        <div class="form-actions">
+          <GmButton v-if="newResult.created.length" variant="primary" @click="messageNewClient">Message the client</GmButton>
+          <GmButton variant="secondary" @click="closeNew">Back to bookings</GmButton>
+          <GmButton variant="ghost" @click="openNew">Add another</GmButton>
+        </div>
+      </div>
 
-        <template v-else>
-          <div class="new-form-scroll">
-          <div v-if="newError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ newError }}</div>
-          <div class="new-appointment-grid" :class="{ single: !team }">
+      <div v-else-if="newBlocked" class="empty">
+        <span class="empty-icon"><AppIcon name="bookings" /></span>
+        <h2>{{ newBlocked.title }}</h2>
+        <p>{{ newBlocked.text }}</p>
+        <div class="empty-actions">
+          <RouterLink class="primary" :to="newBlocked.to">{{ newBlocked.label }}</RouterLink>
+          <GmButton variant="secondary" @click="closeNew">Back to bookings</GmButton>
+        </div>
+      </div>
+
+      <form v-else class="new-form" novalidate @submit.prevent="submitNew">
+        <div v-if="newError" class="notice error" role="alert"><AppIcon name="alert" :size="18" /><span>{{ newError }}</span></div>
+
+        <fieldset class="new-group">
+          <legend>Appointment</legend>
           <div class="field">
             <label for="new-service">Service</label>
             <GmSelect id="new-service" v-model="form.serviceId" :options="newServiceOptions" label="Service" required />
@@ -1741,54 +1804,77 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
             <GmSelect id="new-staff" v-model="form.staffId" :options="newStaffOptions" label="Team member" required :described-by="newStaffReason ? 'new-staff-note' : undefined" />
             <span v-if="newStaffReason" id="new-staff-note" class="field-hint">{{ newStaffReason }}</span>
           </div>
-          </div>
-          <div class="field-row">
-            <div class="field">
-              <label for="new-date">Date</label>
-              <GmDatePicker id="new-date" v-model="form.date" label="Date" required />
-            </div>
-            <div class="field">
-              <label for="new-time">Time</label>
-              <GmTimePicker id="new-time" v-model="form.time" label="Time" required />
-            </div>
-          </div>
-          <p class="field-hint form-hint">Times use {{ zoneName(formZone) }}. You may book outside weekly hours, but not over {{ team && formMember && !isOwnerMember(formMember) ? memberFirstName(formMember) + "'s" : 'another' }} booking or time off.</p>
-          <div class="new-form-divider"><h2>Client details</h2></div>
           <div class="field">
-            <label for="new-name">Full name</label>
+            <label for="new-date">Day</label>
+            <GmDatePicker id="new-date" v-model="form.date" label="Day" required />
+          </div>
+          <div class="field" role="group" aria-labelledby="open-times-label">
+            <span id="open-times-label" class="field-label">Open times{{ formDateLabel ? ` on ${formDateLabel}` : '' }}</span>
+            <div v-if="openSlots.length" class="time-chips">
+              <button
+                v-for="opening in openSlots"
+                :key="opening.startsAt"
+                type="button"
+                class="time-chip tnum"
+                :aria-pressed="form.time === opening.localTime"
+                @click="form.time = opening.localTime"
+              >{{ slotText(opening) }}</button>
+            </div>
+            <p v-else class="field-hint">{{ formService ? 'No open times left in your hours that day. You can still set any time below.' : 'Choose a service to see open times.' }}</p>
+          </div>
+          <div class="field time-field">
+            <label for="new-time">Or set any time</label>
+            <GmTimePicker id="new-time" v-model="form.time" label="Time" required />
+            <span class="field-hint">In {{ zoneName(formZone) }}. Outside your hours is fine for walk-ins; another booking or time off at that time is not.</span>
+          </div>
+          <div class="field">
+            <label for="new-repeat">Repeat</label>
+            <GmSelect id="new-repeat" :model-value="form.repeatWeeks" :options="repeatOptions" label="Repeat" @update:model-value="setRepeat" />
+            <span v-if="form.repeatWeeks > 0" class="field-hint">Creates this booking and {{ form.repeatWeeks }} more at the same time each week. Weeks that clash are skipped and listed afterwards.</span>
+          </div>
+        </fieldset>
+
+        <fieldset class="new-group">
+          <legend>Client</legend>
+          <div class="field">
+            <label for="new-name">Name</label>
             <input id="new-name" v-model="form.name" maxlength="160" autocomplete="off" required />
           </div>
-          <p id="new-contact-hint" class="field-hint form-hint">Add an email, phone number, or both. A phone number enables WhatsApp and SMS.</p>
+          <p id="new-contact-hint" class="field-hint">Add a phone number, an email, or both. A phone number lets you open WhatsApp or SMS.</p>
           <div class="field-row">
             <div class="field">
-              <label for="new-email">Email <span class="optional">(or phone)</span></label>
-              <input id="new-email" v-model="form.email" type="email" autocomplete="off" aria-describedby="new-contact-hint" />
-            </div>
-            <div class="field">
-              <label for="new-phone">Phone <span class="optional">(or email)</span></label>
+              <label for="new-phone">Phone</label>
               <input id="new-phone" v-model="form.phone" type="tel" autocomplete="off" aria-describedby="new-contact-hint" />
             </div>
+            <div class="field">
+              <label for="new-email">Email</label>
+              <input id="new-email" v-model="form.email" type="email" autocomplete="off" aria-describedby="new-contact-hint" />
+            </div>
           </div>
-          <div class="new-form-divider"><h2>Notes <span class="optional">(optional)</span></h2></div>
-          <div class="new-notes-grid">
+        </fieldset>
+
+        <fieldset class="new-group">
+          <legend>Notes <span class="optional">(optional)</span></legend>
           <div class="field">
-            <label for="new-notes">Public note</label>
-            <textarea id="new-notes" v-model="form.notes" maxlength="2000"></textarea>
-            <span class="field-hint">Shared with the client in the booking details.</span>
+            <label for="new-notes">Note on the booking</label>
+            <textarea id="new-notes" v-model="form.notes" maxlength="2000" rows="2"></textarea>
+            <span class="field-hint">Stored on the booking like a guest's own note.</span>
           </div>
           <div class="field">
-            <label for="new-owner-notes">Private owner notes</label>
-            <textarea id="new-owner-notes" v-model="form.ownerNotes" maxlength="4000"></textarea>
-            <span class="field-hint">Only visible to your team.</span>
+            <label for="new-owner-notes">Private note</label>
+            <textarea id="new-owner-notes" v-model="form.ownerNotes" maxlength="4000" rows="2"></textarea>
+            <span class="field-hint">Only you see this.</span>
           </div>
-          </div>
-          <div class="field">
-            <label for="new-repeat">Repeat weekly (extra weeks, 0 to 12)</label>
-            <input id="new-repeat" v-model.number="form.repeatWeeks" type="number" min="0" max="12" step="1" />
-            <span v-if="form.repeatWeeks > 0" class="field-hint">Creates this booking plus {{ Math.min(12, Math.floor(form.repeatWeeks)) }} more at the same local time. Weeks that clash are skipped and listed afterwards.</span>
-          </div>
-          </div>
-          <div class="form-actions modal-footer">
+        </fieldset>
+
+        <div class="new-dock">
+          <p class="new-summary" aria-live="polite">
+            <strong>{{ formService ? displayName(formService.name) : 'Choose a service' }}</strong>
+            <span class="tnum">{{ formDateLabel || 'Choose a day' }}{{ formTimeLabel ? `, ${formTimeLabel}` : '' }}</span>
+            <span v-if="team && formMember">with {{ memberName(formMember) }}</span>
+            <span>{{ formPriceLabel }}</span>
+          </p>
+          <div class="form-actions">
             <GmConfirm
               v-model:open="newDiscardOpen"
               title="Discard this booking?"
@@ -1798,294 +1884,235 @@ const addAllReason = computed(() => (needsCalendar.value.length ? '' : 'Every up
               tone="danger"
               @confirm="discardNew"
             >
-              <GmButton variant="secondary" :disabled="newSaving" @click="requestCloseNew">Cancel</GmButton>
+              <GmButton variant="ghost" :disabled="newSaving" @click="requestCloseNew">Cancel</GmButton>
             </GmConfirm>
             <GmButton variant="primary" type="submit" :pending="newSaving" pending-label="Saving…" :disabled-reason="demoHint || newStaffReason">Save booking</GmButton>
           </div>
-        </template>
-      </form>
-      <aside v-if="!newResult && !newBlocked" class="card booking-summary" aria-label="Booking summary">
-        <h2>Booking summary</h2>
-        <div class="summary-body">
-          <section><span>Selected service</span><strong>{{ formService ? displayName(formService.name) : 'Choose a service' }}</strong><small>{{ formService ? `${formService.duration_minutes} min` : '—' }} · {{ team ? (formMember ? memberName(formMember) : 'Choose a team member') : 'You' }}</small></section>
-          <section><span>Date &amp; time</span><strong>{{ formDateLabel }}</strong><small>{{ form.time || 'Choose a time' }} · {{ displayTimeZone(formZone) }}</small></section>
-          <section><span>Client</span><strong>{{ form.name.trim() || 'Add client details' }}</strong><small>{{ form.email.trim() || form.phone.trim() || 'Email or phone required' }}</small></section>
-          <section><span>Price</span><strong class="summary-price">{{ formPriceLabel }}</strong></section>
         </div>
-      </aside>
-      </div>
+      </form>
     </section>
   </section>
 </template>
 
 <style scoped>
-.filter-bar { align-items: flex-end; }
-.filter-bar .field { min-width: 150px; flex: 0 1 190px; }
-.filter-bar .filter-tail { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.email-filter { margin: 0 0 var(--space-3); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
-.demo-note { margin: 0 0 var(--space-3); font-size: var(--text-sm); }
+.bookings-page { min-width: 0; }
+.demo-note { margin: 0 0 var(--space-3); color: var(--muted); font-size: var(--text-sm); }
 .error-text { color: var(--danger); }
+.lede { font-variant-numeric: tabular-nums; }
 
-/* Calendar strip (honest: no connect CTA unless the real flow exists) */
-.calendar-panel { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-4); box-shadow: none; }
-.calendar-copy { flex: 1 1 280px; min-width: 0; }
-.calendar-copy strong { min-height: 28px; display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
-.calendar-copy p { margin: 4px 0 0; font-size: var(--text-sm); }
-.calendar-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
-.calendar-line { flex: 1 1 100%; margin: 0; font-size: var(--text-sm); }
-.calendar-outcomes { flex: 1 1 100%; margin: 0; padding-left: 18px; font-size: var(--text-sm); }
-
-.tab-bar { margin-bottom: var(--space-4); }
-@media (max-width: 760px) {
-  .tab-bar { flex-wrap: wrap; overflow: visible; -webkit-mask-image: none; mask-image: none; }
-  .tab-bar > button { flex: 1 1 auto; justify-content: center; }
+/* Calendar status chip + panel */
+.calendar-status { position: relative; }
+.chip-button {
+  min-height: var(--control-h); padding: 0 var(--space-3); display: inline-flex; align-items: center; gap: var(--space-2); color: var(--ink-soft);
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); font-size: var(--text-sm); font-weight: var(--weight-medium);
 }
-.suggested-dot { width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--accent); display: inline-block; vertical-align: middle; }
+.chip-button.connected { border-style: solid; border-color: var(--success-line); color: var(--success); }
+.calendar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.chip-button.connected .calendar-dot { background: var(--success); }
+.calendar-panel { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font-size: var(--text-sm); }
+.calendar-panel p { margin: 0; max-width: 72ch; color: var(--ink-soft); }
+.calendar-outcomes { margin: 0 0 var(--space-4); padding-left: 18px; font-size: var(--text-sm); }
 
-/* Agenda */
-.booking-list { display: grid; gap: var(--space-5); }
+/* Toolbar */
+.booking-toolbar { align-items: center; }
+.booking-toolbar .field { min-width: 160px; flex: 0 1 200px; }
+.booking-toolbar .date-field { flex: 0 1 200px; min-width: 160px; display: flex; align-items: center; gap: var(--space-2); }
+.booking-toolbar .date-field > label { flex: none; color: var(--ink-soft); font-weight: var(--weight-medium); }
+.booking-toolbar .date-field > :not(label) { min-width: 0; flex: 1; }
+.booking-toolbar .search-field { flex: 1 1 220px; }
+.booking-filters { display: contents; }
+.filters-toggle { min-height: var(--control-h); display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); }
+@media (max-width: 700px) {
+  .filters-toggle { width: 100%; }
+  .booking-filters { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+}
+.filter-line { margin: 0 0 var(--space-3); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
+
+/* Week */
+.week-panel { min-width: 0; overflow: hidden; }
+.week-nav { min-height: 56px; padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); border-bottom: 1px solid var(--line); }
+.week-nav strong { font-size: var(--text-md); }
+.week-meta { margin-left: auto; color: var(--muted); font-size: var(--text-sm); }
+.week-toggle { font-size: var(--text-sm); }
+.week-legend { margin: 0; padding: var(--space-2) var(--space-3); display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); border-bottom: 1px solid var(--line); list-style: none; font-size: var(--text-sm); }
+.week-legend li { display: inline-flex; align-items: center; gap: 8px; }
+.legend-stem { width: 4px; height: 16px; flex: none; display: inline-block; border-radius: 2px; }
+.calendar-scroll { max-width: 100%; overflow-x: auto; }
+.calendar-week { min-width: calc(64px + var(--days) * 104px); display: grid; grid-template-columns: 64px repeat(var(--days), minmax(104px, 1fr)); grid-template-rows: 56px var(--calendar-height); }
+.calendar-corner { border-bottom: 1px solid var(--line); }
+.calendar-day-head { padding: var(--space-2); display: flex; align-items: baseline; justify-content: center; gap: 6px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.calendar-day-head span { color: var(--muted); font-size: var(--text-sm); }
+.calendar-day-head b { font-size: var(--text-lg); line-height: 1.2; }
+.calendar-day-head small { color: var(--ink); font-size: var(--text-xs); font-weight: var(--weight-strong); }
+/* Today: a marigold bar under the date, sized to the text (no circle to overflow). */
+.calendar-day-head.today { box-shadow: inset 0 -4px 0 var(--now); }
+.calendar-day-head.past b { color: var(--muted); }
+.calendar-time-axis { position: relative; }
+.calendar-time-axis span { position: absolute; right: 10px; color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; transform: translateY(-50%); white-space: nowrap; }
+.calendar-day-column { position: relative; min-width: 0; border-left: 1px solid var(--line); }
+.calendar-day-column.today { background: color-mix(in srgb, var(--now-soft) 30%, var(--surface)); }
+.calendar-grid-line { position: absolute; left: 0; right: 0; height: 1px; background: var(--surface-sunken); pointer-events: none; }
+.calendar-time-off {
+  position: absolute; top: 4px; left: 4px; right: 4px; z-index: 1; min-height: 26px; padding: 4px 8px; overflow: hidden; color: var(--ink-soft);
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: var(--weight-strong); text-decoration: none; text-overflow: ellipsis; white-space: nowrap;
+  background: repeating-linear-gradient(135deg, var(--surface-sunken) 0 6px, var(--surface) 6px 12px);
+}
+.calendar-booking { position: absolute; z-index: 2; padding-block: 4px; display: grid; grid-auto-rows: max-content; align-content: start; gap: 1px; overflow: hidden; font-size: var(--text-xs); line-height: 1.3; }
+.calendar-booking:hover { box-shadow: var(--shadow-1); }
+.calendar-booking > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Text follows the drawn length: under 45 minutes one line (time and name), under 75 minutes no staff line. */
+.calendar-booking.is-short { padding-block: 2px; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; column-gap: 6px; }
+.calendar-booking.is-short > small { display: none; }
+.calendar-booking.is-medium > .week-staff { display: none; }
+.calendar-booking > span { color: var(--ink-soft); font-weight: var(--weight-strong); }
+.calendar-booking > strong { font-size: var(--text-sm); }
+.calendar-booking > small { color: var(--ink-soft); }
+.calendar-booking .week-staff { font-weight: var(--weight-strong); }
+.calendar-now { position: absolute; left: 0; right: 0; z-index: 3; border-top: 2px solid var(--now); pointer-events: none; }
+.calendar-now::before { content: ''; position: absolute; left: -5px; top: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--now); }
+.week-empty { margin: 0; padding: var(--space-3) var(--space-4); color: var(--ink-soft); border-top: 1px solid var(--line); font-size: var(--text-sm); }
+.week-foot { min-height: 44px; padding: 0 var(--space-4); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); color: var(--muted); border-top: 1px solid var(--line); font-size: var(--text-xs); }
+.legend-shapes { display: inline-flex; flex-wrap: wrap; gap: var(--space-3); }
+.legend-shapes .status { font-size: var(--text-xs); }
+.day-strip { padding: var(--space-2); display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; border-bottom: 1px solid var(--line); }
+.day-strip button { position: relative; min-height: 56px; padding: 4px 0; display: grid; justify-items: center; align-content: center; gap: 0; color: var(--ink-soft); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.day-strip button small { font-size: var(--text-xs); }
+.day-strip button b { font-size: var(--text-md); }
+.day-strip button i { position: absolute; bottom: 5px; width: 14px; height: 3px; border-radius: 2px; background: var(--accent); }
+.day-strip button.today { box-shadow: inset 0 -3px 0 var(--now); }
+.day-strip button[aria-pressed='true'] { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
+.day-strip button[aria-pressed='true'] i { background: var(--on-accent); }
+
+/* List (ledger) */
+.tab-bar { margin-bottom: var(--space-2); }
+.tab-help { margin: 0 0 var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; color: var(--muted); font-size: var(--text-sm); }
+.select-row { margin-bottom: var(--space-3); }
+.agenda { display: grid; gap: var(--space-5); }
 .day-group { display: grid; gap: var(--space-2); }
-.day-heading { position: sticky; top: calc(var(--topbar-h) + 4px); z-index: 5; margin: 0; padding: var(--space-2) 0; display: flex; align-items: center; gap: var(--space-2); color: var(--ink-soft); background: var(--surface-soft); font-size: var(--text-sm); font-weight: 700; }
-.day-heading small { min-width: 20px; padding: 1px 7px; border-radius: var(--radius-pill); background: #e9ebf3; color: var(--muted); font-size: 0.75rem; text-align: center; }
-.booking-card { padding: var(--space-4); display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); box-shadow: none; transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease); }
-.booking-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow); }
-.booking-card.is-cancelled { background: #fafafc; }
-.booking-card.is-cancelled .date-tile { color: var(--muted); border-color: var(--line); background: #f1f2f6; }
-.date-tile { width: 60px; height: 68px; display: grid; place-items: center; align-content: center; color: var(--accent); border: 1px solid var(--accent-line); border-radius: var(--radius-sm); background: var(--accent-soft); }
-.date-tile small, .date-tile span { font-size: 0.75rem; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
-.date-tile strong { font-size: 22px; line-height: 1.05; }
-.booking-main { min-width: 0; }
-.booking-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.booking-title h2 { margin: 0; font-size: var(--text-lg); }
-.booking-main > p { margin: 6px 0 var(--space-3); display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); }
-.guest-line { display: flex; align-items: center; gap: var(--space-2); }
-.guest-avatar { width: 32px; height: 32px; flex: none; display: grid; place-items: center; color: var(--accent); border-radius: 50%; background: var(--accent-soft); font-size: var(--text-sm); font-weight: 750; }
-.guest-line > span:last-child { min-width: 0; display: grid; gap: 1px; }
-.guest-line strong, .guest-line small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.guest-line strong { font-size: var(--text-sm); }
-.guest-line small { color: var(--muted); font-size: var(--text-xs); }
-.booking-end { display: grid; justify-items: end; gap: var(--space-2); }
-.booking-end > .ref { color: var(--muted); font-family: var(--font-mono); font-size: var(--text-xs); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
-.quick-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; justify-content: flex-end; }
-
-/* Team */
-.staff-chip { gap: 6px; }
-.staff-dot { width: 10px; height: 10px; flex: none; display: inline-block; border-radius: 50%; }
-.booking-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
-.booking-row.selecting { grid-template-columns: 44px minmax(0, 1fr); align-items: center; }
-.pick-box { width: 44px; height: 44px; display: grid; place-items: center; cursor: pointer; }
-.pick-box input { width: 22px; height: 22px; min-height: 0; margin: 0; cursor: pointer; }
-.booking-card.is-picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.bulk-bar { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-3); box-shadow: none; border-color: var(--accent-line); background: var(--accent-faint); }
+.day-heading { margin: 0; display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-md); }
+.day-heading small { color: var(--muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.agenda-row { display: flex; flex-wrap: wrap; align-items: center; }
+.agenda-row.is-picked { background: var(--accent-faint); }
+.agenda-row.is-cancelled .agenda-main h3 { color: var(--muted); text-decoration: line-through; }
+.pick-box { width: 48px; align-self: stretch; display: grid; place-items: center; cursor: pointer; }
+.pick-box input { width: 20px; height: 20px; min-height: 0; margin: 0; accent-color: var(--accent); }
+.agenda-open {
+  min-width: 0; flex: 1 1 420px; min-height: 68px; padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 76px 4px minmax(0, 1fr) auto;
+  align-items: center; gap: var(--space-3); color: inherit; border: 0; background: transparent; text-align: left;
+}
+.agenda-open:hover { background: var(--accent-faint); }
+.agenda-time { display: grid; }
+.agenda-time b { font-size: var(--text-md); }
+.agenda-time small { color: var(--muted); font-size: var(--text-xs); }
+.agenda-stem { width: 4px; height: 40px; border-radius: 2px; background: var(--accent); }
+.agenda-main { min-width: 0; display: grid; gap: 1px; }
+.agenda-main h3 { margin: 0; overflow: hidden; font-size: var(--text-md); text-overflow: ellipsis; white-space: nowrap; }
+.agenda-meta, .agenda-contact { overflow: hidden; color: var(--ink-soft); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.agenda-contact { color: var(--muted); font-size: var(--text-xs); }
+.agenda-flags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.agenda-actions { padding: 0 var(--space-4) var(--space-3) calc(76px + 4px + var(--space-4) + var(--space-3) * 2); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); flex-basis: 100%; }
+.agenda-question { color: var(--ink); font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.bulk-bar { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-3); border: 1px solid var(--accent-line); border-radius: var(--radius); background: var(--accent-faint); }
 .bulk-top { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); font-size: var(--text-sm); }
 .bulk-done { margin-left: auto; }
 .bulk-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-3); }
 .bulk-controls .field { margin: 0; min-width: 200px; flex: 0 1 280px; }
-.bulk-result { padding: var(--space-3); display: grid; justify-items: start; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; font-size: var(--text-sm); }
+.bulk-result { padding: var(--space-3); display: grid; justify-items: start; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); font-size: var(--text-sm); }
 .bulk-result p { margin: 0; }
 .refused { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
-.staff-panel .staff-now { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+
+/* Booking detail */
+.detail-scrim { position: fixed; inset: 0; z-index: 70; display: block; border: 0; background: rgb(26 31 61 / 0.45); }
+.booking-detail {
+  position: fixed; top: var(--topbar-h); right: 0; bottom: 0; z-index: 34; width: 400px; max-width: 100vw; display: flex; flex-direction: column;
+  border-left: 1px solid var(--line); background: var(--surface); box-shadow: var(--shadow-2);
+}
+.detail-head { padding: var(--space-4) var(--space-4) var(--space-3) var(--space-5); display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); border-bottom: 1px solid var(--line); }
+.detail-title { min-width: 0; }
+.detail-title h2 { margin: 0; font-size: var(--text-xl); overflow-wrap: anywhere; }
+.detail-title h2:focus { outline: none; }
+.detail-title h2:focus-visible { outline: 3px solid var(--focus-color); outline-offset: 2px; }
+.detail-title p { margin: 2px 0 0; color: var(--ink-soft); font-size: var(--text-sm); }
+.detail-body { min-height: 0; flex: 1; padding: var(--space-4) var(--space-5) var(--space-6); display: grid; align-content: start; gap: var(--space-4); overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.detail-body .notice { margin: 0; }
+.detail-summary { padding: var(--space-3) var(--space-4); display: grid; gap: 4px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 2px var(--radius-sm) var(--radius-sm) 2px; background: var(--accent-faint); }
+.detail-summary.cancelled { border-left-color: var(--line-strong); background: var(--surface-soft); }
+.detail-summary p { margin: 0; }
+.detail-when { font-size: var(--text-md); }
+.detail-sub { color: var(--muted); font-size: var(--text-sm); }
+.detail-status { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.detail-ref { margin-left: auto; color: var(--muted); font-size: var(--text-xs); }
+.outcome { padding: var(--space-3) var(--space-4); display: grid; gap: var(--space-2); border: 1px solid var(--now); border-radius: var(--radius-sm); background: var(--now-soft); }
+.outcome p { margin: 0; font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.quick-row { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.quick-row :deep(.cancel-trigger) { --button-fg: var(--danger); }
+.cancel-box, .move-box { padding: var(--space-4); display: grid; gap: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.cancel-box { border-color: var(--danger-line); background: var(--danger-soft); }
+.cancel-box h3, .move-box h3 { margin: 0; font-size: var(--text-md); }
+.cancel-box p { margin: 0; font-size: var(--text-sm); }
+.cancel-box .field, .move-box .field { margin-bottom: 0; }
+.cancel-box textarea { min-height: 64px; }
+.detail-section { padding-top: var(--space-4); display: grid; gap: var(--space-2); border-top: 1px solid var(--line); }
+.detail-section > h3 { margin: 0; font-size: var(--text-sm); }
+.detail-section .field { margin-bottom: 0; }
+.detail-section textarea { min-height: 84px; }
+.message-text { margin: 0; padding: var(--space-3); max-height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); font-size: var(--text-sm); line-height: 1.55; }
+.kind-row { max-width: 100%; }
+.staff-now { margin: 0; display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); font-weight: var(--weight-strong); }
 .assign-row { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-3); }
-.assign-row .field { margin: 0; flex: 1 1 220px; min-width: 0; }
-.week-legend { margin: 0 0 var(--space-3); padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); font-size: var(--text-sm); }
-.week-legend li { display: inline-flex; align-items: center; gap: 6px; }
-.legend-swatch { width: 14px; height: 10px; display: inline-block; border: 1px dashed var(--line-strong); border-radius: 3px; background: #eef0f5; }
-
-/* Week */
-.week-nav { margin-bottom: var(--space-3); display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); font-size: var(--text-sm); }
-.week-nav .muted { margin-right: auto; font-size: var(--text-xs); }
-.week-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-2); }
-.week-day { min-height: 160px; padding: var(--space-2); display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; }
-.week-day.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.week-day header { padding-bottom: 6px; display: grid; gap: 1px; border-bottom: 1px solid var(--line); }
-.week-day header small { color: var(--muted); font-size: var(--text-xs); font-weight: 750; text-transform: uppercase; }
-.week-day header strong { font-size: var(--text-sm); }
-.week-item { min-height: 44px; padding: 6px 8px; display: grid; gap: 1px; text-align: left; border: 1px solid var(--accent-line); border-radius: 8px; background: var(--accent-soft); font-size: var(--text-xs); }
-.week-item.cancelled { color: var(--muted); border-color: var(--line); background: #f6f7fa; text-decoration: line-through; }
-.week-item.completed { border-color: #c9d8ff; background: #eef3ff; }
-.week-item.no_show { border-color: #f1dcae; background: var(--warning-soft); }
-.week-item b { font-size: var(--text-sm); }
-.week-item span, .week-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.week-off { padding: 6px 8px; display: grid; gap: 1px; color: var(--muted); border: 1px dashed var(--line-strong); border-radius: 8px; background: #f6f7fa; font-size: var(--text-xs); text-decoration: none; }
-.week-off b { font-size: var(--text-sm); }
-.week-item.has-staff { border-left: 4px solid var(--staff); }
-.week-item.has-staff:not(.cancelled):not(.completed):not(.no_show) { background: color-mix(in srgb, var(--staff) 11%, #fff); border-color: color-mix(in srgb, var(--staff) 38%, #fff); border-left-color: var(--staff); }
-.week-item .week-staff { color: var(--ink-soft, var(--muted)); font-weight: 650; }
-.week-empty { margin: auto; color: var(--line-strong); }
-
-/* Dialogs */
-.tab-help { margin: calc(var(--space-2) * -1) 0 var(--space-4); display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: var(--text-sm); }
-.quick-label { align-self: center; color: var(--muted); font-size: var(--text-xs); }
-.empty-actions { margin-top: var(--space-4); display: flex; justify-content: center; flex-wrap: wrap; gap: var(--space-2); }
-.button-link { min-height: 44px; padding: 0 var(--space-4); display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); text-decoration: none; font-weight: 700; }
-.empty-inline { margin: var(--space-4) 0; }
-.status-cell { display: inline-flex; align-items: center; gap: 4px; }
-.unsaved { color: var(--warning); font-weight: 700; }
-.optional { color: var(--muted); font-weight: 400; }
-.form-hint { margin: 0 0 var(--space-4); }
-.past-note { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
-.cancel-reason { margin-top: var(--space-4); }
-.cancel-reason textarea { min-height: 64px; }
-.detail-actions { align-items: flex-start; }
-.booking-detail .notice { margin-top: var(--space-3); }
-.detail-when { padding: var(--space-3); display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); border-radius: var(--radius-sm); background: var(--accent-faint); }
-.detail-when > span:first-child { width: 40px; height: 40px; display: grid; place-items: center; color: var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
-.detail-when div { display: grid; gap: 2px; }
-.detail-when strong { font-size: var(--text-md); }
-.detail-when small { color: var(--muted); font-size: var(--text-sm); }
-.badge-row { margin: var(--space-3) 0 0; display: flex; gap: 6px; flex-wrap: wrap; }
-.booking-detail p.muted { margin: var(--space-3) 0 0; font-size: var(--text-sm); }
-.detail-section { margin-top: var(--space-4); }
-.detail-section h3, .panel-box h3 { margin: 0; font-size: var(--text-sm); font-weight: 700; letter-spacing: 0.01em; }
-.detail-section h3 { margin-bottom: var(--space-2); color: var(--muted); font-size: var(--text-xs); letter-spacing: 0.06em; text-transform: uppercase; }
-.detail-list dd a { color: var(--accent); }
-.panel-box { margin-top: var(--space-4); padding: var(--space-4); display: grid; gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--accent-faint); }
-.panel-box > * { margin: 0; }
-.panel-box > p { font-size: var(--text-sm); }
-.panel-box label { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
-.panel-box textarea { min-height: 88px; }
-.private-tag { color: var(--warning); font-size: var(--text-xs); font-weight: 700; }
-.kind-row { max-width: 100%; display: flex; overflow-x: auto; scrollbar-width: none; }
-.kind-row::-webkit-scrollbar { display: none; }
-.kind-row button { flex: none; white-space: nowrap; }
-.message-preview { display: grid; gap: var(--space-3); }
-.message-text { padding: var(--space-3); max-height: 190px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; font-size: var(--text-sm); }
-.link-button { min-height: var(--control-h-sm); display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
-.hint { font-size: var(--text-xs); }
-.zone-line { margin: calc(var(--space-2) * -1) 0 var(--space-4); font-size: var(--text-xs); }
-.confirm-box .field { margin-top: var(--space-3); margin-bottom: var(--space-3); }
-.confirm-box textarea { min-height: 80px; }
-.skipped { margin: 0; padding-left: 18px; font-size: var(--text-sm); }
-.booking-detail .modal-footer { margin-top: var(--space-5); }
-.detail-actions { justify-content: flex-end; }
-.modal .field { min-width: 0; }
-.modal .field-row .field { margin-bottom: var(--space-4); }
-
-/* Approved owner direction: compact calendar, persistent desktop detail pane, page-style create flow. */
-.bookings-page { min-width: 0; color: #20242d; font-size: 13px; transition: padding-right 160ms ease; }
-.bookings-page .page-header { min-height: 62px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid #e5e7eb; }
-.bookings-page .page-header h1 { margin: 0; font-size: 24px; letter-spacing: -.025em; }
-.bookings-page .page-header .lede { margin: 4px 0 0; color: #707580; font-size: 13px; }
-.bookings-page .page-header-actions { gap: 8px; }
-.bookings-page .page-header-actions :deep(.gm-button) { min-height: 40px; }
-.calendar-panel { border-color: #e5e7eb; border-radius: 8px; background: #fbfbfc; }
-.filter-bar { margin-bottom: 10px; gap: 8px; }
-.booking-search { width: min(240px, 100%); min-height: 40px; }
-.filter-bar .field label { font-size: 11px; }
-.filter-bar .field .input { min-height: 40px; font-size: 13px; }
-.tab-bar { margin-bottom: 8px; }
-.tab-help { margin-bottom: 12px; font-size: 12px; }
-.owner-calendar { overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
-.owner-calendar .week-nav { min-height: 54px; margin: 0; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; }
-.owner-calendar .week-nav strong { font-size: 14px; letter-spacing: -.01em; }
-.owner-calendar .week-nav .muted { margin-right: 0; font-size: 11px; }
-.owner-calendar .today-button { min-height: 36px; }
-.owner-calendar .icon-button { width: 36px; min-height: 36px; padding: 0; display: inline-grid; place-items: center; }
-.owner-calendar .week-legend { min-height: 36px; margin: 0; padding: 8px 12px; border-bottom: 1px solid #e5e7eb; font-size: 11px; }
-.calendar-scroll { max-width: 100%; overflow: auto; }
-.calendar-week { min-width: 780px; display: grid; grid-template-columns: 76px repeat(7, minmax(98px, 1fr)); grid-template-rows: 54px var(--calendar-height); }
-.calendar-corner { padding: 0 8px 10px; display: flex; align-items: flex-end; color: #969ba5; border-right: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; font-size: 10px; line-height: 1.2; }
-.calendar-day-head { padding: 8px 10px; display: flex; align-items: center; gap: 7px; border-right: 1px solid #e5e7eb; border-bottom: 1px solid #e5e7eb; }
-.calendar-day-head span { color: #707580; font-size: 11px; font-weight: 650; }
-.calendar-day-head strong { font-size: 12px; }
-.calendar-day-head.today strong { width: 27px; height: 27px; display: grid; place-items: center; border-radius: 50%; color: #fff; background: #2336dc; }
-.calendar-time-axis { position: relative; border-right: 1px solid #e5e7eb; }
-.calendar-time-axis span { position: absolute; right: 10px; color: #969ba5; font-size: 10px; font-variant-numeric: tabular-nums; transform: translateY(-7px); }
-.calendar-day-column { position: relative; min-width: 0; border-right: 1px solid #e5e7eb; background: #fff; }
-.calendar-day-column.today { background-color: #fcfcff; }
-.calendar-grid-line { position: absolute; left: 0; right: 0; height: 1px; background: #edf0f3; pointer-events: none; }
-.calendar-time-off { position: absolute; top: 4px; left: 5px; right: 5px; z-index: 3; min-height: 24px; padding: 4px 7px; overflow: hidden; color: #707580; border: 1px dashed #cfd3db; border-radius: 5px; background: #f4f5f7; font-size: 10px; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
-.calendar-booking { position: absolute; left: 6px; right: 6px; z-index: 2; min-height: 34px; padding: 4px 7px 4px 10px; overflow: hidden; border: 1px solid #d8dcff; border-radius: 7px; background: #f0f2ff; box-shadow: inset 3px 0 0 #6574e8; color: #20242d; text-align: left; }
-.calendar-booking:nth-of-type(3n+2) { border-color: #d7e8dd; background: #eef6f1; box-shadow: inset 3px 0 0 #59926f; }
-.calendar-booking:nth-of-type(3n) { border-color: #ecdcca; background: #faf3e9; box-shadow: inset 3px 0 0 #b77a46; }
-.calendar-booking.has-staff { border-color: color-mix(in srgb, var(--booking-color) 35%, #fff); background: color-mix(in srgb, var(--booking-color) 10%, #fff); box-shadow: inset 3px 0 0 var(--booking-color); }
-.calendar-booking.selected { border-color: #2336dc; background: #e9edff; box-shadow: inset 3px 0 0 #2336dc, 0 0 0 1px rgba(35,54,220,.08); }
-.calendar-booking.cancelled { color: #707580; border-color: #e5e7eb; background: #f5f6f8; box-shadow: inset 3px 0 0 #969ba5; text-decoration: line-through; }
-.calendar-booking > span, .calendar-booking > strong, .calendar-booking > small { display: block; overflow: hidden; line-height: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.calendar-booking > span { color: #555b66; font-size: 10px; font-weight: 650; }.calendar-booking > strong { font-size: 12px; }.calendar-booking > small { color: #707580; font-size: 10px; }
-.calendar-footer { min-height: 44px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #707580; border-top: 1px solid #e5e7eb; font-size: 11px; }
-.calendar-connected { display: inline-flex; align-items: center; gap: 6px; color: #247552; font-weight: 650; }.calendar-connected i { width: 7px; height: 7px; border-radius: 50%; background: #38a169; box-shadow: 0 0 0 3px #eaf6ef; }
-
-.detail-scrim { display: none; }
-.booking-detail { position: fixed; top: var(--topbar-h, 60px); right: 0; bottom: 0; z-index: 35; width: 368px; max-width: calc(100vw - 16px); padding: 0 20px 20px; overflow-y: auto; border-width: 0 0 0 1px; border-radius: 0; background: #fcfcfd; box-shadow: -10px 0 28px rgba(24,31,45,.08); }
-.booking-detail .modal-header { position: sticky; top: 0; z-index: 4; min-height: 64px; margin: 0 -20px 16px; padding: 0 20px; background: #fff; border-bottom: 1px solid #e5e7eb; }
-.booking-detail .modal-header .eyebrow { margin: 0 0 2px; color: #707580; font-size: 10px; text-transform: none; letter-spacing: 0; }
-.booking-detail .modal-header h2 { font-size: 16px; }
-.booking-detail .detail-when { padding: 12px; grid-template-columns: 34px minmax(0, 1fr); background: #fff; border: 1px solid #e5e7eb; }
-.booking-detail .detail-when > span:first-child { width: 34px; height: 34px; }
-.booking-detail .detail-when .status-cell { grid-column: 2; justify-self: start; }
-.booking-detail .panel-box { margin-top: 12px; padding: 14px; border-radius: 7px; background: #fff; }
-.booking-detail .detail-section { margin-top: 16px; }
-.booking-detail .detail-section h3 { color: #20242d; font-size: 12px; letter-spacing: 0; text-transform: none; }
-.booking-detail .modal-footer { padding-top: 14px; border-top: 1px solid #e5e7eb; }
-
-.bookings-page.is-creating > :not(.new-booking-surface) { display: none; }
-.new-booking-surface { min-width: 0; color: #20242d; font-size: 13px; }
-.new-booking-header { padding: 4px 0 16px; border-bottom: 1px solid #e5e7eb; }
-.new-booking-header nav { margin-bottom: 10px; display: flex; align-items: center; gap: 7px; color: #707580; font-size: 12px; }
-.new-booking-header nav button { min-height: 32px; padding: 0; border: 0; color: inherit; background: transparent; }.new-booking-header nav strong { color: #20242d; }
-.new-booking-header h1 { margin: 0; font-size: 24px; letter-spacing: -.025em; }.new-booking-header > p { margin: 5px 0 0; color: #707580; font-size: 13px; }
-.new-booking-layout { padding: 16px 0; display: grid; grid-template-columns: minmax(0, 800px) 320px; align-items: start; gap: 24px; }
-.new-booking-form { max-height: calc(100dvh - var(--topbar-h, 60px) - 150px); padding: 0; display: flex; flex-direction: column; overflow: hidden; border-color: #e5e7eb; border-radius: 8px; box-shadow: none; }
-.new-booking-form > .new-form-heading, .new-form-scroll > .new-form-divider { padding: 12px 22px 0; }
-.new-form-scroll > .new-form-divider { margin-top: 2px; padding-top: 12px; border-top: 1px solid #e5e7eb; }
-.new-booking-form h2 { margin: 0 0 12px; font-size: 15px; letter-spacing: -.01em; }
-.new-appointment-grid, .new-notes-grid { margin: 0 22px 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.new-appointment-grid.single { grid-template-columns: 1fr; }
-.new-appointment-grid .field, .new-notes-grid .field { margin: 0; }
-.new-form-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.new-form-scroll > .field, .new-form-scroll > .field-row, .new-form-scroll > .form-hint, .new-form-scroll > .notice, .new-form-scroll > .panel-box { margin-left: 22px; margin-right: 22px; }
-.new-form-scroll > .field { margin-bottom: 10px; }.new-form-scroll > .field-row { gap: 16px; }.new-form-scroll > .field-row .field { margin-bottom: 10px; }
-.new-booking-form label { font-size: 12px; font-weight: 680; }.new-booking-form input, .new-booking-form select { min-height: 40px; }.new-booking-form textarea { min-height: 64px; resize: vertical; }
-.new-notes-grid textarea { min-height: 58px; }
-.new-booking-form .form-hint { margin-top: -4px; margin-bottom: 10px; font-size: 11px; }
-.new-booking-form > .modal-footer { position: sticky; bottom: 0; z-index: 3; flex: none; margin: 0; padding: 10px 22px; justify-content: flex-end; border-top: 1px solid #e5e7eb; border-radius: 0 0 8px 8px; background: #fff; box-shadow: 0 -8px 18px rgba(24,31,45,.04); }
-.booking-summary { padding: 0; overflow: hidden; border-color: #e5e7eb; border-radius: 8px; box-shadow: none; background: #fcfcfd; }
-.booking-summary > h2 { margin: 0; padding: 17px 18px 14px; border-bottom: 1px solid #e5e7eb; font-size: 15px; }
-.booking-summary .summary-body { padding: 18px; }.booking-summary section { padding-bottom: 17px; margin-bottom: 17px; display: grid; gap: 4px; border-bottom: 1px solid #e5e7eb; }.booking-summary section:last-child { padding-bottom: 0; margin-bottom: 0; border-bottom: 0; }
-.booking-summary span { color: #707580; font-size: 10px; font-weight: 700; letter-spacing: .045em; text-transform: uppercase; }.booking-summary strong { font-size: 13px; }.booking-summary small { color: #707580; font-size: 12px; }.booking-summary .summary-price { font-size: 16px; }
-
-@media (min-width: 1201px) { .bookings-page.has-detail:not(.is-creating) { padding-right: 384px; } }
-
-@media (max-width: 900px) {
-  .week-grid { grid-template-columns: 1fr; }
-  .week-day { min-height: 0; }
-  .filter-bar .filter-tail { margin-left: 0; }
+.assign-row .field { flex: 1 1 200px; min-width: 0; }
+.unsaved { color: var(--warning); font-size: var(--text-sm); font-weight: var(--weight-strong); }
+@media (min-width: 1201px) { .bookings-page.has-detail { padding-right: 408px; } }
+@media (max-width: 1200px) {
+  .booking-detail { top: 0; z-index: 71; width: min(440px, 100vw); box-shadow: var(--shadow-3); }
 }
 @media (max-width: 700px) {
-  .bookings-page .page-header-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
-  .booking-header-action { min-width: 0; }
-  .booking-header-action--primary { grid-column: 1 / -1; grid-row: 1; }
-  .booking-header-action :deep(.gm-button) { width: 100%; height: 100%; }
-  .calendar-copy strong { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; }
-  .calendar-heading { min-width: 0; display: inline-flex; align-items: center; gap: var(--space-1); }
-  .calendar-title { min-width: 0; display: inline-flex; align-items: center; gap: var(--space-2); }
-  .calendar-copy strong > .chip { justify-self: start; }
-  .new-booking-form > .modal-footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
-  .new-booking-form > .modal-footer > :deep(.gm-confirm),
-  .new-booking-form > .modal-footer > :deep(.gm-button),
-  .new-booking-form > .modal-footer > :deep(.gm-confirm .gm-button) { width: 100%; }
-  .detail-scrim { position: fixed; inset: 0; z-index: 39; display: block; border: 0; background: rgba(16,25,40,.42); }
-  .booking-detail { top: auto; z-index: 40; width: 100%; max-width: 100%; max-height: calc(100dvh - 76px); border-width: 1px 0 0; border-radius: 18px 18px 0 0; box-shadow: 0 -12px 30px rgba(24,31,45,.14); }
-  .new-booking-layout { padding: 16px 0 0; grid-template-columns: 1fr; }.booking-summary { order: -1; }.new-form-scroll > .field-row, .new-appointment-grid, .new-notes-grid { grid-template-columns: 1fr; gap: 12px; }
-  .new-booking-form { max-height: none; }
-  .booking-row.selecting { position: relative; grid-template-columns: minmax(0, 1fr); }
-  .booking-row.selecting .pick-box { position: absolute; top: 4px; right: 4px; z-index: 2; border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.92); }
-  .booking-row.selecting .booking-title { padding-right: 44px; }
-  .filter-bar .field { flex: 1 1 140px; }
-  .booking-card { grid-template-columns: 54px minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); }
-  .booking-end { grid-column: 1/-1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); }
-  .booking-end > .ref { flex: 1 1 100%; }
-  .quick-actions { justify-content: flex-start; }
-  .date-tile { width: 54px; height: 62px; }
-  .detail-when { grid-template-columns: 40px minmax(0, 1fr); }
-  .detail-when .chip { grid-column: 1/-1; justify-self: start; }
-  .modal-footer > button, .modal-footer > a { flex: 1 1 auto; }
-  .quick-label { width: 100%; }
+  .booking-detail { top: auto; left: 0; width: 100%; max-height: calc(100dvh - 24px); border-left: 0; border-top: 1px solid var(--line); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+  .detail-body { padding: var(--space-4) var(--space-4) calc(var(--space-6) + env(safe-area-inset-bottom)); }
+  .detail-head { padding-left: var(--space-4); }
 }
-</style>
 
-<style>
-.booking-detail { width: 368px; }
-@media (max-width: 700px) { .booking-detail { width: 100%; } }
+/* New booking */
+.new-booking { max-width: 720px; margin: 0 auto; }
+.crumbs { margin-bottom: var(--space-2); display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--text-sm); }
+.crumbs .link-button { min-height: 32px; color: var(--accent); text-decoration: none; }
+.new-booking h1 { margin: 0; }
+.new-booking h1:focus { outline: none; }
+.new-booking > .lede { margin-bottom: var(--space-5); }
+.new-form { display: grid; gap: var(--space-4); }
+.new-group { margin: 0; padding: var(--space-5); display: grid; gap: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.new-group > legend { padding: 0 var(--space-2); margin-left: calc(var(--space-2) * -1); font-size: var(--text-md); font-weight: var(--weight-strong); }
+.new-group > .field-hint { margin: 0 0 var(--space-3); }
+.time-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.time-chip {
+  min-width: 92px; min-height: 44px; padding: 0 var(--space-3); color: var(--ink); border: 1px solid var(--line-strong); border-left: 4px solid var(--accent);
+  border-radius: 2px var(--radius-sm) var(--radius-sm) 2px; background: var(--surface); font-size: var(--text-md); font-weight: var(--weight-strong);
+}
+.time-chip:hover { background: var(--accent-faint); }
+.time-chip[aria-pressed='true'] { color: var(--on-accent); border-color: var(--accent); border-left-color: var(--now); background: var(--accent); }
+.time-field { max-width: 320px; }
+.new-dock {
+  position: sticky; bottom: var(--space-3); z-index: 5; padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: var(--space-3); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 2px var(--radius) var(--radius) 2px; background: var(--surface); box-shadow: var(--shadow-2);
+}
+.new-summary { min-width: 0; margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px var(--space-3); font-size: var(--text-sm); }
+.new-summary span { color: var(--ink-soft); }
+.new-result { display: grid; gap: var(--space-3); }
+.skipped { margin: var(--space-1) 0 0; padding-left: 18px; font-size: var(--text-sm); }
+
+@media (max-width: 900px) {
+  .new-dock { bottom: calc(var(--bottom-nav-h) + var(--space-2) + env(safe-area-inset-bottom)); }
+}
+@media (max-width: 700px) {
+  .booking-toolbar .field, .booking-toolbar .date-field { flex: 1 1 140px; }
+  .booking-toolbar .segmented { width: 100%; }
+  .booking-toolbar .segmented button { flex: 1; }
+  .week-meta { margin-left: 0; }
+  .agenda-open { grid-template-columns: 64px 4px minmax(0, 1fr); padding: var(--space-3); }
+  .agenda-flags { grid-column: 3; justify-content: flex-start; }
+  .agenda-actions { padding: 0 var(--space-3) var(--space-3) var(--space-3); }
+  .new-group { padding: var(--space-4); }
+  .new-dock .form-actions { width: 100%; }
+  .new-dock .form-actions > * { flex: 1; }
+}
 </style>

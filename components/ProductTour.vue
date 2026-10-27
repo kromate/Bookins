@@ -1,45 +1,45 @@
-<script setup>
+<script setup lang="ts">
 // One tour panel for both modes: Demo (sample data, guide steps) and Live (owner workspace, read-only highlights).
-// Also renders the one-time "New to Bookins?" offer in Live. Start it with `inject('startTour')()` or the exposed start().
+// The first-run offer is an inline row on Today (pages/Index.vue), never a floating card. Start the tour with
+// `inject('startTour')()` or the exposed start().
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import type { Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GmWalkthrough from './ui/GmWalkthrough.vue'
-import { createWalkthrough } from '../demo/useWalkthrough.js'
-import { demoGuideRoutes, demoGuideSteps, liveGuideRoutes, liveGuideSteps } from '../demo/guide.js'
-import { isDemo } from '../runtime.js'
-import { useSetupState } from '../setup.js'
+import { createWalkthrough } from '../demo/useWalkthrough.ts'
+import { demoGuideRoutes, demoGuideSteps, liveGuideRoutes, liveGuideSteps } from '../demo/guide.ts'
+import { isDemo } from '../runtime.ts'
+import { useSetupState } from '../setup.ts'
+import { writeTourSeen as writeSeen } from '../tour.ts'
 
-const SEEN_KEY = 'bookins:tour-seen:v1'
 const route = useRoute()
 const router = useRouter()
-const loaded = inject('bookingLoaded')
-const workspace = inject('bookingState')
+const loaded = inject<Ref<boolean>>('bookingLoaded')
+const workspace = inject<WorkspaceState | Ref<WorkspaceState | null> | null>('bookingState', null)
 const setup = useSetupState(workspace)
-const panelHost = ref(null)
-const offerVisible = ref(false)
-
-function readSeen() {
-  try { return globalThis.localStorage?.getItem(SEEN_KEY) === '1' } catch { return false }
-}
-function writeSeen() {
-  try { globalThis.localStorage?.setItem(SEEN_KEY, '1') } catch { /* storage unavailable: offer may repeat, tour still works */ }
-}
+const panelHost = ref<HTMLElement | null>(null)
 
 // ---- anchors -------------------------------------------------------------
-const isVisible = element => {
+interface RectLike { left: number; right: number; top: number; bottom: number }
+interface PanelPlacement { name?: string; width: number; height: number; left: number; top: number }
+const isVisible = (element: Element) => {
   const rect = element.getBoundingClientRect()
   return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < window.innerWidth
 }
-function findAnchor(id) {
-  const matches = [...document.querySelectorAll(`[data-tour="${id}"]`)]
+function findAnchor(id: string): HTMLElement | null {
+  const matches = id === 'tour-help-button'
+    ? [...document.querySelectorAll('.tour-help-button')]
+    : [...document.querySelectorAll(`[data-tour="${id}"]`)]
   const byId = document.getElementById(id)
   if (byId && !matches.includes(byId)) matches.push(byId)
-  return matches.find(isVisible) || null
+  return matches.find((element): element is HTMLElement => element instanceof HTMLElement && isVisible(element)) || null
 }
-function waitForAnchor(id, signal, timeout = 1500) {
-  return new Promise(resolve => {
-    let observer, timer
-    const done = value => { observer?.disconnect(); clearTimeout(timer); signal.removeEventListener('abort', abort); resolve(value) }
+function waitForAnchor(id: string | undefined, signal: AbortSignal, timeout = 1500): Promise<HTMLElement | null> {
+  if (!id) return Promise.resolve(null)
+  return new Promise<HTMLElement | null>(resolve => {
+    let observer: MutationObserver | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const done = (value: HTMLElement | null) => { observer?.disconnect(); if (timer) clearTimeout(timer); signal.removeEventListener('abort', abort); resolve(value) }
     const abort = () => done(null)
     const check = () => { const found = findAnchor(id); if (found) done(found) }
     observer = new MutationObserver(check)
@@ -49,7 +49,7 @@ function waitForAnchor(id, signal, timeout = 1500) {
     check()
   })
 }
-let highlighted = null
+let highlighted: HTMLElement | null = null
 function clearHighlight() {
   highlighted?.classList.remove('bookins-tour-target')
   highlighted = null
@@ -64,7 +64,7 @@ const PAD = 12 // outline (3px) + offset (6px) + breathing room
 const EDGE = 16
 const panelDock = ref('')
 const isNarrow = () => window.matchMedia('(max-width: 900px)').matches
-const instantScroll = top => window.scrollTo({ top: Math.max(0, top), behavior: 'instant' })
+const instantScroll = (top: number) => window.scrollTo({ top: Math.max(0, top), behavior: 'instant' as ScrollBehavior })
 function stickyTop() {
   const bar = document.querySelector('.topbar')
   if (!bar || getComputedStyle(bar).position !== 'sticky') return 0
@@ -73,15 +73,15 @@ function stickyTop() {
 // Targets can live inside a scrollable container that is not the window (the sidebar, a dialog). Scroll each such ancestor
 // the minimum amount that brings the target into its visible box (like scrollIntoView({ block: 'nearest' })) without
 // touching the window scroll, which the placement code below manages itself.
-function scrollableAncestors(element) {
-  const list = []
+function scrollableAncestors(element: HTMLElement): HTMLElement[] {
+  const list: HTMLElement[] = []
   for (let node = element.parentElement; node && node !== document.body && node !== document.documentElement; node = node.parentElement) {
     const { overflowY } = getComputedStyle(node)
     if (/(auto|scroll)/.test(overflowY) && node.scrollHeight > node.clientHeight + 1) list.push(node)
   }
   return list
 }
-function revealInScrollParents(element) {
+function revealInScrollParents(element: HTMLElement) {
   for (const parent of scrollableAncestors(element)) {
     const box = parent.getBoundingClientRect()
     const rect = element.getBoundingClientRect()
@@ -91,19 +91,19 @@ function revealInScrollParents(element) {
     else if (rect.bottom > bottom) parent.scrollTop += Math.min(rect.bottom - bottom, rect.top - top)
   }
 }
-const intersects = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
-function padded(rect) {
+const intersects = (a: RectLike, b: RectLike) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+function padded(rect: DOMRect): RectLike {
   return { left: rect.left - PAD, right: rect.right + PAD, top: rect.top - PAD, bottom: rect.bottom + PAD }
 }
 const MIN_SIDE_WIDTH = 300
 // Pure: where could a panel go on desktop without touching the padded target? `heightFor(width)` measures the panel at a
 // width (side placements may narrow it). Returns null when nothing fits.
-function desktopPlacement(rect, maxWidth, heightFor, vw, vh, top) {
+function desktopPlacement(rect: DOMRect, maxWidth: number, heightFor: (width: number) => number, vw: number, vh: number, top: number): PanelPlacement | null {
   const t = padded(rect)
-  const options = []
+  const options: PanelPlacement[] = []
   const rightRoom = vw - EDGE - (t.right + 8)
   const leftRoom = t.left - 8 - EDGE
-  for (const [name, room] of [['right', rightRoom], ['left', leftRoom]]) {
+  for (const [name, room] of [['right', rightRoom], ['left', leftRoom]] as const) {
     const width = Math.min(maxWidth, Math.floor(room))
     if (width < MIN_SIDE_WIDTH) continue
     const height = heightFor(width)
@@ -121,13 +121,13 @@ function desktopPlacement(rect, maxWidth, heightFor, vw, vh, top) {
   }
   return null
 }
-const PANEL_KEYS = ['left', 'top', 'right', 'bottom', 'width', 'maxHeight']
-function setPanelStyle(values = {}) {
+const PANEL_KEYS = ['left', 'top', 'right', 'bottom', 'width', 'maxHeight'] as const
+function setPanelStyle(values: Partial<Record<(typeof PANEL_KEYS)[number], string>> = {}) {
   const el = panelHost.value
   if (!el) return
   for (const key of PANEL_KEYS) el.style[key] = values[key] ?? ''
 }
-function applyDesktop(o, vh, top) {
+function applyDesktop(o: PanelPlacement, vh: number, top: number) {
   panelDock.value = ''
   setPanelStyle({ left: `${Math.round(o.left)}px`, top: `${Math.round(o.top)}px`, right: 'auto', bottom: 'auto', width: `${Math.round(o.width)}px`, maxHeight: `${vh - top - 24}px` })
 }
@@ -135,24 +135,26 @@ function panelBox() {
   const el = panelHost.value
   return el ? el.getBoundingClientRect() : null
 }
-function overlapsPanel(element) {
+function overlapsPanel(element: HTMLElement) {
   const box = panelBox()
   return Boolean(box && intersects(box, padded(element.getBoundingClientRect())))
 }
 // Bring the target fully on screen: centred when it fits, otherwise its top just under the sticky header.
-function showTarget(element, top, vh) {
+function showTarget(element: HTMLElement, top: number, vh: number) {
   const rect = element.getBoundingClientRect()
   const free = vh - top
   const wanted = rect.height + 2 * PAD <= free ? top + (free - rect.height) / 2 : top + PAD + 4
   instantScroll(window.scrollY + rect.top - wanted)
 }
-const inView = (rect, top, vh) => rect.top >= top - 1 && rect.bottom <= vh + 1
+const inView = (rect: DOMRect, top: number, vh: number) => rect.top >= top - 1 && rect.bottom <= vh + 1
 // A target too tall to show beside the panel: highlight its first meaningful part instead of the whole block.
-function narrowTarget(element) {
+function narrowTarget(element: HTMLElement): HTMLElement | null {
   const own = element.getBoundingClientRect().height
-  let node = element
+  let node: HTMLElement | null = element
   for (let depth = 0; depth < 6 && node; depth++) {
-    const all = [...node.children].filter(child => { const r = child.getBoundingClientRect(); return r.width >= 40 && r.height >= 40 })
+    const all: HTMLElement[] = Array.from(node.children)
+      .filter((child): child is HTMLElement => child instanceof HTMLElement)
+      .filter((child: HTMLElement) => { const r = child.getBoundingClientRect(); return r.width >= 40 && r.height >= 40 })
     const kids = all.filter(child => child.getBoundingClientRect().height < own - 8)
     const pick = kids.find(child => child.getBoundingClientRect().height >= 80) || kids[0]
     if (pick) return pick
@@ -160,15 +162,15 @@ function narrowTarget(element) {
   }
   return null
 }
-function moveHighlight(next) {
+function moveHighlight(next: HTMLElement) {
   highlighted?.classList.remove('bookins-tour-target')
   highlighted = next
   next.classList.add('bookins-tour-target')
 }
 // Returns true when the (whole) target is on screen and clear of the panel.
-async function layoutMobile(element, scroll, top, vh) {
+async function layoutMobile(element: HTMLElement, scroll: boolean, top: number, vh: number) {
   setPanelStyle()
-  const place = async dock => {
+  const place = async (dock: string) => {
     panelDock.value = dock
     await nextTick()
     const box = panelBox()
@@ -190,11 +192,12 @@ async function layoutMobile(element, scroll, top, vh) {
   await place(first === 'top' ? 'bottom' : 'top')
   return ok()
 }
-function layoutDesktop(element, scroll, vw, vh, top, final) {
+function layoutDesktop(element: HTMLElement, scroll: boolean, vw: number, vh: number, top: number, final: boolean) {
   const host = panelHost.value
+  if (!host) return false
   panelDock.value = ''
   const maxWidth = Math.min(400, vw - 2 * EDGE)
-  const heightFor = width => {
+  const heightFor = (width: number) => {
     host.style.width = `${width}px`
     host.style.maxHeight = `${vh - top - 24}px`
     return Math.min(host.offsetHeight, vh - top - 24)
@@ -206,7 +209,7 @@ function layoutDesktop(element, scroll, vw, vh, top, final) {
     return desktopPlacement(rect, maxWidth, heightFor, vw, vh, top)
   }
   const search = () => {
-    let found
+    let found: PanelPlacement | null
     if (scroll) {
       showTarget(element, top, vh)
       found = fitHere()
@@ -237,11 +240,11 @@ function layoutDesktop(element, scroll, vw, vh, top, final) {
   const rect = element.getBoundingClientRect()
   const height = heightFor(maxWidth)
   const toBottom = vh - rect.bottom >= rect.top - top
-  applyDesktop({ left: Math.max(EDGE, vw - maxWidth - EDGE), top: toBottom ? vh - height - EDGE : top + 8, width: maxWidth }, vh, top)
+  applyDesktop({ left: Math.max(EDGE, vw - maxWidth - EDGE), top: toBottom ? vh - height - EDGE : top + 8, width: maxWidth, height }, vh, top)
   return false
 }
 // scroll = false: only reposition (resize / user scroll). scroll = true: also move the target into free space.
-async function layout(scroll) {
+async function layout(scroll: boolean) {
   if (!highlighted || !panelHost.value) { setPanelStyle(); panelDock.value = ''; return }
   const vw = window.innerWidth
   const vh = window.innerHeight
@@ -264,7 +267,7 @@ function queueLayout(scroll = false) {
   layoutQueued = true
   requestAnimationFrame(() => { layoutQueued = false; layout(scroll) })
 }
-async function reveal(element) {
+async function reveal(element: HTMLElement) {
   clearHighlight()
   highlighted = element
   element.classList.add('bookins-tour-target')
@@ -273,7 +276,7 @@ async function reveal(element) {
   await nextTick()
   if (highlighted === element) await layout(false)
 }
-let resizeObserver
+let resizeObserver: ResizeObserver | null = null
 let lastPanelHeight = 0
 watch(panelHost, el => {
   resizeObserver?.disconnect()
@@ -291,7 +294,7 @@ const onViewportChange = () => { if (highlighted) queueLayout(false) }
 const onResize = () => { if (highlighted) queueLayout(true) }
 
 // ---- demo ----------------------------------------------------------------
-const waitForGuestPreview = (signal) => new Promise((resolve, reject) => {
+const waitForGuestPreview = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   const finish = () => {
     observer?.disconnect()
     signal.removeEventListener('abort', abort)
@@ -368,15 +371,14 @@ const extra = computed(() => {
 
 async function start() {
   writeSeen()
-  offerVisible.value = false
   await guide.value.start()
   await nextTick()
-  panelHost.value?.querySelector('.gm-walkthrough')?.focus({ preventScroll: true })
+  panelHost.value?.querySelector<HTMLElement>('.gm-walkthrough')?.focus({ preventScroll: true })
 }
 function close() {
   guide.value.close()
 }
-async function takeAction(action) {
+async function takeAction(action: { to: string }) {
   close()
   await router.push(action.to)
 }
@@ -388,51 +390,27 @@ watch(() => guide.value.state.open, async open => {
   writeSeen()
   await nextTick()
   if (document.activeElement === document.body || !document.activeElement) {
-    const trigger = [...document.querySelectorAll('[data-bookins-walkthrough-trigger]')].find(isVisible)
+    const trigger = [...document.querySelectorAll<HTMLElement>('.bookins-walkthrough-trigger')].find(isVisible)
     trigger?.focus({ preventScroll: true })
   }
 })
-watch(isDemo, () => { demoGuide.close(); liveGuide.close(); offerVisible.value = false })
+watch(isDemo, () => { demoGuide.close(); liveGuide.close() })
 watch(() => route.path, path => {
   const { state } = guide.value
   if (state.open && state.status === 'ready' && path !== current.value?.route) close()
 })
 
-// ---- first-run offer ---------------------------------------------------------
-const dialogOpen = () => Boolean(document.querySelector('.gm-dialog-content, .more-sheet, .sidebar.open'))
-function evaluateOffer() {
-  if (offerVisible.value || isDemo.value || readSeen()) return
-  if (loaded?.value !== true || guide.value.state.open || route.path === '/book' || dialogOpen()) return
-  offerVisible.value = true
-}
-function dismissOffer() {
-  writeSeen()
-  offerVisible.value = false
-}
-function offerKeydown(event) {
-  if (event.key !== 'Escape' || event.defaultPrevented || !offerVisible.value || dialogOpen()) return
-  dismissOffer()
-}
-function tourKeydown(event) {
+function tourKeydown(event: KeyboardEvent) {
   if (event.key !== 'Escape' || !guide.value.state.open) return
   if (event.defaultPrevented || document.querySelector('.gm-dialog-content')) return
   close()
 }
-let offerTimer
 onMounted(() => {
-  document.addEventListener('keydown', offerKeydown)
   document.addEventListener('keydown', tourKeydown)
   window.addEventListener('resize', onResize)
   window.addEventListener('scroll', onViewportChange, { passive: true })
-  offerTimer = window.setInterval(() => {
-    if (readSeen() || isDemo.value) return
-    evaluateOffer()
-    if (offerVisible.value) window.clearInterval(offerTimer)
-  }, 1500)
 })
 onBeforeUnmount(() => {
-  window.clearInterval(offerTimer)
-  document.removeEventListener('keydown', offerKeydown)
   document.removeEventListener('keydown', tourKeydown)
   window.removeEventListener('resize', onResize)
   window.removeEventListener('scroll', onViewportChange)
@@ -446,20 +424,12 @@ defineExpose({ start, close })
 </script>
 
 <template>
-  <section v-if="offerVisible && !guide.state.open" class="tour-offer" aria-label="Product tour">
-    <p class="tour-offer-title">New to Bookins?</p>
-    <p class="tour-offer-copy">Take a 1-minute tour of how to get set up. Nothing is changed.</p>
-    <div class="tour-offer-actions">
-      <button type="button" class="primary small" @click="start">Take the tour</button>
-      <button type="button" class="ghost small" @click="dismissOffer">Not now</button>
-    </div>
-  </section>
-  <div v-if="guide.state.open" ref="panelHost" class="tour-panel" :class="{ 'tour-panel--demo': isDemo }" :data-dock="panelDock || undefined">
+  <div v-if="guide.state.open" ref="panelHost" class="tour-panel" :class="{ 'tour-panel--demo': isDemo, 'tour-panel--dock-top': panelDock === 'top', 'tour-panel--dock-bottom': panelDock === 'bottom' }">
     <GmWalkthrough
       :steps="guide.steps"
       :state="guide.state"
       :label="isDemo ? 'Sample walkthrough' : 'Bookins tour'"
-      :notice="isDemo ? 'Sample data. The walkthrough never creates a booking or changes anything.' : 'Nothing is changed by this tour.'"
+      :notice="isDemo ? 'Sample data. The walkthrough never creates a booking or changes anything.' : 'The tour only points at things. Nothing is changed.'"
       :jump="isDemo"
       :extra="extra"
       @next="guide.next"

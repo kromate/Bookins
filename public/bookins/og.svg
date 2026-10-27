@@ -1,11 +1,58 @@
-<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="630" fill="#F7F8FC"/>
-  <circle cx="1020" cy="110" r="270" fill="#EEF1FF"/>
-  <circle cx="1130" cy="560" r="210" fill="#E0E5FF"/>
-  <rect x="96" y="88" width="70" height="70" rx="20" fill="#EEF1FF"/>
-  <path d="M119 110c9 6 15 15 18 26-.3-7 0-14 2-21 1-6 3-11 7-15 4-4 11-6 16-3 5 3 6 10 3 15-2 6-7 10-12 13 4-1 8-3 12-3 4-1 9 0 12 3 5 3 7 10 5 16-1 6-6 11-11 14-6 5-14 7-21 8-4 1-9 0-11 0-1-2 0-6 1-8 1-3 4-5 6-6 4-3 8-3 13-2 5 1 12 5 13 10 1 6-5 16-8 21" stroke="#2336DC" stroke-width="5" stroke-linejoin="round"/>
-  <text x="190" y="145" fill="#101928" font-family="Inter,Arial,sans-serif" font-size="58" font-weight="800" letter-spacing="-3">Bookins</text>
-  <text x="96" y="290" fill="#101928" font-family="Inter,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4">Bookings that work</text>
-  <text x="96" y="372" fill="#2336DC" font-family="Inter,Arial,sans-serif" font-size="72" font-weight="800" letter-spacing="-4">for African businesses.</text>
-  <text x="96" y="455" fill="#697087" font-family="Inter,Arial,sans-serif" font-size="28">Services, availability, secure links, and appointment management.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Bookins: a day of booked slots">
+  <rect width="1200" height="630" fill="#F4F5F8"/>
+
+  <!-- Lockup -->
+  <g transform="translate(96 104) scale(2.25)">
+    <path fill="#F2B33D" d="M11 13H22a7 7 0 0 1 7 7v2a7 7 0 0 1-7 7H11z"/>
+    <path fill="#2E3FA8" d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V29H5z"/>
+    <rect fill="#1A1F3D" x="15.5" y="19.75" width="9" height="2.5" rx="1.25"/>
+    <g transform="translate(38 0.6) scale(1.18)" fill="#1A1F3D" stroke="#1A1F3D">
+      <path fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" d="M1.7 3.7V22.3M1.7 11.7H7.7A4.6 4.6 0 0 1 12.3 16.3V17.7A4.6 4.6 0 0 1 7.7 22.3H1.7M22.9 11.7H24.3A4.6 4.6 0 0 1 28.9 16.3V17.7A4.6 4.6 0 0 1 24.3 22.3H22.9A4.6 4.6 0 0 1 18.3 17.7V16.3A4.6 4.6 0 0 1 22.9 11.7ZM39.6 11.7H41A4.6 4.6 0 0 1 45.6 16.3V17.7A4.6 4.6 0 0 1 41 22.3H39.6A4.6 4.6 0 0 1 35 17.7V16.3A4.6 4.6 0 0 1 39.6 11.7ZM51.3 3.7V22.3M60.2 11.7L51.3 18.6M55.3 15.5L60.8 22.3M66.3 11.7V22.3M72.3 22.3V11.7M72.3 16.3A4.6 4.6 0 0 1 76.9 11.7H78.3A4.6 4.6 0 0 1 82.9 16.3V22.3M96.6 13.4C95.6 12.2 94.2 11.7 92.6 11.7C90.5 11.7 89 12.9 89 14.6C89 16.5 90.6 16.9 92.9 17.2C95.2 17.5 97.2 18 97.2 19.9C97.2 21.4 95.5 22.3 93.2 22.3C91.4 22.3 89.8 21.7 88.7 20.6"/>
+      <circle stroke="none" cx="66.3" cy="5.4" r="2.1"/>
+    </g>
+  </g>
+
+  <!-- Guest time chips (slot shape: rail on the left, rounded right); the third is chosen -->
+  <path d="M98 430H210a10 10 0 0 1 10 10v40a10 10 0 0 1-10 10H98a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#FFFFFF" stroke="#DDE1EA" stroke-width="2"/>
+  <path d="M98 430h6v60h-6a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#2E3FA8"/>
+  <rect x="124" y="455" width="68" height="10" rx="5" fill="#1A1F3D"/>
+  <path d="M238 430H350a10 10 0 0 1 10 10v40a10 10 0 0 1-10 10H238a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#FFFFFF" stroke="#DDE1EA" stroke-width="2"/>
+  <path d="M238 430h6v60h-6a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#2E3FA8"/>
+  <rect x="264" y="455" width="68" height="10" rx="5" fill="#1A1F3D"/>
+  <path d="M378 430H490a10 10 0 0 1 10 10v40a10 10 0 0 1-10 10H378a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#2E3FA8"/>
+  <path d="M378 430h6v60h-6a2 2 0 0 1-2-2v-56a2 2 0 0 1 2-2z" fill="#F2B33D"/>
+  <rect x="404" y="455" width="68" height="10" rx="5" fill="#FFFFFF"/>
+
+  <!-- A day on the rail: two people booked in parallel, and the now-line -->
+  <rect x="664" y="72" width="440" height="486" rx="20" fill="#FFFFFF" stroke="#DDE1EA" stroke-width="2"/>
+  <g stroke="#ECEEF3" stroke-width="2">
+    <line x1="728" y1="132" x2="1072" y2="132"/>
+    <line x1="728" y1="204" x2="1072" y2="204"/>
+    <line x1="728" y1="276" x2="1072" y2="276"/>
+    <line x1="728" y1="348" x2="1072" y2="348"/>
+    <line x1="728" y1="420" x2="1072" y2="420"/>
+    <line x1="728" y1="492" x2="1072" y2="492"/>
+  </g>
+  <g fill="#9BA1B0">
+    <rect x="692" y="129" width="22" height="6" rx="3"/>
+    <rect x="692" y="201" width="22" height="6" rx="3"/>
+    <rect x="692" y="273" width="22" height="6" rx="3"/>
+    <rect x="692" y="345" width="22" height="6" rx="3"/>
+    <rect x="692" y="417" width="22" height="6" rx="3"/>
+    <rect x="692" y="489" width="22" height="6" rx="3"/>
+  </g>
+  <path d="M742 140H882a10 10 0 0 1 10 10v92a10 10 0 0 1-10 10H742a2 2 0 0 1-2-2v-108a2 2 0 0 1 2-2z" fill="#EEF0FA" stroke="#BDC5EC" stroke-width="2"/>
+  <path d="M742 140h6v112h-6a2 2 0 0 1-2-2v-108a2 2 0 0 1 2-2z" fill="#2E3FA8"/>
+  <rect x="764" y="162" width="80" height="10" rx="5" fill="#1A1F3D"/>
+  <rect x="764" y="182" width="104" height="8" rx="4" fill="#5B6273"/>
+  <path d="M908 176H1048a10 10 0 0 1 10 10v56a10 10 0 0 1-10 10H908a2 2 0 0 1-2-2v-72a2 2 0 0 1 2-2z" fill="#E6F2F5" stroke="#B4D7DF" stroke-width="2"/>
+  <path d="M908 176h6v76h-6a2 2 0 0 1-2-2v-72a2 2 0 0 1 2-2z" fill="#0E7490"/>
+  <rect x="930" y="198" width="72" height="10" rx="5" fill="#1A1F3D"/>
+  <rect x="930" y="218" width="96" height="8" rx="4" fill="#5B6273"/>
+  <path d="M742 358H1048a10 10 0 0 1 10 10v76a10 10 0 0 1-10 10H742a2 2 0 0 1-2-2v-92a2 2 0 0 1 2-2z" fill="#EEF0FA" stroke="#BDC5EC" stroke-width="2"/>
+  <path d="M742 358h6v96h-6a2 2 0 0 1-2-2v-92a2 2 0 0 1 2-2z" fill="#2E3FA8"/>
+  <rect x="764" y="380" width="96" height="10" rx="5" fill="#1A1F3D"/>
+  <rect x="764" y="400" width="140" height="8" rx="4" fill="#5B6273"/>
+  <line x1="704" y1="308" x2="1080" y2="308" stroke="#F2B33D" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="704" cy="308" r="9" fill="#F2B33D"/>
 </svg>

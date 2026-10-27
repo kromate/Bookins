@@ -1,8 +1,9 @@
-<script setup>
+<script setup lang="ts">
 // Team: everyone who takes appointments. A member is a person plus their own calendar (a schedule), which is what
 // lets two people be booked at the same time. The owner is always member #1 ("You"), implicit until saved.
-import { computed, inject, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, reactive, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
+import DayBar from '../components/DayBar.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmDialog from '../components/ui/GmDialog.vue'
@@ -26,28 +27,31 @@ import {
   staffForBooking,
   staffServiceCopyEstimate,
   teamMembers,
-} from '../booking.js'
-import { STAFF_COPY_MAX, STAFF_COPY_WARN, parseServiceIds } from '../team.js'
-import { STAFF_COLORS, displayName, memberColor, memberFirstName, memberInitial, memberName, nextFreeColor, ownerSaveName, scheduleOf } from '../team-ui.js'
+} from '../booking.ts'
+import { STAFF_COPY_MAX, STAFF_COPY_WARN, parseServiceIds } from '../team.ts'
+import { STAFF_COLORS, colorName, displayName, memberColor, memberFirstName, memberInitial, nextFreeColor, ownerSaveName, scheduleOf } from '../team-ui.ts'
 import {
+  DAY_NAMES,
   applyScheduleToDays,
   copyDaysInto,
   dayIssues,
   daysSignature,
   makeDays,
   summarizeHours,
+  validWindows,
   weeklyHoursTotal,
   weeklyWindowsFromDays,
   windowsAreSaveable,
-} from '../weekly-hours.js'
-import { isDemo, registerDemoGuard } from '../runtime.js'
+} from '../weekly-hours.ts'
+import { isDemo, registerDemoGuard } from '../runtime.ts'
+import { errorMessage } from '../error-message.ts'
 
-const state = inject('bookingState')
-const refresh = inject('refreshBookings')
-const toast = inject('toast', null)
-const ok = (message, options) => toast?.(message, options)
-let errorToastId = null
-const bad = (message) => {
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const refresh = inject<RefreshWorkspace>('refreshBookings', async () => true)
+const toast = inject<ToastApi | null>('toast', null)
+const ok = (message: string, options?: ToastOptions) => toast?.(message, options)
+let errorToastId: number | void | null = null
+const bad = (message: string) => {
   if (errorToastId != null) toast?.dismiss?.(errorToastId)
   errorToastId = toast?.error ? toast.error(message) : toast?.(message, { kind: 'error' })
 }
@@ -58,22 +62,42 @@ const now = ref(Date.now())
 const clock = window.setInterval(() => { now.value = Date.now() }, 60_000)
 const team = computed(() => hasTeam(state))
 const baseServices = computed(() => (state.services || []).filter((item) => !isStaffCopy(item)))
-const upcomingCount = (member) =>
+const upcomingCount = (member: StaffRecord) =>
   (state.bookings || []).filter(
-    (item) => item.status === 'confirmed' && isActiveBooking(item) && Date.parse(item.ends_at) > now.value && staffForBooking(state, item).id === member.id,
+    (item) => item.status === 'confirmed' && isActiveBooking(item) && Date.parse(String(item.ends_at || '')) > now.value && staffForBooking(state, item).id === member.id,
   ).length
 
-function describe(member) {
+// Monday-first mini week for the roster: each day's open hours drawn to scale.
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0]
+function weekBars(schedule: ScheduleRecord | null) {
+  if (!schedule) return []
+  const probe = makeDays()
+  try {
+    applyScheduleToDays(probe, schedule)
+  } catch {
+    return []
+  }
+  return WEEK_ORDER.map((weekday) => {
+    const day = probe[weekday]
+    return { weekday, short: (DAY_NAMES[weekday] || '').slice(0, 1), windows: day?.active ? validWindows(day) : [] }
+  })
+}
+// summarizeHours keeps plain hyphens (its tests and other callers rely on them); ranges read better with en dashes.
+const rangeText = (text: string) => text.replace(/-/g, '–')
+
+function describe(member: StaffRecord) {
   const schedule = scheduleOf(state, member)
   const owner = isOwnerMember(member)
   const ids = parseServiceIds(member)
   const offered = servicesForStaff(state, member).length
   const copies = staffCopies(state, null, member).filter((item) => item.active !== false).length
+  const hours = summarizeHours(schedule)
   return {
     member,
     owner,
     schedule,
-    hours: summarizeHours(schedule),
+    hours: { ...hours, text: rangeText(hours.text) },
+    week: weekBars(schedule),
     services: !ids.length ? (baseServices.value.length ? `All ${baseServices.value.length} service${baseServices.value.length === 1 ? '' : 's'}` : 'All services') : `${offered} of ${baseServices.value.length} service${baseServices.value.length === 1 ? '' : 's'}`,
     onPage: copies,
     upcoming: upcomingCount(member),
@@ -87,13 +111,14 @@ const inactiveRows = computed(() => rows.value.filter((row) => !isStaffActive(ro
 
 // ---- add / edit dialog ----
 const open = ref(false)
-const editing = ref(null) // the saved member being edited; null while adding
+const editing = ref<StaffRecord | null>(null) // the saved member being edited; null while adding
 const editingOwner = ref(false)
 const saving = ref(false)
 const formError = ref('')
 const discardOpen = ref(false)
 const days = reactive(makeDays())
-const form = reactive({ name: '', role: '', color: STAFF_COLORS[0], photoUrl: '', phone: '', email: '', allServices: true, serviceIds: [], intervalMinutes: 60 })
+interface MemberForm { name: string; role: string; color: string; photoUrl: string; phone: string; email: string; allServices: boolean; serviceIds: string[]; intervalMinutes: number }
+const form = reactive<MemberForm>({ name: '', role: '', color: STAFF_COLORS[0] || '#334155', photoUrl: '', phone: '', email: '', allServices: true, serviceIds: [], intervalMinutes: 60 })
 const baseline = ref('')
 const hadSchedule = ref(false)
 const ownerSchedule = computed(() => scheduleOf(state, ownerStaff(state)))
@@ -118,33 +143,14 @@ const saveReason = computed(() => {
   if (!form.allServices && !form.serviceIds.length) return 'Choose at least one service, or switch to All services.'
   return ''
 })
-function closeMemberMenus(except = null) {
-  for (const menu of document.querySelectorAll('.member-more[open]')) {
-    if (menu !== except) menu.removeAttribute('open')
-  }
-}
-function onMemberMenuPointerDown(event) {
-  closeMemberMenus(event.target.closest?.('.member-more') || null)
-}
-function onMemberMenuKeydown(event) {
-  if (event.key === 'Escape') closeMemberMenus()
-}
-function closeMemberMenuFromAction(event) {
-  if (!event.target.closest?.('.gm-confirm')) event.currentTarget.closest('details')?.removeAttribute('open')
-}
+// Row menus are <details data-menu>; App.vue closes them on Escape, outside clicks and item clicks.
 const removeGuard = registerDemoGuard('bookins-team-dialog', () => (open.value ? 'Close the team member window before switching modes.' : ''))
-onMounted(() => {
-  document.addEventListener('pointerdown', onMemberMenuPointerDown)
-  document.addEventListener('keydown', onMemberMenuKeydown)
-})
 onBeforeUnmount(() => {
   removeGuard()
   window.clearInterval(clock)
-  document.removeEventListener('pointerdown', onMemberMenuPointerDown)
-  document.removeEventListener('keydown', onMemberMenuKeydown)
 })
 
-function loadHoursFrom(schedule) {
+function loadHoursFrom(schedule: ScheduleRecord | null | undefined) {
   copyDaysInto(days, makeDays())
   if (!schedule) return false
   try {
@@ -169,7 +175,7 @@ function openAdd() {
   open.value = true
 }
 
-function openEdit(member) {
+function openEdit(member: StaffRecord) {
   if (isDemo.value) return
   editing.value = member
   editingOwner.value = isOwnerMember(member)
@@ -211,24 +217,24 @@ function copyFromMe() {
   if (loadHoursFrom(ownerSchedule.value)) ok(`Copied your hours. They are not saved until you press ${editing.value ? 'Save changes' : 'Add to team'}.`)
   else bad('Your saved hours could not be read, so they were not copied.')
 }
-function onEditorNotice(notice) {
+function onEditorNotice(notice: { kind: string; text: string }) {
   if (notice.kind === 'error') formError.value = notice.text
   else { formError.value = ''; ok(notice.text) }
 }
 // The longest service this person is offered: their booking interval has to fit it for guests to pick them.
-const offeredServices = computed(() => (form.allServices ? baseServices.value : baseServices.value.filter((item) => form.serviceIds.includes(item.id))).filter((item) => item.active !== false))
+const offeredServices = computed(() => (form.allServices ? baseServices.value : baseServices.value.filter((item) => Boolean(item.id && form.serviceIds.includes(item.id)))).filter((item) => item.active !== false))
 const offeredMax = computed(() => Math.max(0, ...offeredServices.value.map((item) => Number(item.duration_minutes || 0))))
 const offeredLongest = computed(() => displayName(offeredServices.value.find((item) => Number(item.duration_minutes || 0) === offeredMax.value)?.name || ''))
 // Live "N services x M members = K copies" for the services ticked, against the workspace limit.
 const pickEstimate = computed(() => {
   if (form.allServices || !form.serviceIds.length) return null
-  const people = new Set(teamMembers(state).filter((member) => !isOwnerMember(member)).map((member) => member.id))
+  const people = new Set(teamMembers(state).filter((member) => !isOwnerMember(member)).flatMap((member) => member.id ? [member.id] : []))
   people.add(editing.value?.id && !editing.value.implicit ? editing.value.id : '__new__')
   const base = staffServiceCopyEstimate(state, { serviceIds: form.serviceIds, staffIds: [...people] })
-  return { services: form.serviceIds.length, members: people.size, pairs: form.serviceIds.length * people.size, existing: base.existing, total: base.total, max: STAFF_COPY_MAX, warnAt: STAFF_COPY_WARN, overMax: base.overMax }
+  return { services: form.serviceIds.length, members: people.size, pairs: form.serviceIds.length * people.size, existing: base.existing, adding: base.adding, total: base.total, max: STAFF_COPY_MAX, warnAt: STAFF_COPY_WARN, overMax: base.overMax }
 })
 
-function scheduleSettings(existing) {
+function scheduleSettings(existing: ScheduleRecord | null | undefined) {
   const source = existing || ownerSchedule.value
   return {
     timezone: source?.timezone || state.profile?.timezone || 'Africa/Lagos',
@@ -269,7 +275,7 @@ async function submit() {
     // From here a retry updates this person instead of adding a second one.
     editing.value = member
   } catch (reason) {
-    formError.value = reason?.message || 'The team member could not be saved.'
+    formError.value = errorMessage(reason, 'The team member could not be saved.')
     bad(formError.value)
     saving.value = false
     return
@@ -284,7 +290,7 @@ async function submit() {
   } catch (reason) {
     await refresh()
     hadSchedule.value = false
-    formError.value = `${form.name.trim()} was saved, but their hours were not: ${reason?.message || 'try again.'} Fix it and press Save again.`
+    formError.value = `${form.name.trim()} was saved, but their hours were not: ${errorMessage(reason, 'try again.')} Fix it and press Save again.`
     bad(formError.value)
     saving.value = false
     return
@@ -298,7 +304,7 @@ async function submit() {
   else ok(editingOwner.value ? 'Your team profile was saved.' : `${first} was saved.`)
 }
 
-function hoursBaseline(existing) {
+function hoursBaseline(existing: ScheduleRecord) {
   const probe = makeDays()
   try {
     applyScheduleToDays(probe, existing)
@@ -313,7 +319,7 @@ const statusBusy = ref(false)
 const confirming = ref('') // member id whose list confirmation is open
 const dialogConfirmOpen = ref(false)
 
-async function deactivate(member) {
+async function deactivate(member: StaffRecord) {
   if (isDemo.value || statusBusy.value) return
   statusBusy.value = true
   try {
@@ -327,14 +333,14 @@ async function deactivate(member) {
     })
     if (open.value) closeDialogAfterStatus()
   } catch (reason) {
-    bad(reason?.message || 'The team member could not be deactivated.')
+    bad(errorMessage(reason, 'The team member could not be deactivated.'))
   } finally {
     statusBusy.value = false
     confirming.value = ''
   }
 }
 
-async function reactivate(member, undo = false) {
+async function reactivate(member: StaffRecord, undo = false) {
   if (isDemo.value || (statusBusy.value && !undo)) return
   statusBusy.value = true
   try {
@@ -344,7 +350,7 @@ async function reactivate(member, undo = false) {
     ok(`${memberFirstName(member)} is active again.${restored ? ` ${restored} service ${restored === 1 ? 'copy is' : 'copies are'} back on your booking page.` : ''}`)
     if (open.value) closeDialogAfterStatus()
   } catch (reason) {
-    bad(reason?.message || 'The team member could not be reactivated.')
+    bad(errorMessage(reason, 'The team member could not be reactivated.'))
   } finally {
     statusBusy.value = false
     confirming.value = ''
@@ -354,56 +360,63 @@ function closeDialogAfterStatus() {
   discardOpen.value = false
   open.value = false
 }
-const deactivateMessage = (member) =>
+const deactivateMessage = (member: StaffRecord) =>
   `${memberFirstName(member)} will no longer appear on your booking page: their service copies are hidden from guests, and you cannot assign new bookings to them. Their existing bookings, history and hours are kept, and you can reactivate them any time.${open.value && dirty.value ? ' Edits you have not saved in this window are discarded.' : ''}`
-const reactivateMessage = (member) =>
+const reactivateMessage = (member: StaffRecord) =>
   `${memberFirstName(member)} will be available for assigning bookings again, and their service copies reappear on your booking page.`
+function hideBrokenImage(event: Event) {
+  if (event.target instanceof HTMLElement) event.target.style.display = 'none'
+}
 </script>
 
 <template>
   <section>
-    <div class="page-header">
+    <header class="page-header">
       <div>
-
         <h1>Team</h1>
-        <p class="lede">Manage the people clients can book.</p>
+        <p class="lede">{{ team ? 'Everyone clients can book. Each person has their own calendar, so two people can be booked at the same time.' : 'Add the people who take appointments with you.' }}</p>
       </div>
-      <div class="page-header-actions">
-        <GmButton variant="primary" data-tour="tour-team-add" :disabled-reason="demoHint" @click="openAdd"><template #leading><AppIcon name="plus" :size="18" /></template>Add team member</GmButton>
-      </div>
-    </div>
+      <GmButton variant="primary" data-tour="tour-team-add" :disabled-reason="demoHint" @click="openAdd"><template #leading><AppIcon name="plus" :size="18" /></template>Add team member</GmButton>
+    </header>
 
-    <p v-if="isDemo" class="muted demo-note">{{ demoHint }} The sample team shows how it works.</p>
+    <div v-if="isDemo" class="notice info" role="status"><AppIcon name="info" :size="18" /><span>A sample team. Switch to Live to manage your own.</span></div>
 
     <div data-tour="tour-team-list" class="team-wrap">
-      <ul class="member-list" aria-label="Team members">
-        <li v-for="row in activeRows" :key="row.member.id" class="card member-card">
+      <ul class="ledger member-list" aria-label="Team members">
+        <li v-for="row in activeRows" :key="row.member.id" class="member-row" :style="{ '--member': row.color }">
           <span class="member-avatar" :style="{ background: row.color }" aria-hidden="true">
             <span>{{ row.initial }}</span>
-            <img v-if="row.member.photo_url" :src="row.member.photo_url" alt="" loading="lazy" referrerpolicy="no-referrer" @error="(event) => (event.target.style.display = 'none')" />
+            <img v-if="row.member.photo_url" :src="row.member.photo_url" alt="" loading="lazy" referrerpolicy="no-referrer" @error="hideBrokenImage" />
           </span>
           <div class="member-main">
             <div class="member-title">
               <h2>{{ row.owner ? (row.member.implicit ? ownerSaveName(state) : row.member.name) : row.member.name }}</h2>
-              <span v-if="row.owner" class="chip accent">You</span>
-              <span class="chip success dot">Active</span>
+              <span v-if="row.owner" class="you-tag">You</span>
               <span v-if="!row.owner && !row.schedule" class="chip warning">No hours yet</span>
             </div>
-            <p v-if="row.member.role" class="member-contact"><span>{{ row.member.role }}</span></p>
-            <ul class="member-facts">
-              <li><AppIcon name="clock" :size="16" /><span>{{ row.hours.text }}<template v-if="row.hours.hoursPerWeek"> · {{ row.hours.hoursPerWeek }} h/week</template></span></li>
-              <li><AppIcon name="services" :size="16" /><span>{{ row.services }}</span></li>
-              <li><AppIcon name="bookings" :size="16" /><span>{{ row.upcoming }} upcoming</span></li>
-            </ul>
+            <p v-if="row.member.role" class="member-role">{{ row.member.role }}</p>
+            <p class="member-facts tnum">
+              <span>{{ row.hours.text }}<template v-if="row.hours.hoursPerWeek">, {{ row.hours.hoursPerWeek }} h a week</template></span>
+              <span>{{ row.services }}</span>
+              <span>{{ row.upcoming }} upcoming</span>
+            </p>
           </div>
+          <div v-if="row.week.length" class="week-mini" aria-hidden="true">
+            <template v-for="day in row.week" :key="day.weekday">
+              <span class="week-mini__day">{{ day.short }}</span>
+              <DayBar :windows="day.windows" :color="row.color" compact />
+            </template>
+          </div>
+          <span v-else class="week-mini week-mini--empty" aria-hidden="true" />
           <div class="member-actions">
-            <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)"><template #leading><AppIcon name="edit" :size="16" /></template>Manage</GmButton>
-            <details class="member-more">
-              <summary class="ghost small-button" :aria-label="`More actions for ${row.member.name || 'you'}`">More <AppIcon name="chevron" :size="15" /></summary>
-              <div class="member-more-menu" @click="closeMemberMenuFromAction">
-                <router-link class="ghost small-button action-link" :to="row.owner ? '/availability' : { path: '/availability', query: { staff: row.member.id } }">Working hours</router-link>
-                <router-link class="ghost small-button action-link" :to="{ path: '/bookings', query: { staff: row.member.id } }">Bookings</router-link>
-                <p v-if="row.member.phone || row.member.email" class="member-more-contact"><span v-if="row.member.phone">{{ row.member.phone }}</span><span v-if="row.member.email">{{ row.member.email }}</span></p>
+            <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)">Manage</GmButton>
+            <details class="menu" data-menu>
+              <summary class="ghost small-button icon-summary" :aria-label="`More actions for ${row.owner ? 'you' : row.member.name || 'this team member'}`"><AppIcon name="more" :size="18" /></summary>
+              <div class="menu-panel">
+                <router-link :to="row.owner ? '/availability' : { path: '/availability', query: { staff: row.member.id } }">Working hours and time off</router-link>
+                <router-link :to="{ path: '/bookings', query: { staff: row.member.id } }">Their bookings</router-link>
+                <p v-if="row.member.phone || row.member.email" class="menu-contact"><span v-if="row.member.phone">{{ row.member.phone }}</span><span v-if="row.member.email">{{ row.member.email }}</span></p>
+                <hr v-if="!row.owner" />
                 <GmConfirm
                   v-if="!row.owner"
                   :open="confirming === row.member.id"
@@ -413,10 +426,10 @@ const reactivateMessage = (member) =>
                   cancel-label="Keep active"
                   tone="danger"
                   :busy="statusBusy"
-                  @update:open="(value) => { if (value) confirming = row.member.id; else if (!statusBusy) confirming = '' }"
+                  @update:open="(value) => { if (value) confirming = row.member.id || ''; else if (!statusBusy) confirming = '' }"
                   @confirm="deactivate(row.member)"
                 >
-                  <GmButton variant="ghost" size="sm" class="deactivate-action" :disabled-reason="demoHint" :aria-label="`Deactivate ${row.member.name}`" @click="confirming = row.member.id">Deactivate</GmButton>
+                  <GmButton variant="ghost" size="sm" class="deactivate-action" :disabled-reason="demoHint" :ariaLabelProp="`Deactivate ${row.member.name}`" @click="confirming = row.member.id || ''">Deactivate</GmButton>
                 </GmConfirm>
               </div>
             </details>
@@ -424,35 +437,34 @@ const reactivateMessage = (member) =>
         </li>
       </ul>
 
-      <p v-if="team" class="team-tip muted" data-team-tip>
+      <p v-if="team" class="team-tip" data-team-tip>
         <AppIcon name="info" :size="16" />
-        <span>Set which team members guests can choose from on the <RouterLink to="/services">Services page</RouterLink>.</span>
+        <span>Which team members guests can choose for each service is set on the <RouterLink to="/services">Services page</RouterLink>.</span>
       </p>
 
-      <div v-if="!team" class="card team-empty">
+      <div v-if="!team" class="empty team-empty">
         <span class="empty-icon"><AppIcon name="team" /></span>
         <h2>Working with other people?</h2>
-        <p>Add someone to give them their own working hours, time off and bookings.</p>
+        <p>Add someone to give them their own working hours, time off and bookings. Clients can then book either of you at the same time.</p>
         <div class="empty-actions">
           <GmButton variant="primary" :disabled-reason="demoHint" @click="openAdd">Add your first team member</GmButton>
         </div>
       </div>
 
-      <template v-if="inactiveRows.length">
-        <h2 class="section-title inactive-title">Inactive <GmHint text="Inactive people are hidden from your booking page and cannot be assigned new bookings. Their bookings, history and hours are kept." label="About inactive team members" /></h2>
-        <ul class="member-list" aria-label="Inactive team members">
-          <li v-for="row in inactiveRows" :key="row.member.id" class="card member-card is-inactive">
+      <section v-if="inactiveRows.length" aria-labelledby="inactive-title">
+        <h2 id="inactive-title" class="inactive-title">Inactive <GmHint text="Inactive people are hidden from your booking page and cannot be assigned new bookings. Their bookings, history and hours are kept." label="About inactive team members" /></h2>
+        <ul class="ledger member-list" aria-label="Inactive team members">
+          <li v-for="row in inactiveRows" :key="row.member.id" class="member-row is-inactive">
             <span class="member-avatar" :style="{ background: row.color }" aria-hidden="true"><span>{{ row.initial }}</span></span>
             <div class="member-main">
               <div class="member-title">
-                <h2>{{ row.member.name }}</h2>
+                <h3>{{ row.member.name }}</h3>
                 <span class="chip neutral">Inactive</span>
               </div>
-              <p v-if="row.member.role" class="member-contact"><span>{{ row.member.role }}</span></p>
-              <ul class="member-facts">
-                <li><AppIcon name="bookings" :size="16" /><span>{{ row.upcoming }} upcoming booking{{ row.upcoming === 1 ? '' : 's' }} still on their calendar</span></li>
-              </ul>
+              <p v-if="row.member.role" class="member-role">{{ row.member.role }}</p>
+              <p class="member-facts tnum"><span>{{ row.upcoming }} upcoming booking{{ row.upcoming === 1 ? '' : 's' }} still on their calendar</span></p>
             </div>
+            <span class="week-mini week-mini--empty" aria-hidden="true" />
             <div class="member-actions">
               <GmConfirm
                 :open="confirming === row.member.id"
@@ -461,17 +473,17 @@ const reactivateMessage = (member) =>
                 confirm-label="Reactivate"
                 cancel-label="Not now"
                 :busy="statusBusy"
-                @update:open="(value) => { if (value) confirming = row.member.id; else if (!statusBusy) confirming = '' }"
+                @update:open="(value) => { if (value) confirming = row.member.id || ''; else if (!statusBusy) confirming = '' }"
                 @confirm="reactivate(row.member)"
               >
-                <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="confirming = row.member.id">Reactivate</GmButton>
+                <GmButton variant="secondary" size="sm" :disabled-reason="demoHint" @click="confirming = row.member.id || ''">Reactivate</GmButton>
               </GmConfirm>
               <GmButton variant="ghost" size="sm" :disabled-reason="demoHint" @click="openEdit(row.member)">Manage</GmButton>
               <router-link class="ghost small-button action-link" :to="{ path: '/bookings', query: { staff: row.member.id } }">Bookings</router-link>
             </div>
           </li>
         </ul>
-      </template>
+      </section>
     </div>
 
     <GmDialog
@@ -485,7 +497,6 @@ const reactivateMessage = (member) =>
       <form novalidate @submit.prevent="submit">
         <div class="modal-header">
           <div>
-
             <h2>{{ editingOwner ? 'Your team profile' : editing ? `Edit ${form.name.trim() || 'team member'}` : 'Add team member' }}</h2>
           </div>
           <button class="icon-button" type="button" aria-label="Close" :disabled="saving" @click="requestClose"><AppIcon name="close" /></button>
@@ -527,9 +538,9 @@ const reactivateMessage = (member) =>
         <fieldset class="field colour-field">
           <legend>Colour <GmHint text="Used for this person's chip, and on the week view in Bookings, so you can tell calendars apart at a glance." label="About colours" /></legend>
           <div class="swatches" role="radiogroup" aria-label="Colour">
-            <label v-for="color in colorChoices" :key="color" class="swatch" :style="{ '--swatch': color }" :title="color">
+            <label v-for="color in colorChoices" :key="color" class="swatch" :style="{ '--swatch': color }" :title="colorName(color)">
               <input v-model="form.color" type="radio" name="member-color" :value="color" /><span class="swatch-dot" aria-hidden="true"><AppIcon v-if="form.color === color" name="check" :size="16" /></span>
-              <span class="visually-hidden">{{ color }}</span>
+              <span class="visually-hidden">{{ colorName(color) }}</span>
             </label>
           </div>
         </fieldset>
@@ -552,13 +563,11 @@ const reactivateMessage = (member) =>
           </div>
         </details>
 
-        <details v-if="hoursReady" class="member-advanced hours-box" :open="Boolean(hoursIssue) || undefined">
-          <summary>Working hours <span>{{ weeklyHours }} hours a week</span></summary>
-          <section aria-labelledby="member-hours-title">
+        <section v-if="hoursReady" class="hours-box" aria-labelledby="member-hours-title">
           <div class="hours-head">
             <div>
-              <h3 id="member-hours-title">Working hours <GmHint text="Their own calendar. Guests and assignments only use these hours; time off is added per person in Availability. Times are in the same timezone as your own schedule." label="About working hours" /></h3>
-              <p class="field-hint">{{ weeklyHours }} hours a week<template v-if="!hadSchedule"> · starts as a copy of yours, change it below</template></p>
+              <h3 id="member-hours-title">Working hours <GmHint text="Their own calendar. Guests and assignments only use these hours; time off is added per person in Availability. Times are in the same time zone as your own schedule." label="About working hours" /></h3>
+              <p class="field-hint tnum">{{ weeklyHours }} hours a week<template v-if="!hadSchedule">. Starts as a copy of yours; change it below.</template></p>
             </div>
             <GmButton variant="secondary" size="sm" :disabled-reason="copyReason" @click="copyFromMe">Copy hours from me</GmButton>
           </div>
@@ -572,14 +581,13 @@ const reactivateMessage = (member) =>
             who="their"
             class="hours-interval"
           />
-          <WeeklyHoursEditor :days="days" compact :disabled="saving" @notice="onEditorNotice" />
-          </section>
-        </details>
+          <WeeklyHoursEditor :days="days" compact id-prefix="member-hours" :color="form.color" :disabled="saving" @notice="onEditorNotice" />
+        </section>
         <p v-else class="field-hint form-hint">Your own hours and time off: <router-link to="/availability" @click="closeDialog">open Availability</router-link>.</p>
 
         <section v-if="editing && !editing.implicit && !editingOwner" class="status-box" aria-labelledby="member-status-title">
           <div>
-            <h3 id="member-status-title">Status <span class="chip dot" :class="isStaffActive(editing) ? 'success' : 'neutral'">{{ isStaffActive(editing) ? 'Active' : 'Inactive' }}</span></h3>
+            <h3 id="member-status-title">{{ isStaffActive(editing) ? 'Active' : 'Inactive' }}</h3>
             <p class="field-hint">{{ isStaffActive(editing) ? 'Deactivating hides them from your booking page and from new assignments. Bookings and hours are kept.' : 'Inactive: hidden from your booking page and new assignments.' }} This takes effect right away, separately from Save.</p>
           </div>
           <GmConfirm
@@ -596,8 +604,9 @@ const reactivateMessage = (member) =>
           </GmConfirm>
         </section>
 
+        <p v-if="saveReason && !isDemo" class="field-hint save-reason" role="status">{{ saveReason }}</p>
+        <!-- Same order as the Services form: Cancel first, the primary action last. -->
         <div class="form-actions modal-footer">
-          <GmButton variant="primary" type="submit" :pending="saving" pending-label="Saving…" :disabled-reason="saveReason">{{ editing ? 'Save changes' : 'Add to team' }}</GmButton>
           <GmConfirm
             v-model:open="discardOpen"
             title="Discard your changes?"
@@ -609,91 +618,80 @@ const reactivateMessage = (member) =>
           >
             <GmButton variant="secondary" :disabled="saving" @click="requestClose">Cancel</GmButton>
           </GmConfirm>
+          <GmButton variant="primary" type="submit" :pending="saving" pending-label="Saving…" :disabled-reason="saveReason">{{ editing ? 'Save changes' : 'Add to team' }}</GmButton>
         </div>
-        <p v-if="saveReason && !isDemo" class="field-hint save-reason" role="status">{{ saveReason }}</p>
       </form>
     </GmDialog>
   </section>
 </template>
 
 <style scoped>
-.demo-note { margin: 0 0 var(--space-3); font-size: var(--text-sm); }
 .team-wrap { display: grid; gap: var(--space-4); }
-.member-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
-.member-card { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); box-shadow: none; }
-.member-card.is-inactive { background: #fafafc; }
-.member-card.is-inactive .member-avatar { opacity: 0.55; }
-.member-avatar { position: relative; width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-md); font-weight: 750; }
+.member-row { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: 44px minmax(0, 1fr) 168px auto; align-items: center; gap: var(--space-3) var(--space-4); }
+.member-row.is-inactive { background: var(--surface-soft); }
+.member-row.is-inactive .member-avatar { opacity: 0.55; }
+.member-avatar { position: relative; width: 44px; height: 44px; display: grid; place-items: center; overflow: hidden; color: #fff; border-radius: 50%; font-size: var(--text-md); font-weight: var(--weight-strong); }
 .member-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
-.member-main { min-width: 0; display: grid; gap: 4px; }
+.member-main { min-width: 0; display: grid; gap: 2px; }
 .member-title { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-.member-title h2 { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
-.member-contact { margin: 0; display: flex; flex-wrap: wrap; gap: 2px var(--space-3); color: var(--muted); font-size: var(--text-sm); }
-.member-contact span { overflow-wrap: anywhere; }
-.member-facts { margin: 2px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 5px var(--space-4); }
-.member-facts li { display: flex; align-items: center; gap: 8px; color: var(--ink-soft, var(--ink)); font-size: var(--text-sm); }
-.member-facts li > svg { flex: none; color: var(--muted); }
-.member-facts li > span { min-width: 0; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 0 4px; }
-.member-actions { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.member-title :is(h2, h3) { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
+.you-tag { color: var(--muted); font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.member-role { margin: 0; color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.member-facts { margin: 2px 0 0; display: flex; flex-wrap: wrap; gap: 2px var(--space-4); color: var(--ink-soft); font-size: var(--text-sm); }
+.week-mini { display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: center; gap: 2px 6px; }
+.week-mini__day { color: var(--faint); font-size: 10px; font-weight: var(--weight-strong); line-height: 10px; }
+.week-mini--empty { display: block; }
+.member-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.icon-summary { width: var(--control-h-sm); padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 .action-link { min-height: var(--control-h-sm); display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
-.member-more { position: relative; }
-.member-more > summary { min-height: var(--control-h-sm); display: inline-flex; align-items: center; gap: 4px; list-style: none; cursor: pointer; }
-.member-more > summary::-webkit-details-marker { display: none; }
-.member-more[open] > summary svg { transform: rotate(90deg); }
-.member-more-menu { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0; width: max-content; min-width: 190px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; box-shadow: var(--shadow-lg); }
-.member-more-menu > a, .member-more-menu :deep(.gm-button) { width: 100%; justify-content: flex-start; }
-.member-more-contact { margin: 4px 8px; padding-top: 8px; display: grid; gap: 3px; color: var(--muted); border-top: 1px solid var(--line); font-size: var(--text-xs); overflow-wrap: anywhere; }
-.member-more-menu :deep(.deactivate-action) { color: var(--danger); }
-.inactive-title { margin: var(--space-4) 0 0; display: flex; align-items: center; gap: 4px; }
-
-.team-empty { padding: var(--space-6) var(--space-5); display: grid; justify-items: center; gap: var(--space-3); text-align: center; box-shadow: none; }
+.menu-contact { margin: 0; padding: var(--space-2) var(--space-3); display: grid; gap: 2px; color: var(--muted); font-size: var(--text-xs); overflow-wrap: anywhere; }
+.menu-panel :deep(.deactivate-action) { color: var(--danger); }
+.inactive-title { margin: var(--space-2) 0 var(--space-3); display: flex; align-items: center; gap: 4px; font-size: var(--text-md); }
 .team-empty h2 { margin: 0; }
-.team-empty > p { max-width: 62ch; margin: 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.6; }
-.explain { max-width: 62ch; margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-3); text-align: left; }
-.explain li { padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--accent-faint); font-size: var(--text-sm); line-height: 1.55; }
-.empty-actions { margin-top: var(--space-2); display: flex; justify-content: center; flex-wrap: wrap; gap: var(--space-2); }
 
 .form-hint { margin: 0 0 var(--space-4); }
 .optional { color: var(--muted); font-weight: 400; }
 .member-advanced { margin: 0 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); overflow: hidden; }
-.member-advanced > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: 650; }
-.member-advanced > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; }
-.member-advanced__content { padding: var(--space-3); border-top: 1px solid var(--line); background: #fff; }
+.member-advanced > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.member-advanced > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.member-advanced__content { padding: var(--space-3); border-top: 1px solid var(--line); background: var(--surface); }
 .member-advanced__content > :last-child { margin-bottom: 0; }
 .modal .field { min-width: 0; }
 .modal .field-row .field { margin-bottom: var(--space-4); }
 .colour-field, .services-field { margin: 0 0 var(--space-4); padding: 0; border: 0; min-width: 0; }
-.colour-field legend, .services-field legend { padding: 0; margin-bottom: 6px; display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); font-weight: 650; }
+.colour-field legend, .services-field legend { padding: 0; margin-bottom: 6px; display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); font-weight: var(--weight-strong); }
 .swatches { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .swatch { position: relative; width: 44px; height: 44px; display: grid; place-items: center; cursor: pointer; }
 .swatch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
-.swatch-dot { width: 32px; height: 32px; display: grid; place-items: center; color: #fff; border-radius: 50%; background: var(--swatch); box-shadow: 0 0 0 2px #fff, 0 0 0 3px var(--line-strong); }
-.swatch input:checked + .swatch-dot { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--swatch); }
-.swatch input:focus-visible + .swatch-dot { outline: 3px solid rgba(35, 54, 220, 0.4); outline-offset: 4px; }
+.swatch-dot { width: 32px; height: 32px; display: grid; place-items: center; color: #fff; border-radius: 50%; background: var(--swatch); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--line-strong); }
+.swatch input:checked + .swatch-dot { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--swatch); }
+.swatch input:focus-visible + .swatch-dot { outline: 3px solid var(--focus-color); outline-offset: 4px; }
 .services-field .segmented { margin-bottom: var(--space-2); }
-.hours-box { margin: 0 0 var(--space-4); }
-.hours-box > section { border-top: 1px solid var(--line); background: #fff; }
-.hours-head { padding: var(--space-3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); background: var(--surface-soft); }
+.hours-box { margin: 0 0 var(--space-4); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.hours-head { padding: var(--space-3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); background: var(--surface-soft); border-bottom: 1px solid var(--line); }
 .hours-head h3 { margin: 0; display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-sm); }
 .hours-head .field-hint { margin: 2px 0 0; }
 .status-box { margin: 0 0 var(--space-4); padding: var(--space-3); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--accent-faint); }
 .status-box h3 { margin: 0; display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
 .status-box .field-hint { max-width: 46ch; margin: 4px 0 0; }
 .save-reason { margin: var(--space-2) 0 0; color: var(--muted); text-align: right; }
+.modal-footer { justify-content: space-between; }
 
+.hours-interval { margin: 0; padding: var(--space-3) var(--space-3) var(--space-2); }
+.team-tip { margin: 0; display: flex; gap: var(--space-2); align-items: flex-start; color: var(--ink-soft); font-size: var(--text-sm); line-height: 1.5; }
+.team-tip svg { flex: none; margin-top: 2px; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .member-row { grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .week-mini { display: none; }
+}
 @media (max-width: 700px) {
-  .member-card { grid-template-columns: 48px minmax(0, 1fr); gap: var(--space-3); padding: var(--space-3); }
-  .member-avatar { width: 48px; height: 48px; font-size: var(--text-lg); }
-  .member-actions { grid-column: 1 / -1; max-width: none; justify-content: flex-start; }
-  .member-more-menu { left: 0; right: auto; }
-  .team-empty { padding: var(--space-5) var(--space-4); }
+  .member-row { grid-template-columns: 44px minmax(0, 1fr); padding: var(--space-3); }
+  .member-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .member-actions .menu-panel { left: 0; right: auto; }
   .save-reason { text-align: left; }
   .modal-footer > button, .modal-footer > a { flex: 1 1 auto; }
 }
-.hours-interval { margin: 0; padding: var(--space-3) var(--space-3) var(--space-2); }
-.team-tip { margin: var(--space-3) 0 0; padding: var(--space-3); display: flex; gap: var(--space-2); align-items: flex-start; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); font-size: var(--text-sm); line-height: 1.5; }
-.team-tip svg { flex: none; margin-top: 2px; }
-.team-tip code { padding: 1px 5px; border-radius: 4px; background: var(--surface-soft); font-family: var(--font-mono); font-size: var(--text-xs); }
 </style>
 
 <style>

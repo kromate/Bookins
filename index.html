@@ -8,22 +8,26 @@
     />
     <meta
       name="description"
-      content="Set your availability, share one secure link, and manage bookings with Bookins."
+      content="Set your hours, share one booking link, and run your day of appointments with Bookins."
     />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#2e3fa8" />
+    <link rel="icon" type="image/svg+xml" href="/bookins/favicon.svg" data-bookins-brand />
+    <link rel="alternate icon" type="image/png" sizes="32x32" href="/bookins/favicon-32.png" data-bookins-brand />
+    <link rel="apple-touch-icon" sizes="180x180" href="/bookins/apple-touch-icon.png" />
     <title>Bookins</title>
     <style>
-      .bootstrap-loading{min-height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:#f8f9fb;color:#20242d;font:14px/1.5 system-ui,sans-serif}
-      .bootstrap-loading strong{font-size:24px;letter-spacing:-.04em}.bootstrap-loading span{color:#626976}.bootstrap-loading i{width:96px;height:3px;border-radius:3px;background:#2336dc;animation:loading-pulse 1.2s ease-in-out infinite}
-      @keyframes loading-pulse{50%{opacity:.3}}@media(prefers-reduced-motion:reduce){.bootstrap-loading i{animation:none}}
+      .bootstrap-loading{min-height:100vh;margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#f4f5f8;color:#1a1f3d;font:14px/1.5 ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+      .bootstrap-loading svg{width:48px;height:48px}.bootstrap-loading span{color:#5b6273}
+      .bootstrap-loading i{width:120px;height:4px;border-radius:2px;background:linear-gradient(90deg,#2e3fa8 0 30%,#dde1ea 30%);background-size:200% 100%;animation:bk-boot 1.4s ease-in-out infinite}
+      @keyframes bk-boot{to{background-position:-100% 0}}@media(prefers-reduced-motion:reduce){.bootstrap-loading i{animation:none}}
     </style>
   </head>
   <body>
-    <div id="app"><div class="bootstrap-loading" role="status" aria-live="polite"><strong>Bookins</strong><span>Loading…</span><i aria-hidden="true"></i></div></div>
+    <div id="app"><div class="bootstrap-loading" role="status" aria-live="polite"><svg viewBox="0 0 32 32" aria-hidden="true"><path fill="#f2b33d" d="M11 13H22a7 7 0 0 1 7 7v2a7 7 0 0 1-7 7H11z"/><path fill="#2e3fa8" d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V29H5z"/><rect fill="#1a1f3d" x="15.5" y="19.75" width="9" height="2.5" rx="1.25"/></svg><span>Opening Bookins…</span><i aria-hidden="true"></i></div></div>
     <noscript>Enable JavaScript to use Bookins.</noscript>
     <script
       type="module"
-      src="/goalmatic.dev.js"
+      src="/goalmatic.dev.ts"
     ></script>
   </body>
 </html>

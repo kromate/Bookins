@@ -1,5 +1,5 @@
-<script setup>
-import { computed, inject, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+<script setup lang="ts">
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import AppIcon from '../components/AppIcon.vue'
 import GmSelect from '../components/ui/GmSelect.vue'
@@ -8,8 +8,9 @@ import GmDialog from '../components/ui/GmDialog.vue'
 import GmButton from '../components/ui/GmButton.vue'
 import GmConfirm from '../components/ui/GmConfirm.vue'
 import GmHint from '../components/ui/GmHint.vue'
-import { useSetupState } from '../setup.js'
+import { useSetupState } from '../setup.ts'
 import QrCode from '../components/QrCode.vue'
+import SlotMeter from '../components/SlotMeter.vue'
 import ServiceImportDialog from '../components/ServiceImportDialog.vue'
 import ServiceTeamFields from '../components/ServiceTeamFields.vue'
 import BulkTeamChoiceDialog from '../components/BulkTeamChoiceDialog.vue'
@@ -36,26 +37,39 @@ import {
   staffServiceCopyEstimate,
   syncStaffServices,
   teamMembers,
-} from '../booking.js'
-import { isOwnerMember, ownerStaff, parseServiceIds, serviceBaseId } from '../team.js'
-import { displayName } from '../team-ui.js'
-import { smallestIntervalFor } from '../weekly-hours.js'
-import { whatsappShareUrl } from '../messaging.js'
-import { isDemo, registerDemoGuard } from '../runtime.js'
+} from '../booking.ts'
+import { isOwnerMember, ownerStaff, parseServiceIds, serviceBaseId } from '../team.ts'
+import { displayName } from '../team-ui.ts'
+import { smallestIntervalFor } from '../weekly-hours.ts'
+import { whatsappShareUrl } from '../messaging.ts'
+import { isDemo, registerDemoGuard } from '../runtime.ts'
+import { errorMessage } from '../error-message.ts'
 
-const state = inject('bookingState')
-const refresh = inject('refreshBookings')
+interface ServiceEntry { service: ServiceRecord; meta: ReturnType<typeof serviceDisplayMeta> }
+interface ServiceGroup { category: string; entries: ServiceEntry[]; rank: number }
+interface TeamCopyOutcome { created: number; updated: number; removed: number; skipped: string[] }
+
+const timestampMillis = (value: TimestampInput): number => {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'string' || typeof value === 'number') return new Date(value).getTime()
+  if (value && 'toDate' in value) return value.toDate().getTime()
+  if (value && '_seconds' in value) return value._seconds * 1000
+  return Number.NaN
+}
+
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const refresh = inject<RefreshWorkspace>('refreshBookings', async () => true)
 const router = useRouter()
 const route = useRoute()
 const setup = useSetupState()
-const toast = inject('toast', null)
+const toast = inject<ToastApi | null>('toast', null)
 const show = ref(false)
-const selectPortalTarget = ref(null)
-const keepServiceButton = ref(null)
+const selectPortalTarget = ref<HTMLFormElement | null>(null)
+const keepServiceButton = ref<HTMLButtonElement | null>(null)
 const saving = ref(false)
 const deleting = ref(false)
-const editing = ref(null)
-const pendingDelete = ref(null)
+const editing = ref<ServiceRecord | null>(null)
+const pendingDelete = ref<ServiceRecord | null>(null)
 const error = ref('')
 const serviceBaseline = ref('')
 const dialogPrompt = ref(false)
@@ -77,7 +91,7 @@ const form = reactive({
   prepNotes: '',
 })
 const teamEnabled = ref(false)
-const teamSelected = ref([])
+const teamSelected = ref<string[]>([])
 const importOpen = ref(false)
 const importBusy = ref(false)
 const bulkOpen = ref(false)
@@ -101,7 +115,7 @@ const durationError = computed(() => {
   if (!Number.isInteger(value) || value < 5) return 'Enter a duration of at least 5 minutes.'
   if (value % 5 !== 0) return 'Duration must be a multiple of 5 minutes.'
   if (scheduleInterval.value && value > scheduleInterval.value)
-    return `This is longer than your ${scheduleInterval.value}-minute booking interval. Bookins reserves one interval per booking, so raise the interval to at least ${value} minutes in Availability or shorten the service.`
+    return `This is longer than your ${scheduleInterval.value}-minute start-time interval. Each booking takes one interval, so raise the interval to at least ${value} minutes in Availability or shorten the service.`
   return ''
 })
 const sortOrderError = computed(() => {
@@ -124,31 +138,31 @@ const categories = computed(() =>
 // ---- team service copies ----
 const showTeam = computed(() => hasTeam(state))
 const copyMemberIds = computed(() =>
-  editing.value ? [...new Set(staffCopies(state, editing.value).map((copy) => serviceDisplayMeta(copy).staffId))] : [],
+  editing.value ? [...new Set(staffCopies(state, editing.value).map((copy) => serviceDisplayMeta(copy).staffId).filter(Boolean))] : [],
 )
 const teamPeople = computed(() => teamMembers(state, { includeInactive: true }).filter((member) => !isOwnerMember(member)))
 const pickerMembers = computed(() =>
   teamPeople.value
-    .filter((member) => isStaffActive(member) || copyMemberIds.value.includes(member.id))
-    .map((member) => ({ id: member.id, name: member.name, role: member.role, color: member.color, inactive: !isStaffActive(member) })),
+    .filter((member) => isStaffActive(member) || copyMemberIds.value.includes(String(member.id || '')))
+    .map((member) => ({ id: String(member.id || ''), name: member.name || 'Team member', role: member.role || '', color: member.color || '', inactive: !isStaffActive(member) })),
 )
 const memberIssues = computed(() => {
-  const out = {}
+  const out: Record<string, string> = {}
   for (const member of pickerMembers.value) {
-    const record = staffById(state, member.id)
+    const record = staffById(state, member.id) || member
     const schedule = scheduleForStaff(state, record)
     const interval = Number(schedule?.slot_interval_minutes || 0)
     if (member.inactive) out[member.id] = 'Not active. Reactivate them on the Team page to offer this.'
     else if (!schedule) out[member.id] = `Set working hours for ${member.name} on the Team page first.`
-    else if (interval && Number(form.durationMinutes) > interval) out[member.id] = `${member.name}'s booking interval is ${interval} min, shorter than this ${form.durationMinutes}-minute service.`
+    else if (interval && Number(form.durationMinutes) > interval) out[member.id] = `${member.name}'s start-time interval is ${interval} min, shorter than this ${form.durationMinutes}-minute service.`
   }
   return out
 })
 const memberNotes = computed(() => {
-  const out = {}
+  const out: Record<string, string> = {}
   for (const member of teamPeople.value) {
     const ids = parseServiceIds(member)
-    if (ids.length && !ids.includes(editing.value?.id)) out[member.id] = 'Not on their service list yet. Saving adds it.'
+    if (ids.length && editing.value?.id && !ids.includes(editing.value.id)) out[String(member.id || '')] = 'Not on their service list yet. Saving adds it.'
   }
   return out
 })
@@ -161,9 +175,8 @@ const teamEstimate = computed(() => {
   const total = base.existing - removing + base.adding
   return { ...base, removing, total, overCap: base.adding > 0 && total > STAFF_COPY_WARN, overMax: base.adding > 0 && total > STAFF_COPY_MAX }
 })
-const copiesOf = (service) => state.services.filter((item) => serviceBaseId(item) === service.id)
-const memberName = (copy) => serviceDisplayMeta(copy).staffName || staffById(state, serviceDisplayMeta(copy).staffId)?.name || 'Team member'
-const memberColor = (copy) => staffById(state, serviceDisplayMeta(copy).staffId)?.color || ''
+const copiesOf = (service: ServiceRecord) => state.services.filter((item) => serviceBaseId(item) === service.id)
+const memberName = (copy: ServiceRecord) => serviceDisplayMeta(copy).staffName || staffById(state, serviceDisplayMeta(copy).staffId)?.name || 'Team member'
 const nameConflict = computed(() => {
   const name = form.name.trim().toLowerCase()
   if (!name) return ''
@@ -172,45 +185,50 @@ const nameConflict = computed(() => {
   )
   return other ? `You already have a service called "${displayName(other.name)}". Choose a different name.` : ''
 })
+// Required fields are checked by the app, not the browser: errors show under each field after the first save attempt.
+const attempted = ref(false)
+const nameError = computed(() => (attempted.value && !form.name.trim() ? 'Enter a name for this service.' : nameConflict.value))
+const descriptionError = computed(() => (attempted.value && !form.description.trim() ? 'Add a short description. Guests see it under the name.' : ''))
 const submitReason = computed(() => {
   if (isDemo.value) return 'The demo is read-only.'
   if (needsAvailability.value) return 'Set your availability first, then create the service.'
   if (nameConflict.value) return nameConflict.value
-  if (durationError.value) return 'Fix the duration: it must be a multiple of 5 minutes and fit your booking interval.'
+  if (durationError.value) return 'Fix the duration: it must be a multiple of 5 minutes and fit your start-time interval.'
   if (sortOrderError.value) return sortOrderError.value
   if (rebookError.value) return rebookError.value
   if (showTeam.value && teamEnabled.value && !teamSelected.value.length) return 'Choose at least one team member, or turn off "Let guests choose a team member".'
   if (showTeam.value && teamEstimate.value.overMax) return `That would make ${teamEstimate.value.total} team copies; the limit is ${STAFF_COPY_MAX}. Offer this with fewer people.`
   return ''
 })
-const upcomingCount = (service) => {
+const upcomingCount = (service: ServiceRecord) => {
   const now = Date.now()
   const ids = new Set([service.id, ...copiesOf(service).map((copy) => copy.id)])
   return state.bookings.filter(
-    (item) => ids.has(item.service_id) && !isTimeOff(item) && item.status === 'confirmed' && Date.parse(item.ends_at || item.starts_at) > now,
+    (item) => ids.has(item.service_id) && !isTimeOff(item) && item.status === 'confirmed' && timestampMillis(item.ends_at || item.starts_at) > now,
   ).length
 }
 const deleteUpcoming = computed(() => (pendingDelete.value ? upcomingCount(pendingDelete.value) : 0))
 const pausing = ref(false)
 const linkBusy = ref('')
-const linkError = ref({})
+const linkError = ref<Record<string, string>>({})
+const serviceKey = (service: ServiceRecord) => String(service.id || '')
 const copiedLink = ref('')
-const pendingRevoke = ref(null)
+const pendingRevoke = ref<ServiceRecord | null>(null)
 const nowMs = ref(Date.now())
 let copiedTimer = 0
 onBeforeUnmount(() => window.clearTimeout(copiedTimer))
-const linkExpired = (service) => {
+const linkExpired = (service: ServiceRecord) => {
   const expiry = Date.parse(service.public_link_expires_at || '')
   return Boolean(service.public_link_url) && Number.isFinite(expiry) && expiry <= nowMs.value
 }
-const linkLive = (service) => Boolean(service.public_link_url) && !linkExpired(service)
-const shareText = (service) => `Book ${displayName(service.name)}${state.profile?.display_name ? ` with ${state.profile.display_name}` : ''}: ${service.public_link_url}`
-const whatsappShare = (service) => whatsappShareUrl(shareText(service))
-const setLinkError = (service, message) => { linkError.value = { ...linkError.value, [service.id]: message } }
+const linkLive = (service: ServiceRecord) => Boolean(service.public_link_url) && !linkExpired(service)
+const shareText = (service: ServiceRecord) => `Book ${displayName(service.name)}${state.profile?.display_name ? ` with ${state.profile.display_name}` : ''}: ${service.public_link_url}`
+const whatsappShare = (service: ServiceRecord) => whatsappShareUrl(shareText(service))
+const setLinkError = (service: ServiceRecord, message: string) => { linkError.value = { ...linkError.value, [String(service.id || '')]: message } }
 
-async function makeLink(service) {
+async function makeLink(service: ServiceRecord) {
   if (isDemo.value || linkBusy.value) return
-  linkBusy.value = service.id
+  linkBusy.value = String(service.id || '')
   nowMs.value = Date.now()
   setLinkError(service, '')
   try {
@@ -218,7 +236,7 @@ async function makeLink(service) {
     await refresh()
     toast?.success('Direct link created')
   } catch (reason) {
-    const message = reason?.message || 'The direct link could not be created.'
+    const message = errorMessage(reason, 'The direct link could not be created.')
     setLinkError(service, message)
     toast?.error(message)
   } finally {
@@ -226,11 +244,11 @@ async function makeLink(service) {
   }
 }
 
-async function copyServiceLink(service) {
+async function copyServiceLink(service: ServiceRecord) {
   setLinkError(service, '')
   try {
-    await copyText(service.public_link_url)
-    copiedLink.value = service.id
+    await copyText(String(service.public_link_url || ''))
+    copiedLink.value = String(service.id || '')
     toast?.('Link copied')
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => { copiedLink.value = '' }, 1600)
@@ -243,7 +261,7 @@ async function copyServiceLink(service) {
 async function confirmRevoke() {
   const service = pendingRevoke.value
   if (isDemo.value || !service || linkBusy.value) return
-  linkBusy.value = service.id
+  linkBusy.value = String(service.id || '')
   setLinkError(service, '')
   try {
     await revokeServiceLink(service)
@@ -251,7 +269,7 @@ async function confirmRevoke() {
     await refresh()
     toast?.success('Direct link revoked. Anyone holding it can no longer book.')
   } catch (reason) {
-    const message = reason?.message || 'The direct link could not be revoked.'
+    const message = errorMessage(reason, 'The direct link could not be revoked.')
     setLinkError(service, message)
     toast?.error(message)
     pendingRevoke.value = null
@@ -261,11 +279,11 @@ async function confirmRevoke() {
 }
 const currencyOptions = currencies.map((value) => ({ value, label: value }))
 const visibilityOptions = [
-  { value: 'public', label: 'Public booking page' },
-  { value: 'private', label: 'Private (not on the public page)' },
+  { value: 'public', label: 'Listed on your booking page' },
+  { value: 'private', label: 'Private: only through its own link' },
 ]
 const statusOptions = [
-  { value: true, label: 'Active' },
+  { value: true, label: 'Open for booking' },
   { value: false, label: 'Paused' },
 ]
 
@@ -312,9 +330,10 @@ onBeforeRouteLeave((to) => {
   return false
 })
 
-function open(service = null) {
+function open(service: ServiceRecord | null = null) {
   if (saving.value || deleting.value) return
   error.value = ''
+  attempted.value = false
   dialogPrompt.value = false
   editing.value = service
   const meta = service ? serviceDisplayMeta(service) : null
@@ -323,17 +342,17 @@ function open(service = null) {
     service
       ? {
           name: service.name,
-          description: meta.text,
+          description: meta?.text || '',
           durationMinutes: service.duration_minutes,
           price: service.price || 0,
           currency: service.currency || 'NGN',
           visibility: service.visibility,
           active: service.active !== false,
           location: service.location || '',
-          category: meta.category,
-          sortOrder: meta.sortOrder ?? '',
-          rebookAfterDays: meta.rebookAfterDays || '',
-          prepNotes: meta.prepNotes,
+          category: meta?.category || '',
+          sortOrder: meta?.sortOrder ?? '',
+          rebookAfterDays: meta?.rebookAfterDays || '',
+          prepNotes: meta?.prepNotes || '',
         }
       : {
           name: '',
@@ -350,7 +369,7 @@ function open(service = null) {
           prepNotes: '',
         },
   )
-  const had = service ? [...new Set(staffCopies(state, service).map((copy) => serviceDisplayMeta(copy).staffId))] : []
+  const had = service ? [...new Set(staffCopies(state, service).map((copy) => serviceDisplayMeta(copy).staffId).filter(Boolean))] : []
   teamEnabled.value = had.length > 0
   teamSelected.value = had
   syncServiceBaseline()
@@ -396,24 +415,24 @@ function requestDeleteClose() {
   error.value = ''
 }
 
-function askDelete(service) {
+function askDelete(service: ServiceRecord) {
   error.value = ''
   pendingDelete.value = service
 }
 
-function focusKeepService(event) {
+function focusKeepService(event: Event) {
   event.preventDefault()
   keepServiceButton.value?.focus({ preventScroll: true })
 }
 
-function priceLabel(service) {
+function priceLabel(service: ServiceRecord) {
   if (!Number(service.price)) return 'Free'
   try {
     return new Intl.NumberFormat(undefined, {
       style: 'currency',
       currency: service.currency || 'NGN',
       maximumFractionDigits: 0,
-    }).format(service.price)
+    }).format(Number(service.price))
   } catch {
     return `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
   }
@@ -440,10 +459,10 @@ function servicePayload() {
 }
 
 // Creates, refreshes and removes this service's per-member copies to match the form. Returns a short summary.
-async function applyTeamCopies(saved) {
+async function applyTeamCopies(saved: ServiceRecord): Promise<TeamCopyOutcome> {
   const had = copyMemberIds.value
   const keep = teamEnabled.value ? teamSelected.value : []
-  const outcome = { created: 0, updated: 0, removed: 0, skipped: [] }
+  const outcome: TeamCopyOutcome = { created: 0, updated: 0, removed: 0, skipped: [] }
   let services = state.services
   if (!teamEnabled.value && had.length) {
     outcome.removed = (await deleteStaffServiceCopies(state, saved)).removed
@@ -457,11 +476,13 @@ async function applyTeamCopies(saved) {
   const wanted = teamCreatable.value
   if (!wanted.length) return outcome
   // A member whose service list is restricted gets this service added to it (that is what "offers this" means).
-  const staff = []
+  const staff: StaffRecord[] = []
   for (const member of state.staff || []) {
     const ids = parseServiceIds(member)
-    if (wanted.includes(member.id) && ids.length && !ids.includes(saved.id)) {
-      const next = [...ids, saved.id]
+    const memberId = String(member.id || '')
+    const savedId = String(saved.id || '')
+    if (wanted.includes(memberId) && ids.length && savedId && !ids.includes(savedId)) {
+      const next = [...ids, savedId]
       await saveStaff(member, { serviceIds: next })
       staff.push({ ...member, service_ids_json: JSON.stringify(next) })
     } else staff.push(member)
@@ -481,8 +502,14 @@ async function submit(confirmedCap = false) {
     error.value = 'Set your availability first. Your service details are kept here.'
     return
   }
-  if (durationError.value || nameConflict.value || sortOrderError.value || rebookError.value) {
-    error.value = durationError.value || nameConflict.value || sortOrderError.value || rebookError.value
+  attempted.value = true
+  if (nameError.value || descriptionError.value || durationError.value || sortOrderError.value || rebookError.value) {
+    // Each message is shown under its field; the first one is focused and scrolled clear of the sticky header.
+    error.value = ''
+    await nextTick()
+    const field = selectPortalTarget.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
+    field?.focus({ preventScroll: true })
+    field?.scrollIntoView({ block: 'center' })
     return
   }
   if (showTeam.value && (submitReason.value || '')) {
@@ -496,9 +523,10 @@ async function submit(confirmedCap = false) {
   const wasEditing = Boolean(editing.value)
   saving.value = true
   error.value = ''
-  let savedService = null
+  let savedService: ServiceRecord | null = null
   try {
-    const scheduleId = editing.value?.schedule_id && state.schedules.some((item) => item.id === editing.value.schedule_id) ? editing.value.schedule_id : schedule.id
+    const currentService = editing.value
+    const scheduleId = currentService?.schedule_id && state.schedules.some((item) => item.id === currentService.schedule_id) ? currentService.schedule_id : schedule.id
     const saved = await saveService(editing.value, { ...servicePayload(), scheduleId }, state.services)
     savedService = { ...(editing.value || {}), ...(saved || {}) }
     let copies = null
@@ -512,7 +540,7 @@ async function submit(confirmedCap = false) {
     toast?.success(`${wasEditing ? 'Service updated' : 'Service created'}${bits.length ? `. ${bits.join(', ')}.` : ''}`)
     if (copies?.skipped.length) toast?.error(`Some team copies were not created: ${[...new Set(copies.skipped)].join(' ')}`)
   } catch (reason) {
-    error.value = reason?.message || 'The service could not be saved.'
+    error.value = errorMessage(reason, 'The service could not be saved.')
     if (savedService) {
       // The service itself was saved; only the team copies failed. Reload so the form reflects what exists.
       await refresh()
@@ -534,8 +562,8 @@ async function pauseInstead() {
   try {
     const saved = await saveService(service, {
       name: service.name,
-      durationMinutes: service.duration_minutes,
-      price: service.price || 0,
+      durationMinutes: Number(service.duration_minutes),
+      price: Number(service.price || 0),
       currency: service.currency || 'NGN',
       visibility: service.visibility,
       active: false,
@@ -548,7 +576,7 @@ async function pauseInstead() {
     await refresh()
     toast?.success('Service paused. Existing bookings are unchanged; resume it any time.')
   } catch (reason) {
-    error.value = reason?.message || 'The service could not be paused.'
+    error.value = errorMessage(reason, 'The service could not be paused.')
     toast?.error(error.value)
   } finally {
     pausing.value = false
@@ -561,12 +589,12 @@ async function remove() {
   error.value = ''
   try {
     if (!isStaffCopy(pendingDelete.value) && copiesOf(pendingDelete.value).length) await deleteStaffServiceCopies(state, pendingDelete.value)
-    await deleteService(pendingDelete.value.id)
+    await deleteService(String(pendingDelete.value.id || ''))
     pendingDelete.value = null
     await refresh()
     toast?.success('Service deleted. Existing booking history was kept.')
   } catch (reason) {
-    error.value = reason?.message || 'The service could not be deleted.'
+    error.value = errorMessage(reason, 'The service could not be deleted.')
     toast?.error(error.value)
   } finally {
     deleting.value = false
@@ -575,26 +603,25 @@ async function remove() {
 
 // ---- list: search, categories, order ----
 const search = ref('')
-const collapsed = ref({})
 const baseEntries = computed(() => state.services.filter((item) => !isStaffCopy(item)).map((service) => ({ service, meta: serviceDisplayMeta(service) })))
 const orphanCopies = computed(() => {
   const ids = new Set(baseEntries.value.map((entry) => entry.service.id))
   return state.services.filter((item) => isStaffCopy(item) && !ids.has(serviceBaseId(item)))
 })
-const matchesSearch = (entry) => {
+const matchesSearch = (entry: ServiceEntry) => {
   const words = search.value.toLowerCase().split(/\s+/).filter(Boolean)
   if (!words.length) return true
   const haystack = [entry.service.name, entry.meta.category, entry.meta.text, ...copiesOf(entry.service).map(memberName)].join(' ').toLowerCase()
   return words.every((word) => haystack.includes(word))
 }
 const groups = computed(() => {
-  const byCategory = new Map()
+  const byCategory = new Map<string, ServiceEntry[]>()
   for (const entry of baseEntries.value.filter(matchesSearch)) {
     const key = entry.meta.category || ''
     if (!byCategory.has(key)) byCategory.set(key, [])
-    byCategory.get(key).push(entry)
+    byCategory.get(key)?.push(entry)
   }
-  const order = (entry) => entry.meta.sortOrder ?? Number.MAX_SAFE_INTEGER
+  const order = (entry: ServiceEntry) => entry.meta.sortOrder ?? Number.MAX_SAFE_INTEGER
   // Categories follow the lowest sort order among their services (then name); uncategorised services come last.
   return [...byCategory.entries()]
     .map(([category, entries]) => {
@@ -604,8 +631,15 @@ const groups = computed(() => {
     .sort((a, b) => (a.category === '' ? 1 : b.category === '' ? -1 : a.rank - b.rank || a.category.localeCompare(b.category)))
 })
 const showHeadings = computed(() => groups.value.some((group) => group.category))
-const groupLabel = (group) => group.category || 'Other services'
-const toggleGroup = (key) => { collapsed.value = { ...collapsed.value, [key]: !collapsed.value[key] } }
+const groupLabel = (group: ServiceGroup) => group.category || 'Other services'
+const serviceCount = computed(() => groups.value.reduce((sum, group) => sum + group.entries.length, 0))
+// The start-time interval a service's length is drawn against: its own schedule, else the owner's.
+const intervalFor = (service: ServiceRecord) => Number(state.schedules.find((item) => item.id === service.schedule_id)?.slot_interval_minutes || scheduleInterval.value || 0)
+const teamLine = (service: ServiceRecord) => {
+  const copies = copiesOf(service)
+  if (!copies.length) return ''
+  return `With you, ${copies.map(memberName).join(', ')}`
+}
 
 // ---- bulk: let guests choose a team member ----
 const activePeople = computed(() => teamPeople.value.filter((member) => isStaffActive(member)))
@@ -633,12 +667,12 @@ function exportCsv() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     toast?.success(`Exported ${baseEntries.value.length} ${baseEntries.value.length === 1 ? 'service' : 'services'}. Edit the file in Google Sheets and import it back any time.`)
   } catch (reason) {
-    toast?.error(reason?.message || 'The export could not be created.')
+    toast?.error(errorMessage(reason, 'The export could not be created.'))
   }
 }
 const importDisabledReason = computed(() => {
   if (isDemo.value) return 'Import is not available in the demo. Switch to your own workspace to import services. Export still works.'
-  if (needsAvailability.value) return 'Set your availability first: imported services need your booking interval.'
+  if (needsAvailability.value) return 'Set your availability first: imported services need your start-time interval.'
   if (saving.value || deleting.value) return 'Wait for the current service action to finish.'
   return ''
 })
@@ -669,223 +703,129 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 </script>
 
 <template>
-  <section>
-    <div class="page-header">
-      <div
-        ><h1>Services</h1
-        ><p class="lede"
-          >Choose what clients can book.</p
-        ></div
-      >
+  <section class="services-page">
+    <header class="page-header">
+      <div>
+        <h1>Services</h1>
+        <p class="lede">What clients can book, how long it takes, and the price you agree with them.</p>
+      </div>
       <div class="page-header-actions">
+        <details class="menu" data-menu>
+          <summary class="secondary" data-tour="tour-services-import">More<AppIcon class="chevron-down" name="chevron" :size="14" /></summary>
+          <div class="menu-panel">
+            <GmButton variant="ghost" size="sm" :disabled-reason="importDisabledReason" @click="importOpen = true"><template #leading><AppIcon name="download" :size="16" /></template>Import from a spreadsheet</GmButton>
+            <GmButton variant="ghost" size="sm" :disabled-reason="exportReason" @click="exportCsv"><template #leading><AppIcon name="external" :size="16" /></template>Export to a spreadsheet</GmButton>
+            <GmButton v-if="showTeam" variant="ghost" size="sm" data-tour="tour-services-bulk-team" :disabled-reason="bulkReason" @click="bulkOpen = true"><template #leading><AppIcon name="team" :size="16" /></template>Let guests choose who</GmButton>
+          </div>
+        </details>
         <GmButton
           data-tour="tour-services-new"
-          class="primary"
+          variant="primary"
           :disabled-reason="isDemo ? 'The demo is read-only. Switch to your own workspace to add services.' : ''"
           :disabled="saving || deleting"
           @click="open()"
-          ><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton
-        >
-        <details class="page-more">
-          <summary class="secondary small-button" aria-label="More service actions" data-tour="tour-services-import">More <AppIcon name="chevron" :size="15" /></summary>
-          <div class="page-more-menu">
-            <GmButton
-              data-tour="tour-services-import"
-              variant="ghost"
-              size="sm"
-              :disabled-reason="importDisabledReason"
-              @click="importOpen = true"
-              ><template #leading><AppIcon name="copy" :size="16" /></template>Import services</GmButton
-            >
-            <GmButton
-              variant="ghost"
-              size="sm"
-              :disabled-reason="exportReason"
-              @click="exportCsv"
-              ><template #leading><AppIcon name="download" :size="16" /></template>Export services</GmButton
-            >
-            <GmButton
-              v-if="showTeam"
-              variant="ghost"
-              size="sm"
-              data-tour="tour-services-bulk-team"
-              :disabled-reason="bulkReason"
-              @click="bulkOpen = true"
-              ><template #leading><AppIcon name="team" :size="16" /></template>Set team choices</GmButton
-            >
-          </div>
-        </details>
+        ><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton>
       </div>
+    </header>
+
+    <div v-if="error && !show && !pendingDelete" class="notice error" role="alert">{{ error }}</div>
+
+    <div v-if="needsAvailability && !isDemo" class="first-row" data-tour="tour-services-availability">
+      <AppIcon name="availability" :size="20" />
+      <div>
+        <strong>Set your hours before your first service</strong>
+        <p>Guests can only book inside your weekly hours, so Bookins needs them before it can offer a service.</p>
+      </div>
+      <RouterLink class="primary small" to="/availability">Set your hours</RouterLink>
     </div>
 
-    <div
-      v-if="error && !show && !pendingDelete"
-      class="notice error"
-      role="alert"
-      >{{ error }}</div
-    >
-
-    <article v-if="needsAvailability && !isDemo" class="card availability-first" data-tour="tour-services-availability">
-      <span class="icon-tile info"><AppIcon name="availability" :size="20" /></span>
-      <div>
-        <p class="eyebrow">Step 1</p>
-        <h2>Set your availability first</h2>
-        <p class="muted">Services use your weekly hours to offer times to guests, so Bookins needs your hours before it can create a service. It takes about a minute.</p>
-      </div>
-      <RouterLink class="primary" to="/availability">Set availability<AppIcon name="chevron" :size="15" /></RouterLink>
-    </article>
-
     <div v-if="baseEntries.length" data-tour="tour-services-list">
-      <div class="toolbar services-toolbar">
-        <div class="search-field">
-          <AppIcon name="search" :size="18" />
-          <input v-model="search" type="search" aria-label="Search services" placeholder="Search services or categories" />
-        </div>
-        <span class="muted tnum" role="status">{{ groups.reduce((sum, group) => sum + group.entries.length, 0) }} of {{ baseEntries.length }} {{ baseEntries.length === 1 ? 'service' : 'services' }}</span>
+      <div class="toolbar">
+        <label class="search-field">
+          <AppIcon name="search" :size="18" /><span class="visually-hidden">Search services</span>
+          <input v-model="search" type="search" placeholder="Search services or categories" />
+        </label>
+        <span class="muted tnum count-line" role="status">{{ serviceCount }} of {{ baseEntries.length }} {{ baseEntries.length === 1 ? 'service' : 'services' }}</span>
       </div>
 
       <div v-if="!groups.length" class="empty compact">
-        <span class="empty-icon"><AppIcon name="search" /></span>
         <h2>No services match “{{ search }}”</h2>
-        <p>Try a shorter word, or clear the search to see everything.</p>
-        <button class="secondary" type="button" @click="search = ''">Clear search</button>
+        <p>Try a shorter word, or clear the search.</p>
+        <button class="secondary small" type="button" @click="search = ''">Clear search</button>
       </div>
 
-      <section v-for="group in groups" :key="group.category || '__none'" class="category-group">
-        <h2 v-if="showHeadings" class="group-title">
-          <button type="button" class="group-toggle" :aria-expanded="!collapsed[group.category]" @click="toggleGroup(group.category)">
-            <AppIcon class="group-chevron" name="chevron" :size="16" />{{ groupLabel(group) }}
-            <span class="count-pill">{{ group.entries.length }}</span>
-          </button>
-        </h2>
-        <div v-show="!collapsed[group.category]" class="service-grid">
-      <article
-        v-for="{ service, meta } in group.entries"
-        :key="service.id"
-        class="card service-card"
-      >
-        <div class="service-summary">
-          <div class="service-copy">
-            <div class="service-name-row">
-              <h3 class="service-name">{{ displayName(service.name) }}</h3>
-              <span class="chip" :class="service.active !== false ? 'active' : 'paused'">{{ service.active !== false ? 'Active' : 'Paused' }}</span>
-              <span v-if="service.visibility === 'private'" class="chip private">Private</span>
+      <section v-for="group in groups" :key="group.category || '__none'" class="price-group" :aria-label="showHeadings ? groupLabel(group) : 'Services'">
+        <h2 v-if="showHeadings" class="group-title">{{ groupLabel(group) }} <small class="tnum">{{ group.entries.length }}</small></h2>
+        <ul class="ledger price-list">
+          <li v-for="{ service, meta } in group.entries" :key="service.id" class="price-row" :class="{ 'is-paused': service.active === false }">
+            <div class="price-name">
+              <h3>{{ displayName(service.name) }}</h3>
+              <p v-if="meta.text" class="price-desc">{{ meta.text }}</p>
+              <p class="price-tags">
+                <span v-if="service.active === false" class="chip paused">Paused</span>
+                <span v-if="service.visibility === 'private'" class="chip private">Private link only</span>
+                <span v-if="teamLine(service)" class="team-line">{{ teamLine(service) }}</span>
+                <span v-if="meta.rebookAfterDays" class="team-line">Rebook after {{ meta.rebookAfterDays }} {{ meta.rebookAfterDays === 1 ? 'day' : 'days' }}</span>
+                <span v-if="upcomingCount(service)" class="team-line">{{ upcomingCount(service) }} upcoming</span>
+              </p>
             </div>
-            <p>{{ meta.text }}</p>
-          </div>
-          <div class="service-facts">
-            <span><AppIcon name="clock" :size="16" />{{ service.duration_minutes }} min</span>
-            <strong class="tnum">{{ priceLabel(service) }}</strong>
-          </div>
-          <GmButton
-            variant="secondary"
-            size="sm"
-            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
-            :disabled="saving || deleting"
-            @click="open(service)"
-            ><template #leading><AppIcon name="edit" :size="16" /></template>Edit</GmButton
-          >
-        </div>
-        <details class="service-more">
-          <summary :aria-label="`More actions for ${displayName(service.name)}`">More <AppIcon name="chevron" :size="15" /></summary>
-          <div class="service-more-body">
-            <div v-if="meta.prepNotes || meta.rebookAfterDays" class="service-chips">
-              <span v-if="meta.prepNotes" class="chip info" :title="`Prep notes: ${meta.prepNotes}`"><AppIcon name="info" :size="13" />Prep notes</span>
-              <span v-if="meta.rebookAfterDays" class="chip neutral" :title="`Clients are listed under Rebook in Messages ${meta.rebookAfterDays} days after a finished visit.`"><AppIcon name="refresh" :size="13" />Rebook after {{ meta.rebookAfterDays }} {{ meta.rebookAfterDays === 1 ? 'day' : 'days' }}</span>
+            <div class="price-length">
+              <SlotMeter :duration="Number(service.duration_minutes) || 0" :interval="intervalFor(service)" />
             </div>
-            <p v-if="service.visibility === 'private'" class="private-note">Hidden from your booking page. Guests can use its direct link.</p>
-            <p v-if="upcomingCount(service)" class="private-note">{{ upcomingCount(service) }} upcoming {{ upcomingCount(service) === 1 ? 'booking' : 'bookings' }}</p>
-        <div v-if="copiesOf(service).length" class="team-copies">
-          <p class="copies-title">
-            Team copies
-            <GmHint text="Each copy is this same service on one team member's own hours, so guests can pick 'With Amaka'. Copies mirror this service: name, length, price and status. They cannot be edited on their own; edit this service and saving updates every copy." label="About team copies" />
-          </p>
-          <ul>
-            <li v-for="copy in copiesOf(service)" :key="copy.id">
-              <span class="swatch" :style="{ background: memberColor(copy) || 'var(--line-strong)' }" aria-hidden="true" />
-              <span class="copy-name">With {{ memberName(copy) }}</span>
-              <span class="chip" :class="copy.active !== false ? 'active' : 'paused'">{{ copy.active !== false ? 'Active' : 'Paused' }}</span>
-            </li>
-          </ul>
-          <p class="private-note">Follows this service. Edit this service to change them.</p>
-        </div>
-        <details class="direct-link" :open="Boolean(linkError[service.id]) || undefined">
-          <summary class="direct-summary">
-            <AppIcon name="link" :size="16" /><span>Direct link</span>
-            <span class="chip" :class="linkLive(service) ? 'success' : linkExpired(service) ? 'warning' : 'neutral'">{{ linkLive(service) ? 'Live' : linkExpired(service) ? 'Expired' : 'Not created' }}</span>
-            <AppIcon class="direct-chevron" name="chevron" :size="16" />
-          </summary>
-          <div class="direct-body">
-            <p class="private-note">A direct link opens booking for this one service only, so you can share it in a chat or on a poster. {{ service.visibility === 'private' ? 'This service is private, so its direct link is the only way guests can book it.' : 'Optional: your public booking page already lists this service.' }}</p>
-            <template v-if="linkLive(service)">
-              <code>{{ service.public_link_url }}</code>
-              <div class="direct-actions">
-                <button class="secondary small-button" type="button" @click="copyServiceLink(service)"><AppIcon name="copy" :size="16" />{{ copiedLink === service.id ? 'Copied' : 'Copy link' }}</button>
-                <a class="secondary small-button" :href="whatsappShare(service)" target="_blank" rel="noreferrer">Share on WhatsApp</a>
-                <button class="ghost small-button delete-link" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="pendingRevoke = service">Revoke</button>
-              </div>
-              <QrCode :value="service.public_link_url" :size="140" :label="`QR code for ${displayName(service.name)} direct link`" />
-            </template>
-            <template v-else-if="linkExpired(service)">
-              <p class="private-note">This direct link has expired. Guests opening it see an expired-link page.</p>
-              <button class="primary small-button" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="makeLink(service)">{{ linkBusy === service.id ? 'Creating…' : 'Create new link' }}</button>
-            </template>
-            <button v-else class="secondary small-button" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="makeLink(service)">{{ linkBusy === service.id ? 'Creating…' : 'Create direct link' }}</button>
-            <p v-if="linkError[service.id]" class="field-error private-note" role="alert">{{ linkError[service.id] }}</p>
-          </div>
-        </details>
-            <div class="service-secondary-actions">
-              <GmButton
-            variant="ghost"
-            size="sm"
-            class="delete-link"
-            :aria-label="`Delete ${displayName(service.name)}`"
-            :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
-            :disabled="saving || deleting"
-            @click="askDelete(service)"
-            ><template #leading><AppIcon name="trash" :size="16" /></template>Delete service</GmButton
-              >
+            <strong class="price-amount tnum">{{ priceLabel(service) }}</strong>
+            <div class="price-actions">
+              <details class="menu share-menu" data-menu>
+                <summary class="secondary small" :aria-label="`Share ${displayName(service.name)}`"><AppIcon name="link" :size="15" />Share</summary>
+                <div class="menu-panel share-panel" data-keep-menu>
+                  <p class="share-title">Direct link for {{ displayName(service.name) }}</p>
+                  <p class="share-note">Opens booking for this one service, for a chat, a poster or a bio.<template v-if="service.visibility === 'private'"> It is the only way guests can book this private service.</template></p>
+                  <template v-if="linkLive(service)">
+                    <code class="share-url">{{ service.public_link_url }}</code>
+                    <div class="cluster">
+                      <button class="primary small" type="button" @click="copyServiceLink(service)"><AppIcon name="copy" :size="15" />{{ copiedLink === service.id ? 'Copied' : 'Copy link' }}</button>
+                      <a class="secondary small" :href="whatsappShare(service)" target="_blank" rel="noreferrer"><AppIcon name="messages" :size="15" />Share in WhatsApp</a>
+                    </div>
+                    <QrCode :value="service.public_link_url" :size="132" :label="`QR code for the ${displayName(service.name)} direct link`" />
+                    <button class="ghost small revoke" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="pendingRevoke = service">Turn off this link</button>
+                  </template>
+                  <template v-else>
+                    <p v-if="linkExpired(service)" class="share-note">This link has expired. Guests opening it see an expired-link page.</p>
+                    <button class="primary small" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="makeLink(service)">{{ linkBusy === service.id ? 'Creating…' : linkExpired(service) ? 'Create a new link' : 'Create direct link' }}</button>
+                  </template>
+                  <p v-if="linkError[serviceKey(service)]" class="field-error" role="alert">{{ linkError[serviceKey(service)] }}</p>
+                </div>
+              </details>
+              <GmButton variant="secondary" size="sm" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="saving || deleting" @click="open(service)">Edit</GmButton>
+              <details class="menu" data-menu>
+                <summary class="icon-button" :aria-label="`More for ${displayName(service.name)}`"><AppIcon name="more" :size="18" /></summary>
+                <div class="menu-panel">
+                  <GmButton variant="ghost" size="sm" class="danger-item" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="saving || deleting" @click="askDelete(service)"><template #leading><AppIcon name="trash" :size="16" /></template>Delete service</GmButton>
+                </div>
+              </details>
             </div>
-          </div>
-        </details>
-      </article>
-        </div>
+          </li>
+        </ul>
       </section>
 
-      <section v-if="orphanCopies.length && !search" class="category-group orphans">
-        <h2 class="group-title"><span class="group-toggle static">Team copies without a main service <span class="count-pill">{{ orphanCopies.length }}</span></span></h2>
-        <p class="muted">These copies belong to a service that was deleted. Guests can still see them. Remove them if you no longer offer them.</p>
-        <ul class="orphan-list">
-          <li v-for="copy in orphanCopies" :key="copy.id">
+      <section v-if="orphanCopies.length && !search" class="price-group orphans" aria-labelledby="orphans-title">
+        <h2 id="orphans-title" class="group-title">Team copies without a main service <small class="tnum">{{ orphanCopies.length }}</small></h2>
+        <p class="muted">These belong to a service that was deleted. Guests can still see them; remove them if you no longer offer them.</p>
+        <ul class="ledger">
+          <li v-for="copy in orphanCopies" :key="copy.id" class="orphan-row">
             <span><strong>{{ displayName(copy.name) }}</strong> with {{ memberName(copy) }}</span>
-            <GmButton variant="ghost" size="sm" class="delete-link" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" @click="askDelete(copy)">Remove</GmButton>
+            <GmButton variant="ghost" size="sm" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" @click="askDelete(copy)">Remove</GmButton>
           </li>
         </ul>
       </section>
     </div>
 
-    <div
-      v-else
-      class="empty"
-      data-tour="tour-services-list"
-    >
+    <div v-else class="empty" data-tour="tour-services-list">
       <span class="empty-icon"><AppIcon name="services" /></span>
-      <h2>Create your first service</h2>
-      <p>Set a clear name, duration, and price so guests know exactly what they are booking.</p>
-      <p v-if="needsAvailability && !isDemo" class="muted">You will be asked to set your availability first.</p>
+      <h2>Add your first service</h2>
+      <p>A clear name, how long it takes and your price, so guests know exactly what they are booking. Many services already? Import them from a spreadsheet.</p>
       <div class="empty-actions">
-        <GmButton
-          class="primary"
-          :disabled-reason="isDemo ? 'The demo is read-only.' : ''"
-          :disabled="saving || deleting"
-          @click="open()"
-          ><template #leading><AppIcon name="plus" :size="17" /></template>Create service</GmButton
-        ><GmButton
-          variant="secondary"
-          :disabled-reason="importDisabledReason"
-          @click="importOpen = true"
-          ><template #leading><AppIcon name="copy" :size="17" /></template>Import from a spreadsheet</GmButton
-        >
+        <GmButton variant="primary" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="saving || deleting" @click="open()"><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton>
+        <GmButton variant="secondary" :disabled-reason="importDisabledReason" @click="importOpen = true"><template #leading><AppIcon name="download" :size="17" /></template>Import from a spreadsheet</GmButton>
       </div>
     </div>
 
@@ -893,213 +833,130 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
       :open="show"
       :title="editing ? 'Edit service' : 'New service'"
       content-class="card modal bookins-service-dialog"
-      overlay-class="modal-backdrop bookins-modal-backdrop"
       :busy="saving"
       @update:open="(value) => { if (!value) close() }"
     >
-      <form
-        ref="selectPortalTarget"
-        class="bookins-service-dialog-form"
-        @submit.prevent="submit"
-      >
-        <div class="modal-header"
-          ><div
-            ><h2>{{
-              editing ? 'Edit service' : 'New service'
-            }}</h2
-            ></div
-          ><button
-            class="icon-button"
-            type="button"
-            aria-label="Close"
-            :disabled="saving || deleting"
-            @click="close"
-            ><AppIcon name="close" /></button
-        ></div>
-        <div
-          v-if="needsAvailability && !isDemo && !editing"
-          class="notice warning availability-note"
-          role="status"
-          ><AppIcon name="availability" :size="18" /><span><strong>Set your availability first.</strong> Services use your weekly hours, so a service can only be created once you have them. You can fill in the details now; they stay here. <RouterLink to="/availability">Set availability</RouterLink></span></div
-        >
-        <div
-          v-if="error"
-          class="notice error"
-          role="alert"
-          >{{ error }}</div
-        >
+      <form ref="selectPortalTarget" class="service-form" novalidate @submit.prevent="submit()">
+        <div class="modal-header">
+          <h2>{{ editing ? `Edit ${displayName(editing.name)}` : 'New service' }}</h2>
+          <button class="icon-button" type="button" aria-label="Close" :disabled="saving || deleting" @click="close"><AppIcon name="close" /></button>
+        </div>
+        <div v-if="needsAvailability && !isDemo && !editing" class="notice warning" role="status">
+          <AppIcon name="availability" :size="18" /><span><strong>Set your hours first.</strong> A service can only be created once you have weekly hours. What you type here is kept. <RouterLink to="/availability">Set your hours</RouterLink></span>
+        </div>
+        <div v-if="error" class="notice error" role="alert">{{ error }}</div>
+
         <section class="form-section">
-          <h3>Basics</h3>
-          <div class="field"
-            ><label for="service-name">Service name <span class="req">(required)</span></label
-            ><input
-              id="service-name"
-              v-model.trim="form.name"
-              :disabled="isDemo || saving || deleting"
-              maxlength="100"
-              required
-              :aria-invalid="Boolean(nameConflict)"
-              placeholder="30-minute discovery call"
-          /><p v-if="nameConflict" class="field-hint field-error" role="alert">{{ nameConflict }}</p></div>
-          <div class="field"
-            ><label for="service-description">Description <span class="req">(required)</span></label
-            ><textarea
-              id="service-description"
-              v-model.trim="form.description"
-              :disabled="isDemo || saving || deleting"
-              maxlength="1500"
-              required
-              placeholder="Tell guests what you will cover and what they should prepare."
-            ></textarea>
+          <div class="field">
+            <label for="service-name">Name <span class="req">(required)</span></label>
+            <input id="service-name" v-model.trim="form.name" :disabled="isDemo || saving || deleting" maxlength="100" required aria-required="true" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? 'service-name-error' : undefined" placeholder="Box braids, medium" />
+            <p v-if="nameError" id="service-name-error" class="field-error" role="alert"><AppIcon name="alert" :size="16" />{{ nameError }}</p>
+          </div>
+          <div class="field">
+            <label for="service-description">Description <span class="req">(required)</span></label>
+            <textarea id="service-description" v-model.trim="form.description" :disabled="isDemo || saving || deleting" maxlength="1500" required aria-required="true" rows="3" placeholder="What is included, and anything the client should know." :aria-invalid="descriptionError ? 'true' : undefined" :aria-describedby="descriptionError ? 'service-description-error service-description-hint' : 'service-description-hint'"></textarea>
+            <p v-if="descriptionError" id="service-description-error" class="field-error" role="alert"><AppIcon name="alert" :size="16" />{{ descriptionError }}</p>
+            <p id="service-description-hint" class="field-hint">Shown to guests under the name.</p>
           </div>
         </section>
+
         <section class="form-section">
-          <h3>Duration and price</h3>
-          <div class="grid grid-2 form-grid"
-            ><div class="field"
-              ><label for="service-duration">Duration (minutes) <GmHint text="Duration is how long one appointment lasts. The slot interval, set in Availability, is how often guests can pick a start time (for example every 30 minutes). Each booking reserves one interval, so duration cannot exceed it." label="About duration and slot interval" /></label
-              ><input
-                id="service-duration"
-                v-model.number="form.durationMinutes"
-                :disabled="isDemo || saving || deleting"
-                type="number"
-                min="5"
-                step="5"
-                                inputmode="numeric"
-                required
-                :aria-invalid="Boolean(durationError)"
-                aria-describedby="service-duration-hint" /><p
-                id="service-duration-hint"
-                class="field-hint"
-                :class="{ 'field-error': durationError }"
-                >{{ durationError || (scheduleInterval ? `Up to your ${scheduleInterval}-minute slot interval.` : 'Minutes, in steps of 5.') }}
-                <RouterLink v-if="scheduleInterval" :to="intervalLink">{{ neededInterval ? `Set the interval to ${neededInterval} minutes` : 'Change interval' }}</RouterLink></p
-              ></div
-            ><div class="field price-field"
-              ><label for="service-price">Display price <GmHint text="Shown to you and in messages as the price you have agreed with the client. Bookins does not take payments yet, so guests pay you directly. Use 0 for free." label="About display price" /></label
-              ><div
-                ><GmSelect
-                  v-model="form.currency"
-                  :options="currencyOptions"
-                  label="Currency"
-                  :disabled="isDemo || saving || deleting"
-                  :portal-target="selectPortalTarget || 'body'" /><input
-                  id="service-price"
-                  v-model.number="form.price"
-                  :disabled="isDemo || saving || deleting"
-                  type="number"
-                  min="0"
-                  step="1"
-                  aria-label="Price" /></div
-              ><p class="field-hint"
-                >Clients pay your business directly.</p
-              ></div
-            ></div
-          >
+          <h3>Length and price</h3>
+          <div class="form-grid">
+            <div class="field">
+              <label for="service-duration">Length in minutes <span class="req">(required)</span></label>
+              <input id="service-duration" v-model.number="form.durationMinutes" :disabled="isDemo || saving || deleting" type="number" min="5" step="5" inputmode="numeric" required aria-required="true" :aria-invalid="durationError ? 'true' : undefined" aria-describedby="service-duration-hint" />
+              <SlotMeter v-if="scheduleInterval" :duration="Number(form.durationMinutes) || 0" :interval="scheduleInterval" :caption="false" />
+              <p id="service-duration-hint" class="field-hint" :class="{ 'field-error': durationError }">
+                {{ durationError || (scheduleInterval ? `Fits inside your ${scheduleInterval}-minute start-time interval.` : 'In steps of 5 minutes.') }}
+                <RouterLink v-if="scheduleInterval" :to="intervalLink">{{ neededInterval ? `Set the interval to ${neededInterval} min` : 'Change the interval' }}</RouterLink>
+              </p>
+            </div>
+            <div class="field price-field">
+              <label for="service-price">Price</label>
+              <div class="price-inputs">
+                <GmSelect v-model="form.currency" :options="currencyOptions" label="Currency" :disabled="isDemo || saving || deleting" :portal-target="selectPortalTarget || 'body'" />
+                <input id="service-price" v-model.number="form.price" :disabled="isDemo || saving || deleting" type="number" min="0" step="1" aria-describedby="service-price-hint" />
+              </div>
+              <p id="service-price-hint" class="field-hint">{{ Number(form.price) ? 'Clients pay you directly; Bookins only shows the price.' : 'Guests see this as Free. Clients pay you directly.' }}</p>
+            </div>
+          </div>
         </section>
-        <details class="form-section advanced-form-section" :open="Boolean(sortOrderError || rebookError) || undefined">
-          <summary>Order, reminders and preparation <span>Optional</span></summary>
-          <div class="advanced-form-content">
-          <div class="field"
-            ><label for="service-category">Category (optional) <GmHint text="Groups services under a heading on your booking page and in this list. Pick one you already use or type a new one." label="About categories" /></label
-            ><GmTextSuggest
-              id="service-category"
-              v-model.trim="form.category"
-              :options="categories"
-              label="Category"
-              :disabled="isDemo || saving || deleting"
-              maxlength="80"
-              autocomplete="off"
-              placeholder="Braids, Nails, Consultations…" /></div>
-          <div class="grid grid-2 form-grid"
-            ><div class="field"
-              ><label for="service-sort">Sort order <GmHint text="Lower numbers come first inside the category, on your booking page and in this list. Leave it blank to sort by name. Once a number is set it can be changed but not cleared." label="About sort order" /></label
-              ><input
-                id="service-sort"
-                v-model="form.sortOrder"
-                :disabled="isDemo || saving || deleting"
-                type="number"
-                step="1"
-                inputmode="numeric"
-                placeholder="1"
-                :aria-invalid="Boolean(sortOrderError)"
-                aria-describedby="service-sort-hint" /><p id="service-sort-hint" class="field-hint" :class="{ 'field-error': sortOrderError }">{{ sortOrderError || (editingMeta?.sortOrder !== undefined && String(form.sortOrder) === '' ? `Left blank, it keeps the current order (${editingMeta.sortOrder}).` : 'Lower numbers show first. Blank sorts by name.') }}</p></div
-            ><div class="field"
-              ><label for="service-rebook">Rebook reminder after N days <GmHint text="After a client's visit has been completed this many days, Bookins lists them under Rebook in Messages so you can open a reminder in your own WhatsApp, SMS or email app. Nothing is sent automatically. Leave blank or 0 for no reminder." label="About the rebook reminder" /></label
-              ><input
-                id="service-rebook"
-                v-model="form.rebookAfterDays"
-                :disabled="isDemo || saving || deleting"
-                type="number"
-                min="0"
-                max="730"
-                step="1"
-                inputmode="numeric"
-                placeholder="42"
-                :aria-invalid="Boolean(rebookError)"
-                aria-describedby="service-rebook-hint" /><p id="service-rebook-hint" class="field-hint" :class="{ 'field-error': rebookError }">{{ rebookError || 'Days after a finished visit. Blank means no reminder.' }}</p></div
-          ></div>
-          <div class="field"
-            ><label for="service-prep">Prep notes (shown to the guest before they come) <GmHint text="What the guest should do or bring, for example 'Arrive with washed, detangled hair'. It is added to the preparation message you open for them about two days before the visit, and travels with the service on your booking page. Bookins does not send it for you." label="About prep notes" /></label
-            ><textarea
-              id="service-prep"
-              v-model="form.prepNotes"
-              :disabled="isDemo || saving || deleting"
-              maxlength="400"
-              rows="3"
-              placeholder="Arrive with washed, detangled hair. Bring a reference photo."
-              aria-describedby="service-prep-hint"
-            ></textarea><p id="service-prep-hint" class="field-hint tnum">{{ form.prepNotes.length }}/400</p></div>
+
+        <details class="form-section more-section" :open="Boolean(sortOrderError || rebookError) || undefined">
+          <summary>Category, order, return reminder and preparation <span>Optional</span></summary>
+          <div class="more-body">
+            <div class="field">
+              <label for="service-category">Category <GmHint text="Groups services under a heading on your booking page and here. Pick one you already use or type a new one." label="About categories" /></label>
+              <GmTextSuggest id="service-category" v-model.trim="form.category" :options="categories" label="Category" :disabled="isDemo || saving || deleting" maxlength="80" autocomplete="off" placeholder="Braids, Nails, Consultations…" />
+            </div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="service-sort">Order in the list</label>
+                <input id="service-sort" v-model="form.sortOrder" :disabled="isDemo || saving || deleting" type="number" step="1" inputmode="numeric" placeholder="1" :aria-invalid="Boolean(sortOrderError)" aria-describedby="service-sort-hint" />
+                <p id="service-sort-hint" class="field-hint" :class="{ 'field-error': sortOrderError }">{{ sortOrderError || (editingMeta?.sortOrder !== undefined && String(form.sortOrder) === '' ? `Left blank, it keeps the current order (${editingMeta.sortOrder}).` : 'Lower numbers show first. Blank sorts by name.') }}</p>
+              </div>
+              <div class="field">
+                <label for="service-rebook">Remind me to rebook after (days)</label>
+                <input id="service-rebook" v-model="form.rebookAfterDays" :disabled="isDemo || saving || deleting" type="number" min="0" max="730" step="1" inputmode="numeric" placeholder="42" :aria-invalid="Boolean(rebookError)" aria-describedby="service-rebook-hint" />
+                <p id="service-rebook-hint" class="field-hint" :class="{ 'field-error': rebookError }">{{ rebookError || 'That many days after a visit, the client is listed in Messages for you to invite back. Blank means never.' }}</p>
+              </div>
+            </div>
+            <div class="field">
+              <label for="service-prep">Before they come</label>
+              <textarea id="service-prep" v-model="form.prepNotes" :disabled="isDemo || saving || deleting" maxlength="400" rows="3" placeholder="Arrive with washed, detangled hair. Bring a reference photo." aria-describedby="service-prep-hint"></textarea>
+              <p id="service-prep-hint" class="field-hint tnum">Shown on your booking page and added to the preparation message you open two days before. {{ form.prepNotes.length }}/400</p>
+            </div>
           </div>
         </details>
-        <details class="form-section advanced-form-section" :open="Boolean(teamEnabled && teamSelected.some((id) => memberIssues[id])) || undefined">
-          <summary>Booking options <span>Visibility, status, location and team</span></summary>
-          <div class="advanced-form-content">
-          <div class="grid grid-2 form-grid"
-            ><div class="field"
-              ><label for="service-visibility">Visibility <GmHint text="Public services are listed on your booking page. Private services are hidden there and can only be booked through their own direct link, which suits one-to-one or invite-only offers." label="About visibility" /></label
-              ><GmSelect
-                id="service-visibility"
-                v-model="form.visibility"
-                :options="visibilityOptions"
-                label="Visibility"
-                :disabled="isDemo || saving || deleting"
-                :portal-target="selectPortalTarget || 'body'" /></div
-            ><div class="field"
-              ><label for="service-status">Status <GmHint text="Paused services are hidden from guests but keep their history. You can resume them any time." label="About status" /></label
-              ><GmSelect
-                id="service-status"
-                v-model="form.active"
-                :options="statusOptions"
-                label="Status"
-                :disabled="isDemo || saving || deleting"
-                :portal-target="selectPortalTarget || 'body'" /></div
-          ></div>
-          <div class="field"
-            ><label for="service-location">Location (optional) <GmHint text="Where the appointment happens: an address, a phone call, or a video link. It goes into your messages to clients and calendar events, but is not shown on the booking page yet." label="About location" /></label
-            ><input
-              id="service-location"
-              v-model.trim="form.location"
+
+        <details class="form-section more-section" :open="Boolean(teamEnabled && teamSelected.some((id) => memberIssues[id])) || undefined">
+          <summary>Visibility, status, place and team <span>Optional</span></summary>
+          <div class="more-body">
+            <div class="form-grid">
+              <div class="field">
+                <label for="service-visibility">Who can see it</label>
+                <GmSelect id="service-visibility" v-model="form.visibility" :options="visibilityOptions" label="Who can see it" :disabled="isDemo || saving || deleting" :portal-target="selectPortalTarget || 'body'" />
+              </div>
+              <div class="field">
+                <label for="service-status">Status</label>
+                <GmSelect id="service-status" v-model="form.active" :options="statusOptions" label="Status" :disabled="isDemo || saving || deleting" :portal-target="selectPortalTarget || 'body'" />
+              </div>
+            </div>
+            <div class="field">
+              <label for="service-location">Where it happens</label>
+              <input id="service-location" v-model.trim="form.location" :disabled="isDemo || saving || deleting" maxlength="300" placeholder="Address, phone call or video link" />
+              <p class="field-hint">Used in your messages and calendar events. Not shown on the booking page yet.</p>
+            </div>
+            <ServiceTeamFields
+              v-if="showTeam"
+              v-model:selected="teamSelected"
+              v-model:enabled="teamEnabled"
+              :members="pickerMembers"
+              :owner-name="ownerStaff(state).name || 'You'"
+              :issues="memberIssues"
+              :notes="memberNotes"
+              :copy-members="copyMemberIds"
+              :estimate="teamEstimate"
               :disabled="isDemo || saving || deleting"
-              maxlength="300"
-              placeholder="Address, phone call, or a video meeting URL" /></div>
-        <ServiceTeamFields
-          v-if="showTeam"
-          v-model:selected="teamSelected"
-          v-model:enabled="teamEnabled"
-          :members="pickerMembers"
-          :owner-name="ownerStaff(state).name || 'You'"
-          :issues="memberIssues"
-          :notes="memberNotes"
-          :copy-members="copyMemberIds"
-          :estimate="teamEstimate"
-          :disabled="isDemo || saving || deleting"
-        />
+            />
           </div>
         </details>
         <p v-if="submitReason && !isDemo" class="submit-reason" role="status">{{ submitReason }}</p>
-        <div class="form-actions modal-footer"
-          ><GmConfirm
+        <div class="form-actions modal-footer">
+          <GmConfirm
+            v-model:open="dialogPrompt"
+            title="Discard unsaved changes?"
+            message="Your edits to this service will be lost."
+            confirm-label="Discard changes"
+            cancel-label="Keep editing"
+            tone="danger"
+            align="start"
+            :busy="saving"
+            @confirm="discardChanges"
+            @cancel="keepEditing"
+          ><button class="ghost" type="button" :disabled="saving" @click="close">Cancel</button></GmConfirm>
+          <GmConfirm
             v-model:open="capPrompt"
             :title="`Create ${teamEstimate.adding} team copies?`"
             :message="`This brings your team copies to ${teamEstimate.total}, over ${STAFF_COPY_WARN}. Each copy is a separate choice for guests on your booking page. You can remove copies later by editing the service.`"
@@ -1107,33 +964,8 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
             cancel-label="Go back"
             :busy="saving"
             @confirm="submit(true)"
-            ><GmButton
-              type="submit"
-              class="primary"
-              :pending="saving"
-              pending-label="Saving…"
-              :disabled-reason="submitReason"
-              >{{ editing ? 'Save changes' : 'Create service' }}</GmButton
-            ></GmConfirm
-          ><GmConfirm
-            v-model:open="dialogPrompt"
-            title="Discard unsaved changes?"
-            message="Your edits to this service will be lost."
-            confirm-label="Discard changes"
-            cancel-label="Keep editing"
-            tone="danger"
-            :busy="saving"
-            @confirm="discardChanges"
-            @cancel="keepEditing"
-            ><button
-              class="secondary"
-              type="button"
-              :disabled="saving"
-              @click="close"
-              >Cancel</button
-            ></GmConfirm
-          ></div
-        >
+          ><GmButton type="submit" variant="primary" :pending="saving" pending-label="Saving…" :disabled-reason="submitReason">{{ editing ? 'Save changes' : 'Create service' }}</GmButton></GmConfirm>
+        </div>
       </form>
     </GmDialog>
 
@@ -1142,255 +974,111 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
 
     <GmDialog
       :open="Boolean(pendingRevoke)"
-      :title="`Revoke link for ${displayName(pendingRevoke?.name) || 'service'}?`"
-      content-class="card modal delete-modal bookins-delete-dialog"
-      overlay-class="modal-backdrop bookins-modal-backdrop"
+      variant="confirm"
+      :title="`Turn off the link for ${displayName(pendingRevoke?.name) || 'service'}?`"
+      content-class="card modal confirm-dialog"
       :busy="Boolean(linkBusy)"
       @update:open="(value) => { if (!value) pendingRevoke = null }"
     >
-      <div v-if="pendingRevoke" class="bookins-delete-dialog-body">
-        <span class="delete-icon">!</span><p class="eyebrow">Revoke direct link</p>
-        <h2>Revoke the link for {{ displayName(pendingRevoke.name) }}?</h2>
-        <p class="muted">Anyone holding this link, including printed QR codes, will no longer be able to open or book this service. Existing bookings are unchanged.</p>
+      <div v-if="pendingRevoke" class="confirm-body">
+        <h2>Turn off the link for {{ displayName(pendingRevoke.name) }}?</h2>
+        <p>Anyone holding this link, including printed QR codes, can no longer open it or book. Existing bookings are unchanged.</p>
         <div class="form-actions">
-          <button class="danger" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="confirmRevoke">{{ linkBusy ? 'Revoking…' : 'Revoke link' }}</button>
           <button class="secondary" type="button" :disabled="Boolean(linkBusy)" @click="pendingRevoke = null">Keep link</button>
+          <button class="danger solid" type="button" :disabled="isDemo || Boolean(linkBusy)" @click="confirmRevoke">{{ linkBusy ? 'Turning off…' : 'Turn off link' }}</button>
         </div>
       </div>
     </GmDialog>
 
     <GmDialog
       :open="Boolean(pendingDelete)"
+      variant="confirm"
       :title="`Delete ${displayName(pendingDelete?.name) || 'service'}?`"
-      content-class="card modal delete-modal bookins-delete-dialog"
-      overlay-class="modal-backdrop bookins-modal-backdrop"
+      content-class="card modal confirm-dialog"
       :busy="deleting"
       @open-auto-focus="focusKeepService"
       @update:open="(value) => { if (!value) requestDeleteClose() }"
     >
-      <div
-        v-if="pendingDelete"
-        class="bookins-delete-dialog-body"
-      >
-        <span class="delete-icon">!</span><p class="eyebrow">Delete service</p
-        ><h2>Delete {{ displayName(pendingDelete.name) }}?</h2
-        ><p v-if="pendingDelete && copiesOf(pendingDelete).length" class="muted"
-          >This also removes its {{ copiesOf(pendingDelete).length }} team {{ copiesOf(pendingDelete).length === 1 ? 'copy' : 'copies' }} (With {{ copiesOf(pendingDelete).map(memberName).join(', ') }}).</p
-        ><p v-if="deleteUpcoming" class="muted"
-          ><strong>{{ deleteUpcoming }} upcoming confirmed {{ deleteUpcoming === 1 ? 'booking uses' : 'bookings use' }} this service.</strong>
-          Deleting it leaves {{ deleteUpcoming === 1 ? 'that appointment' : 'those appointments' }} without a service on your list. Pausing hides it from guests and keeps everything intact.</p
-        ><p v-else class="muted"
-          >It will disappear from your booking page. Existing bookings and contact history will stay
-          available.</p
-        >
+      <div v-if="pendingDelete" class="confirm-body">
+        <h2>Delete {{ displayName(pendingDelete.name) }}?</h2>
+        <p v-if="copiesOf(pendingDelete).length">This also removes its {{ copiesOf(pendingDelete).length }} team {{ copiesOf(pendingDelete).length === 1 ? 'copy' : 'copies' }} (with {{ copiesOf(pendingDelete).map(memberName).join(', ') }}).</p>
+        <p v-if="deleteUpcoming"><strong>{{ deleteUpcoming }} upcoming {{ deleteUpcoming === 1 ? 'booking uses' : 'bookings use' }} this service.</strong> Deleting leaves {{ deleteUpcoming === 1 ? 'that appointment' : 'those appointments' }} without a service on your list. Pausing hides it from guests and keeps everything.</p>
+        <p v-else>It disappears from your booking page. Past bookings and client history stay.</p>
         <div v-if="error" class="notice error" role="alert">{{ error }}</div>
-        <div class="form-actions"
-          ><button
-            v-if="deleteUpcoming && pendingDelete.active !== false"
-            class="primary"
-            type="button"
-            :disabled="deleting || pausing || isDemo"
-            @click="pauseInstead"
-            >{{ pausing ? 'Pausing…' : 'Pause instead' }}</button
-          ><button
-            :class="deleteUpcoming && pendingDelete.active !== false ? 'ghost delete-link' : 'danger'"
-            type="button"
-            :disabled="deleting || pausing || isDemo"
-            @click="remove"
-            >{{ deleting ? 'Deleting…' : deleteUpcoming ? 'Delete anyway' : 'Delete service' }}</button
-          ><button
-            class="secondary"
-            type="button"
-            ref="keepServiceButton"
-            :disabled="deleting || pausing || isDemo"
-            @click="requestDeleteClose"
-            >Keep service</button
-          ></div
-        >
+        <div class="form-actions">
+          <button ref="keepServiceButton" class="secondary" type="button" :disabled="deleting || pausing" @click="requestDeleteClose">Keep service</button>
+          <button v-if="deleteUpcoming && pendingDelete.active !== false" class="primary" type="button" :disabled="deleting || pausing || isDemo" @click="pauseInstead">{{ pausing ? 'Pausing…' : 'Pause instead' }}</button>
+          <button :class="deleteUpcoming && pendingDelete.active !== false ? 'ghost delete-anyway' : 'danger solid'" type="button" :disabled="deleting || pausing || isDemo" @click="remove">{{ deleting ? 'Deleting…' : deleteUpcoming ? 'Delete anyway' : 'Delete service' }}</button>
+        </div>
       </div>
     </GmDialog>
   </section>
 </template>
 
 <style scoped>
-.field-error { color: var(--danger); }
-.req { color: var(--muted); font-size: var(--text-xs); font-weight: 600; }
-.page-more { position: relative; }
-.page-more > summary { min-height: var(--control-h); display: inline-flex; align-items: center; gap: 5px; list-style: none; cursor: pointer; }
-.page-more > summary::-webkit-details-marker { display: none; }
-.page-more[open] > summary svg { transform: rotate(90deg); }
-.page-more-menu { position: absolute; z-index: 30; top: calc(100% + 7px); right: 0; width: max-content; min-width: 210px; padding: 6px; display: grid; gap: 2px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: #fff; box-shadow: var(--shadow-lg); }
-.page-more-menu :deep(.gm-button) { justify-content: flex-start; width: 100%; }
-.availability-first { margin-bottom: var(--space-4); display: flex; align-items: center; gap: var(--space-4); border-color: var(--accent); background: var(--accent-soft); }
-.availability-first > div { min-width: 0; flex: 1; }
-.availability-first h2 { margin: 0 0 4px; font-size: var(--text-lg); }
-.availability-first p { margin: 0; font-size: var(--text-sm); }
-.availability-first .eyebrow { margin-bottom: 4px; }
-.availability-first a, .availability-note a { text-decoration: none; }
-.availability-first > a { flex: none; display: inline-flex; align-items: center; gap: 4px; }
-.availability-note { display: flex; gap: var(--space-2); align-items: flex-start; }
-.availability-note a { margin-left: 4px; color: var(--accent); font-weight: 700; text-decoration: underline; }
-.submit-reason { margin: 0 0 var(--space-2); color: var(--danger); font-size: var(--text-sm); line-height: 1.45; }
-:global(.bookins-service-dialog .form-grid) { align-items: start; }
-.advanced-form-section { padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
-.advanced-form-section > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); cursor: pointer; color: var(--ink); font-size: var(--text-sm); font-weight: 650; }
-.advanced-form-section > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: 500; text-align: right; }
-.advanced-form-content { padding: var(--space-3); border-top: 1px solid var(--line); background: #fff; }
-.advanced-form-content > :last-child { margin-bottom: 0; }
-:global(.bookins-service-dialog .modal-footer .gm-button) { min-width: 140px; }
-.private-note { margin: 0 0 var(--space-2); color: var(--muted); font-size: var(--text-xs); line-height: 1.45; }
-.direct-link { margin: var(--space-3) 0 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-soft, #fafbfd); }
-.direct-summary { min-height: var(--control-h-sm); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink-soft); font-size: var(--text-sm); font-weight: 650; list-style: none; cursor: pointer; }
-.direct-summary::-webkit-details-marker { display: none; }
-.direct-summary > span:nth-child(2) { flex: 1; }
-.direct-chevron { transition: transform var(--dur-fast) var(--ease); }
-.direct-link[open] .direct-chevron { transform: rotate(90deg); }
-.direct-body { padding: 0 var(--space-3) var(--space-3); display: grid; gap: var(--space-2); justify-items: start; }
-.direct-link code { max-width: 100%; padding: 8px 10px; overflow: hidden; color: var(--ink-soft); border-radius: 8px; background: #f1f3f8; font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
-.direct-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.direct-actions a { display: inline-flex; align-items: center; text-decoration: none; }
-.service-grid {
-  display: grid;
-  gap: var(--space-2);
-}
-.service-card {
-  padding: 0;
-  min-width: 0;
-  overflow: visible;
-  box-shadow: none;
-}
-.service-summary {
-  min-height: 82px;
-  padding: var(--space-3) var(--space-4);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: var(--space-4);
-}
-.service-copy {
-  min-width: 0;
-}
-.service-copy h3 {
-  margin: 0;
-  font-size: var(--text-md);
-}
-.service-name-row { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
-.services-toolbar { margin-bottom: var(--space-4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
-.services-toolbar .search-field { flex: 1 1 260px; }
-.category-group { margin-bottom: var(--space-5); }
-.group-title { margin: 0 0 var(--space-3); font-size: var(--text-lg); }
-.group-toggle { min-height: var(--control-h-sm); padding: 0 4px; display: inline-flex; align-items: center; gap: var(--space-2); border: 0; background: none; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; border-radius: var(--radius-sm); }
-.group-toggle.static { cursor: default; }
-.group-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.group-chevron { transition: transform var(--dur-fast) var(--ease); transform: rotate(90deg); }
-.group-toggle[aria-expanded='false'] .group-chevron { transform: none; }
-.service-chips { margin: 0 0 var(--space-2); display: flex; flex-wrap: wrap; gap: 6px; }
-.service-chips .chip { display: inline-flex; align-items: center; gap: 4px; }
-.team-copies { margin: var(--space-3) 0 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--accent-soft); }
-.copies-title { margin: 0 0 var(--space-2); display: flex; align-items: center; gap: 4px; font-size: var(--text-sm); font-weight: 700; }
-.team-copies ul { margin: 0 0 var(--space-2); padding: 0; list-style: none; display: grid; gap: 6px; }
-.team-copies li { display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
-.team-copies .private-note { margin: 0; }
-.copy-name { flex: 1; min-width: 0; }
-.swatch { width: 10px; height: 10px; flex: none; border-radius: 50%; display: inline-block; }
-.empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); }
-.orphans .muted { margin: 0 0 var(--space-2); font-size: var(--text-sm); }
-.orphan-list { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
-.orphan-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); }
-.service-copy p {
-  margin: 4px 0 0;
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: var(--text-sm);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-}
-.service-facts {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  white-space: nowrap;
-}
-.service-facts span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-.service-facts strong {
-  font-size: var(--text-md);
-}
-.service-more { border-top: 1px solid var(--line); }
-.service-more > summary { min-height: 38px; padding: 0 var(--space-4); display: flex; align-items: center; justify-content: flex-end; gap: 4px; list-style: none; cursor: pointer; color: var(--muted); font-size: var(--text-sm); font-weight: 650; }
-.service-more > summary::-webkit-details-marker { display: none; }
-.service-more[open] > summary svg { transform: rotate(90deg); }
-.service-more-body { padding: 0 var(--space-4) var(--space-4); }
-.service-secondary-actions { margin-top: var(--space-3); display: flex; justify-content: flex-end; }
-.delete-link {
-  color: var(--danger);
-}
-:global(.bookins-service-dialog .form-grid) {
-  gap: 12px;
-}
-:global(.bookins-modal-backdrop) {
-  background: rgba(16, 25, 40, 0.52);
-  backdrop-filter: blur(4px);
-}
-:global(.bookins-service-dialog),
-:global(.bookins-delete-dialog) {
-  width: min(620px, 100%);
-  box-shadow: var(--shadow-lg);
-}
-:global(.bookins-service-dialog .price-field > div) {
-  display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 7px;
-}
-:global(.bookins-service-dialog .price-field .gm-select-shell),
-:global(.bookins-service-dialog .price-field input) {
-  min-width: 0;
-}
-:global(.bookins-delete-dialog) {
-  max-width: 470px;
-  text-align: center;
-}
-:global(.bookins-delete-dialog .delete-icon) {
-  width: 48px;
-  height: 48px;
-  margin: 0 auto 16px;
-  display: grid;
-  place-items: center;
-  color: var(--danger);
-  border-radius: 50%;
-  background: var(--danger-soft);
-  font-size: 22px;
-  font-weight: 850;
-}
-:global(.bookins-delete-dialog .form-actions) {
-  margin-top: 22px;
-  justify-content: center;
+.services-page { min-width: 0; }
+.first-row { margin-bottom: var(--space-4); padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 2px var(--radius) var(--radius) 2px; background: var(--surface); }
+.first-row > svg { color: var(--accent); }
+.first-row > div { min-width: 0; flex: 1 1 260px; }
+.first-row strong { font-size: var(--text-sm); }
+.first-row p { margin: 2px 0 0; color: var(--muted); font-size: var(--text-sm); }
+.toolbar { align-items: center; }
+.count-line { font-size: var(--text-sm); }
+.price-group { margin-bottom: var(--space-5); }
+.group-title { margin: 0 0 var(--space-2); display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-md); }
+.group-title small { color: var(--muted); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.price-row { padding: var(--space-3) var(--space-4); display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 220px) minmax(96px, auto) auto; align-items: center; gap: var(--space-3) var(--space-5); }
+.price-row.is-paused { background: var(--surface-soft); }
+.price-row.is-paused h3 { color: var(--ink-soft); }
+.price-name { min-width: 0; }
+.price-name h3 { margin: 0; font-size: var(--text-md); overflow-wrap: anywhere; }
+.price-desc { margin: 2px 0 0; display: -webkit-box; overflow: hidden; color: var(--muted); font-size: var(--text-sm); -webkit-box-orient: vertical; -webkit-line-clamp: 1; line-clamp: 1; }
+.price-tags { margin: 6px 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--space-3); }
+.price-tags:empty { display: none; }
+.team-line { color: var(--ink-soft); font-size: var(--text-xs); }
+.price-amount { font-size: var(--text-md); text-align: right; white-space: nowrap; }
+.price-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.price-actions .menu > summary.icon-button { display: inline-grid; }
+.share-menu > summary { display: inline-flex; }
+.share-panel { width: min(320px, calc(100vw - 32px)); padding: var(--space-4); gap: var(--space-2); justify-items: start; }
+.share-panel .cluster > * { width: auto; }
+.share-panel :is(button, a) { width: auto; }
+.share-title { margin: 0; font-weight: var(--weight-strong); }
+.share-note { margin: 0; color: var(--muted); font-size: var(--text-xs); }
+.share-url { max-width: 100%; padding: 6px 8px; overflow: hidden; color: var(--ink-soft); border-radius: var(--radius-xs); background: var(--surface-sunken); font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.revoke { color: var(--danger); }
+.menu-panel :deep(.danger-item) { --button-fg: var(--danger); }
+.orphans > .muted { margin: 0 0 var(--space-2); font-size: var(--text-sm); }
+.orphan-row { padding: var(--space-2) var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); font-size: var(--text-sm); }
+
+.service-form .form-section { padding-top: var(--space-4); }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--space-4); align-items: start; }
+.price-inputs { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: var(--space-2); }
+.price-inputs > * { min-width: 0; }
+.field-hint a { color: var(--accent); font-weight: var(--weight-strong); }
+.more-section { padding: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+.more-section + .more-section { margin-top: var(--space-2); }
+.more-section > summary { min-height: var(--control-h); padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-2); color: var(--ink); cursor: pointer; font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.more-section > summary span { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: var(--weight-regular); }
+.more-body { padding: var(--space-3); border-top: 1px solid var(--line); }
+.more-body > :last-child { margin-bottom: 0; }
+.submit-reason { margin: var(--space-3) 0 0; color: var(--danger); font-size: var(--text-sm); line-height: 1.45; }
+.modal-footer { justify-content: space-between; }
+
+.confirm-body { display: grid; gap: var(--space-2); }
+.confirm-body h2 { margin: 0; font-size: var(--text-lg); }
+.confirm-body p { margin: 0; color: var(--ink-soft); font-size: var(--text-sm); }
+.confirm-body .form-actions { margin-top: var(--space-3); justify-content: flex-end; }
+.delete-anyway { color: var(--danger); }
+
+@media (max-width: 900px) {
+  .price-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .price-length { grid-column: 1; }
+  .price-amount { grid-column: 2; grid-row: 1; align-self: start; }
+  .price-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 @media (max-width: 700px) {
-  .advanced-form-section > summary { padding-block: var(--space-2); flex-direction: column; align-items: flex-start; gap: 2px; line-height: 1.35; }
-  .advanced-form-section + .advanced-form-section { margin-top: 8px; }
-  :global(.bookins-service-dialog .modal-footer .gm-button) { width: 100%; min-width: 0; }
-  .advanced-form-section > summary span { margin: 2px 0 0; max-width: none; text-align: left; line-height: 1.35; }
-  :global(.bookins-service-dialog .modal-footer) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
-  :global(.bookins-service-dialog .modal-footer > .gm-confirm),
-  :global(.bookins-service-dialog .modal-footer > .gm-confirm > .gm-button),
-  :global(.bookins-service-dialog .modal-footer > .gm-confirm > button) { width: 100%; min-width: 0; }
-  .service-summary { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2); }
-  .service-summary > :deep(.gm-button) { grid-column: 2; grid-row: 1 / span 2; }
-  .service-facts { grid-column: 1; }
-  .availability-first { align-items: stretch; flex-direction: column; }
-  :global(.bookins-service-dialog .form-grid) {
-    grid-template-columns: 1fr;
-  }
-  :global(.bookins-service-dialog),
-  :global(.bookins-delete-dialog) {
-    width: 100%;
-  }
+  .form-grid { grid-template-columns: 1fr; }
+  .modal-footer > * { flex: 1; }
 }
 </style>

@@ -1,32 +1,26 @@
-<script setup>
+<script setup lang="ts">
 // "Who offers this?" section of the service form. Pure presentation: Services.vue owns the data and the writes.
 // Each chosen team member gets a copy of the service on their own schedule, so guests can pick "With Amaka".
 import { computed, nextTick, ref, useId } from 'vue'
 import GmHint from './ui/GmHint.vue'
 
-const props = defineProps({
-  members: { type: Array, default: () => [] }, // team members (not the owner): { id, name, role, color, inactive }
-  ownerName: { type: String, default: 'You' },
-  issues: { type: Object, default: () => ({}) }, // memberId -> plain-language reason they cannot be picked
-  notes: { type: Object, default: () => ({}) }, // memberId -> extra info shown under the name
-  copyMembers: { type: Array, default: () => [] }, // member ids that already have a copy
-  estimate: { type: Object, default: null }, // { total, adding, removing, warnAt, max, overCap, overMax }
-  disabled: Boolean,
-})
-const selected = defineModel('selected', { type: Array, default: () => [] })
-const enabled = defineModel('enabled', { type: Boolean, default: false })
+interface ServiceMember { id: string; name: string; role?: string; color?: string; inactive?: boolean }
+interface TeamEstimate { total: number; adding: number; removing?: number; warnAt: number; max: number; overCap: boolean; overMax: boolean }
+const props = withDefaults(defineProps<{ members?: ServiceMember[]; ownerName?: string; issues?: Record<string, string>; notes?: Record<string, string>; copyMembers?: string[]; estimate?: TeamEstimate | null; disabled?: boolean }>(), { members: () => [], ownerName: 'You', issues: () => ({}), notes: () => ({}), copyMembers: () => [], estimate: null, disabled: false })
+const selected = defineModel<string[]>('selected', { default: () => [] })
+const enabled = defineModel<boolean>('enabled', { default: false })
 const uid = useId()
-const list = ref(null)
+const list = ref<HTMLElement | null>(null)
 const removing = computed(() => props.copyMembers.filter((id) => !selected.value.includes(id)).length)
 const removingAll = computed(() => !enabled.value && props.copyMembers.length)
 
-function toggle(id, checked) {
+function toggle(id: string, checked: boolean) {
   const next = new Set(selected.value)
   if (checked) next.add(id)
   else next.delete(id)
   selected.value = [...next]
 }
-function setEnabled(value) {
+function setEnabled(value: boolean) {
   enabled.value = value
   // Turning it on with nothing chosen: pre-select everyone who can take it, so the choice is visible.
   if (value && !selected.value.length)
@@ -34,10 +28,11 @@ function setEnabled(value) {
   // The list opens below the switch, often under the sticky footer: bring it into view.
   if (value) nextTick(() => list.value?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }))
 }
+const checked = (event: Event) => event.target instanceof HTMLInputElement && event.target.checked
 </script>
 
 <template>
-  <section class="form-section team-fields" data-tour="tour-services-team">
+  <section class="form-section team-fields">
     <h3>Who offers this?</h3>
     <div class="switch-row">
       <label class="switch" :for="`${uid}-guest-choice`">
@@ -47,7 +42,7 @@ function setEnabled(value) {
           role="switch"
           :checked="enabled"
           :disabled="disabled"
-          @change="setEnabled($event.target.checked)"
+          @change="setEnabled(checked($event))"
         />
         <span class="switch-track" aria-hidden="true"><span class="switch-thumb" /></span>
         <span class="switch-label">Let guests choose a team member</span>
@@ -77,7 +72,7 @@ function setEnabled(value) {
           :checked="selected.includes(member.id)"
           :disabled="disabled || (Boolean(issues[member.id]) && !selected.includes(member.id))"
           :aria-describedby="issues[member.id] || notes[member.id] ? `${uid}-${member.id}-note` : undefined"
-          @change="toggle(member.id, $event.target.checked)"
+          @change="toggle(member.id, checked($event))"
         />
         <label :for="`${uid}-${member.id}`">
           <strong>
@@ -125,6 +120,6 @@ function setEnabled(value) {
 .member-row.blocked label { cursor: not-allowed; }
 .role { color: var(--muted); font-size: var(--text-sm); font-weight: 400; }
 .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.owner-row { background: var(--muted-soft, #f1f3f8); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.owner-row { background: var(--surface-sunken); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
 .team-fields .notice { margin-top: var(--space-2); }
 </style>

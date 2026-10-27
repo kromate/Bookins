@@ -1,35 +1,25 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, useAttrs, useId, watch } from 'vue'
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'radix-vue'
 
 defineOptions({ inheritAttrs: false })
-const props = defineProps({
-  modelValue: { type: String, default: '' },
-  min: { type: String, default: '' },
-  max: { type: String, default: '' },
-  disabled: Boolean,
-  required: Boolean,
-  id: { type: String, default: '' },
-  label: { type: String, default: '' },
-  name: { type: String, default: undefined },
-  form: { type: String, default: undefined },
-  portalTarget: { type: [String, Object], default: 'body' },
-})
-const emit = defineEmits(['update:modelValue', 'change', 'update:open', 'invalid'])
+interface CivilDate { year: number; month: number; day: number }
+const props = withDefaults(defineProps<{ modelValue?: string; min?: string; max?: string; disabled?: boolean; required?: boolean; id?: string; label?: string; name?: string; form?: string; portalTarget?: string | HTMLElement }>(), { modelValue: '', min: '', max: '', disabled: false, required: false, id: '', label: '', portalTarget: 'body' })
+const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string]; 'update:open': [value: boolean]; invalid: [] }>()
 const attrs = useAttrs()
 const generatedId = `gm-date-${useId()}`
 const controlId = computed(() => props.id || generatedId)
-const accessibleLabel = computed(() => props.label || attrs['aria-label'] || 'Date')
+const accessibleLabel = computed(() => props.label || String(attrs['aria-label'] || 'Date'))
 const open = ref(false)
-const nativeControl = ref(null)
-const trigger = ref(null)
+const nativeControl = ref<HTMLInputElement | null>(null)
+const trigger = ref<HTMLButtonElement | null>(null)
 const missingRequired = ref(false)
 const today = civilFromDate(new Date())
 const initial = parseCivil(props.modelValue) || today
 const viewYear = ref(initial.year)
 const viewMonth = ref(initial.month)
 const focusedValue = ref(formatCivil(initial))
-const dayButtons = new Map()
+const dayButtons = new Map<string, HTMLButtonElement>()
 
 watch(open, (value) => {
   emit('update:open', value)
@@ -49,35 +39,35 @@ watch(() => props.modelValue, (value) => {
   if (value) missingRequired.value = false
 })
 
-function civilFromDate(date) {
+function civilFromDate(date: Date): CivilDate {
   return { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() }
 }
-function parseCivil(value) {
+function parseCivil(value: string): CivilDate | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '')
   if (!match) return null
   const result = { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) }
   const check = new Date(result.year, result.month - 1, result.day, 12)
   return check.getFullYear() === result.year && check.getMonth() + 1 === result.month && check.getDate() === result.day ? result : null
 }
-function formatCivil({ year, month, day }) {
+function formatCivil({ year, month, day }: CivilDate) {
   return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
-function addDays(value, amount) {
+function addDays(value: CivilDate, amount: number) {
   const date = new Date(value.year, value.month - 1, value.day + amount, 12)
   return civilFromDate(date)
 }
-function addMonths(value, amount) {
+function addMonths(value: CivilDate, amount: number): CivilDate {
   const date = new Date(value.year, value.month - 1 + amount, 1, 12)
   const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0, 12).getDate()
   return { year: date.getFullYear(), month: date.getMonth() + 1, day: Math.min(value.day, lastDay) }
 }
-function clampCivil(value) {
+function clampCivil(value: CivilDate): CivilDate {
   const key = formatCivil(value)
   if (props.min && key < props.min) return parseCivil(props.min) || value
   if (props.max && key > props.max) return parseCivil(props.max) || value
   return value
 }
-function unavailable(value) {
+function unavailable(value: CivilDate) {
   const key = formatCivil(value)
   return Boolean((props.min && key < props.min) || (props.max && key > props.max))
 }
@@ -108,29 +98,31 @@ const days = computed(() => {
 const canGoPrevious = computed(() => !props.min || formatCivil(addMonths({ year: viewYear.value, month: viewMonth.value, day: 1 }, -1)).slice(0, 7) >= props.min.slice(0, 7))
 const canGoNext = computed(() => !props.max || formatCivil(addMonths({ year: viewYear.value, month: viewMonth.value, day: 1 }, 1)).slice(0, 7) <= props.max.slice(0, 7))
 
-function moveMonth(amount) {
+function moveMonth(amount: number) {
   const focused = parseCivil(focusedValue.value) || { year: viewYear.value, month: viewMonth.value, day: 1 }
   const next = clampCivil(addMonths(focused, amount))
   viewYear.value = next.year
   viewMonth.value = next.month
   focusedValue.value = formatCivil(next)
 }
-function registerDay(key, element) {
-  if (element) dayButtons.set(key, element)
+function registerDay(key: string, element: Element | { $el?: Element } | null) {
+  const componentRoot = element && !(element instanceof Element) && '$el' in element ? element.$el : null
+  const button = element instanceof HTMLButtonElement ? element : componentRoot instanceof HTMLButtonElement ? componentRoot : null
+  if (button) dayButtons.set(key, button)
   else dayButtons.delete(key)
 }
 function focusCurrentDay() {
   dayButtons.get(focusedValue.value)?.focus({ preventScroll: true })
 }
-function focusCivil(value) {
+function focusCivil(value: CivilDate) {
   const next = clampCivil(value)
   focusedValue.value = formatCivil(next)
   viewYear.value = next.year
   viewMonth.value = next.month
   nextTick(focusCurrentDay)
 }
-function onDayKeydown(event, value) {
-  let next = null
+function onDayKeydown(event: KeyboardEvent, value: CivilDate) {
+  let next: CivilDate | null = null
   if (event.key === 'ArrowLeft') next = addDays(value, -1)
   else if (event.key === 'ArrowRight') next = addDays(value, 1)
   else if (event.key === 'ArrowUp') next = addDays(value, -7)
@@ -143,7 +135,7 @@ function onDayKeydown(event, value) {
   event.preventDefault()
   focusCivil(next)
 }
-function choose(value) {
+function choose(value: CivilDate) {
   if (props.disabled || unavailable(value)) return
   const next = formatCivil(value)
   emit('update:modelValue', next)
@@ -155,14 +147,14 @@ function clear() {
   emit('change', '')
   open.value = false
 }
-function closeFromEscape(event) {
+function closeFromEscape(event: KeyboardEvent) {
   if (!open.value || event.key !== 'Escape') return
   event.preventDefault()
   event.stopPropagation()
   open.value = false
   nextTick(() => trigger.value?.focus({ preventScroll: true }))
 }
-function onInvalid(event) {
+function onInvalid(event: Event) {
   if (event.target !== nativeControl.value) return
   event.preventDefault()
   missingRequired.value = true
@@ -205,7 +197,7 @@ function onInvalid(event) {
         </button>
       </PopoverTrigger>
       <PopoverPortal :to="portalTarget">
-        <PopoverContent :aria-label="accessibleLabel" class="gm-picker-content gm-date-content" :side-offset="6" :collision-padding="12" @open-auto-focus.prevent>
+        <PopoverContent class="gm-picker-content gm-date-content" :side-offset="6" :collision-padding="12" @open-auto-focus.prevent>
           <div class="gm-picker-heading">
             <button type="button" :disabled="!canGoPrevious" aria-label="Previous month" @click="moveMonth(-1)">‹</button>
             <strong aria-live="polite">{{ monthLabel }}</strong>

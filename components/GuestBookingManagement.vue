@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import {
@@ -8,112 +8,40 @@ import {
   loadGuestCalendarCheck,
   openingOverlapsBusy,
   rescheduleGuestBooking,
-} from '../booking.js'
-import { displayTimeZone, formatClockMode, zonedDateKey, zoneDisplayLabel } from '../time-display.js'
+} from '../booking.ts'
+import { defaultClockMode, displayTimeZone, formatClockMode, zonedDateKey, zoneDisplayLabel } from '../time-display.ts'
+import { t } from '../i18n/guest.ts'
 
-const props = defineProps({
-  bookingId: { type: String, required: true },
-  managementToken: { type: String, required: true },
-  initialBooking: { type: Object, default: null },
-  initialMode: { type: String, default: 'summary' },
-  locale: { type: String, default: 'en' },
-})
-const emit = defineEmits(['close', 'updated'])
+interface BookingReceipt extends UnknownRecord { startsAt: string; endsAt?: string; timezone?: string; calendarSync?: string | { state?: string }; status?: string; reference?: string; serviceName?: string }
+interface CalendarCell { key: string; blank?: boolean; day?: number; count?: number }
+// `clock` is the guest's 12h/24h choice from the booking page; without it the language default applies.
+const props = withDefaults(defineProps<{ bookingId: string; managementToken: string; initialBooking?: BookingReceipt | null; initialMode?: string; locale?: 'en' | 'fr'; clock?: '12h' | '24h' }>(), { initialBooking: null, initialMode: 'summary', locale: 'en' })
+const emit = defineEmits<{ close: []; updated: [booking: BookingReceipt] }>()
 
-const copy = {
-  en: {
-    loading: 'Opening your booking…',
-    errorTitle: 'We could not open this booking.',
-    errorText: 'Check the private link and try again.',
-    expiredTitle: 'This private link is invalid or expired.',
-    expiredText: 'Contact the host if you still need to change this booking.',
-    retry: 'Try again',
-    title: 'Your booking',
-    reschedule: 'Reschedule',
-    cancel: 'Cancel booking',
-    close: 'Back to booking page',
-    when: 'When',
-    with: 'Service',
-    reference: 'Reference',
-    chooseTitle: 'Choose a new time',
-    chooseText: 'Your current time stays reserved until the new time is confirmed.',
-    prev: 'Previous month',
-    next: 'Next month',
-    noTimes: 'No open times',
-    calendarUnchecked: 'Google Calendar could not be checked. These times reflect Bookins bookings; a Calendar conflict may still exist.',
-    pickDay: 'Choose a highlighted day to see its available times.',
-    loadingTimes: 'Checking available times…',
-    timesError: 'Available times could not load.',
-    back: 'Back',
-    confirmNew: 'Confirm new time',
-    confirming: 'Rescheduling…',
-    conflict: 'That time is no longer available. The available times have been refreshed.',
-    rescheduledTitle: 'Your booking has been rescheduled',
-    rescheduledText: 'Save the updated appointment details below.',
-    cancelTitle: 'Cancel this booking?',
-    cancelText: 'The reserved time will become available to someone else.',
-    keep: 'Keep booking',
-    confirmCancel: 'Cancel booking',
-    cancelling: 'Cancelling…',
-    cancelledTitle: 'Booking cancelled',
-    cancelledText: 'This time is no longer reserved.',
-    actionError: 'We could not confirm whether the update completed. You can retry safely, or reload this private link to check the booking.',
-    notChangeable: 'This booking can no longer be changed. Contact the host if you need help.',
-    calendarPending: 'Your booking is saved. The host needs to update their linked calendar.',
-  },
-  fr: {
-    loading: 'Ouverture de votre réservation…',
-    errorTitle: 'Impossible d’ouvrir cette réservation.',
-    errorText: 'Vérifiez le lien privé et réessayez.',
-    expiredTitle: 'Ce lien privé est invalide ou a expiré.',
-    expiredText: 'Contactez l’hôte si vous devez encore modifier cette réservation.',
-    retry: 'Réessayer',
-    title: 'Votre réservation',
-    reschedule: 'Reprogrammer',
-    cancel: 'Annuler la réservation',
-    close: 'Retour à la page de réservation',
-    when: 'Quand',
-    with: 'Prestation',
-    reference: 'Référence',
-    chooseTitle: 'Choisissez un nouvel horaire',
-    chooseText: 'Votre horaire actuel reste réservé jusqu’à la confirmation du nouvel horaire.',
-    prev: 'Mois précédent',
-    next: 'Mois suivant',
-    noTimes: 'Aucun horaire libre',
-    calendarUnchecked: 'Google Agenda n’a pas pu être vérifié. Ces horaires reflètent Bookins ; un conflit de calendrier reste possible.',
-    pickDay: 'Choisissez un jour en surbrillance pour voir les horaires disponibles.',
-    loadingTimes: 'Recherche des horaires disponibles…',
-    timesError: 'Impossible de charger les horaires disponibles.',
-    back: 'Retour',
-    confirmNew: 'Confirmer le nouvel horaire',
-    confirming: 'Reprogrammation…',
-    conflict: 'Cet horaire n’est plus disponible. Les horaires disponibles ont été actualisés.',
-    rescheduledTitle: 'Votre réservation a été reprogrammée',
-    rescheduledText: 'Enregistrez les nouvelles informations ci-dessous.',
-    cancelTitle: 'Annuler cette réservation ?',
-    cancelText: 'L’horaire réservé sera de nouveau disponible.',
-    keep: 'Garder la réservation',
-    confirmCancel: 'Annuler la réservation',
-    cancelling: 'Annulation…',
-    cancelledTitle: 'Réservation annulée',
-    cancelledText: 'Cet horaire n’est plus réservé.',
-    actionError: 'Impossible de confirmer si la modification a abouti. Vous pouvez réessayer sans risque ou recharger ce lien privé pour vérifier la réservation.',
-    notChangeable: 'Cette réservation ne peut plus être modifiée. Contactez l’hôte si vous avez besoin d’aide.',
-    calendarPending: 'Votre réservation est enregistrée. L’hôte doit mettre à jour son calendrier associé.',
-  },
-}
-const text = computed(() => copy[props.locale] || copy.en)
+// Copy lives in i18n/guest.ts under `manage.*`, next to the rest of the guest page, so both languages stay in one place.
+const KEYS = [
+  'loading', 'errorTitle', 'errorText', 'expiredTitle', 'expiredText', 'retry', 'title', 'reschedule', 'cancel', 'close',
+  'when', 'with', 'reference', 'chooseTitle', 'chooseText', 'prev', 'next', 'noTimes', 'calendarUnchecked', 'pickDay',
+  'loadingTimes', 'timesError', 'back', 'confirmNew', 'confirming', 'conflict', 'rescheduledTitle', 'rescheduledText',
+  'cancelTitle', 'cancelText', 'keep', 'confirmCancel', 'cancelling', 'cancelledTitle', 'cancelledText', 'actionError',
+  'notChangeable', 'calendarPending',
+] as const
+type CopyKey = (typeof KEYS)[number]
+// t() reads the shared guest locale, so this recomputes when the language switch changes it.
+const text = computed(() => Object.fromEntries(KEYS.map((key) => [key, t(`manage.${key}`)])) as Record<CopyKey, string>)
 
 const loading = ref(!props.initialBooking)
 const loadError = ref('')
-const booking = ref(props.initialBooking)
+const booking = ref<BookingReceipt | null>(props.initialBooking)
 const mode = ref('summary')
-const openings = ref([])
+const openings = ref<Opening[]>([])
 const availabilityLoading = ref(false)
 const availabilityError = ref('')
 const calendarChecked = ref(false)
+// Only a failed check is worth telling the guest about; a page without Calendar checking ('unavailable') is normal.
+const calendarDegraded = ref(false)
 const selectedDate = ref('')
-const selectedSlot = ref(null)
+const selectedSlot = ref<Opening | null>(null)
 const actionError = ref('')
 const acting = ref(false)
 const resultMode = ref('')
@@ -125,11 +53,11 @@ let availabilityRequest = 0
 const timezone = computed(() => displayTimeZone(booking.value?.timezone))
 const calendarPending = computed(() => {
   const state = booking.value?.calendarSync
-  return state === 'pending' || state?.state === 'pending'
+  return state === 'pending' || (typeof state === 'object' && state?.state === 'pending')
 })
 const isCancelled = computed(() => String(booking.value?.status || '').toLowerCase() === 'cancelled')
-const canChange = computed(() => String(booking.value?.status || '').toLowerCase() === 'confirmed' && Date.parse(booking.value?.startsAt) > Date.now())
-const pad = value => String(value).padStart(2, '0')
+const canChange = computed(() => String(booking.value?.status || '').toLowerCase() === 'confirmed' && Date.parse(booking.value?.startsAt || '') > Date.now())
+const pad = (value: number) => String(value).padStart(2, '0')
 const monthKey = computed(() => `${viewMonth.year}-${pad(viewMonth.month + 1)}`)
 const minimumMonth = computed(() => zonedDateKey(new Date(), timezone.value).slice(0, 7))
 const maximumMonth = computed(() => zonedDateKey(new Date(Date.now() + 365 * 86_400_000), timezone.value).slice(0, 7))
@@ -146,18 +74,19 @@ const weekdays = computed(() =>
   ),
 )
 const openingsByDay = computed(() => {
-  const days = new Map()
+  const days = new Map<string, Opening[]>()
   for (const opening of openings.value) {
     const key = zonedDateKey(opening.startsAt, timezone.value)
-    if (!days.has(key)) days.set(key, [])
-    days.get(key).push(opening)
+    const day = days.get(key) ?? []
+    day.push(opening)
+    days.set(key, day)
   }
   return days
 })
 const calendarCells = computed(() => {
   const lead = new Date(Date.UTC(viewMonth.year, viewMonth.month, 1)).getUTCDay()
   const total = new Date(Date.UTC(viewMonth.year, viewMonth.month + 1, 0)).getUTCDate()
-  const cells = Array.from({ length: lead }, (_, index) => ({ key: `blank-${index}`, blank: true }))
+  const cells: CalendarCell[] = Array.from({ length: lead }, (_, index) => ({ key: `blank-${index}`, blank: true }))
   for (let day = 1; day <= total; day += 1) {
     const key = `${monthKey.value}-${pad(day)}`
     cells.push({ key, day, count: openingsByDay.value.get(key)?.length || 0 })
@@ -166,27 +95,42 @@ const calendarCells = computed(() => {
   return cells
 })
 const slots = computed(() => openingsByDay.value.get(selectedDate.value) || [])
+const clockMode = computed(() => props.clock || defaultClockMode(props.locale))
+const clockText = (value: TimestampInput) => formatClockMode(value, props.locale, timezone.value, clockMode.value)
 const dateTime = computed(() => {
   if (!booking.value?.startsAt) return ''
   const date = new Date(booking.value.startsAt)
   const day = date.toLocaleDateString(props.locale, { dateStyle: 'full', timeZone: timezone.value })
-  return `${day} · ${formatClockMode(date, props.locale, timezone.value, '24h')}`
+  return `${day}, ${clockText(date)}`
 })
 const zoneText = computed(() => zoneDisplayLabel(timezone.value, props.locale, new Date(booking.value?.startsAt || Date.now())))
 
-function classifyLoadError(reason) {
-  const code = String(reason?.code ?? reason?.data?.code ?? '').toUpperCase()
-  const status = Number(reason?.status ?? reason?.data?.status)
+const errorRecord = (reason: unknown): UnknownRecord => reason && typeof reason === 'object' ? reason as UnknownRecord : {}
+const nestedError = (reason: unknown): UnknownRecord => {
+  const data = errorRecord(reason).data
+  return data && typeof data === 'object' ? data as UnknownRecord : {}
+}
+function receiptFrom(value: unknown): BookingReceipt {
+  const item = errorRecord(value)
+  if (typeof item.startsAt !== 'string') throw new Error('The booking runtime returned an invalid booking.')
+  return { ...item, startsAt: item.startsAt }
+}
+function classifyLoadError(reason: unknown) {
+  const detail = errorRecord(reason)
+  const nested = nestedError(reason)
+  const code = String(detail.code ?? nested.code ?? '').toUpperCase()
+  const status = Number(detail.status ?? nested.status)
   return code.includes('EXPIRED') || [401, 403, 410].includes(status) ? 'expired' : 'generic'
 }
-function isNotChangeable(reason) {
-  const code = String(reason?.code ?? reason?.data?.code ?? '').toUpperCase()
+function isNotChangeable(reason: unknown) {
+  const detail = errorRecord(reason)
+  const code = String(detail.code ?? nestedError(reason).code ?? '').toUpperCase()
   return code === 'BOOKING_NOT_CHANGEABLE'
 }
 function newKey() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
 }
-function idempotencyKey(signature) {
+function idempotencyKey(signature: string) {
   if (!actionKey || signature !== actionSignature) {
     actionKey = newKey()
     actionSignature = signature
@@ -197,12 +141,12 @@ function resetActionKey() {
   actionKey = ''
   actionSignature = ''
 }
-function setMonthFrom(value) {
+function setMonthFrom(value: string) {
   const date = new Date(value)
   viewMonth.year = date.getUTCFullYear()
   viewMonth.month = date.getUTCMonth()
 }
-function dayLabel(key) {
+function dayLabel(key: string) {
   return new Date(`${key}T12:00:00Z`).toLocaleDateString(props.locale, { dateStyle: 'full', timeZone: 'UTC' })
 }
 function dateRange() {
@@ -214,7 +158,8 @@ async function loadBooking() {
   loading.value = true
   loadError.value = ''
   try {
-    booking.value = await loadGuestBookingManagement({ bookingId: props.bookingId, managementToken: props.managementToken })
+    const result = await loadGuestBookingManagement({ bookingId: props.bookingId, managementToken: props.managementToken })
+    booking.value = receiptFrom(result)
     if (isCancelled.value) mode.value = 'cancelled'
   } catch (reason) {
     loadError.value = classifyLoadError(reason)
@@ -234,10 +179,17 @@ async function loadOpenings() {
       ...dateRange(),
     })
     if (request !== availabilityRequest) return
-    const available = Array.isArray(result?.openings) ? result.openings : []
+    const resultRecord = result && typeof result === 'object' ? result as UnknownRecord : {}
+    const available = Array.isArray(resultRecord.openings) ? resultRecord.openings.flatMap((item): Opening[] => {
+      const value = item && typeof item === 'object' ? item as UnknownRecord : null
+      return value && typeof value.startsAt === 'string' && typeof value.endsAt === 'string'
+        ? [{ startsAt: value.startsAt, endsAt: value.endsAt, timezone: String(value.timezone ?? ''), localDate: String(value.localDate ?? ''), localTime: String(value.localTime ?? '') }]
+        : []
+    }) : []
     const check = available.length ? await loadGuestCalendarCheck(Math.min(...available.map(item => Date.parse(item.startsAt))), Math.max(...available.map(item => Date.parse(item.endsAt)))) : { state: 'unavailable', busy: [] }
     if (request !== availabilityRequest) return
     calendarChecked.value = check.state === 'checked'
+    calendarDegraded.value = check.state !== 'checked' && check.state !== 'unavailable'
     openings.value = calendarChecked.value ? available.filter(item => !openingOverlapsBusy(item, check.busy)) : available
     const first = openings.value[0]
     selectedDate.value = first ? zonedDateKey(first.startsAt, timezone.value) : ''
@@ -252,10 +204,11 @@ async function loadOpenings() {
 async function beginReschedule() {
   actionError.value = ''
   mode.value = 'reschedule'
+  if (!booking.value?.startsAt) return
   setMonthFrom(booking.value.startsAt)
   await loadOpenings()
 }
-async function shiftMonth(delta) {
+async function shiftMonth(delta: number) {
   if (delta < 0 && !canGoPrevious.value) return
   if (delta > 0 && !canGoNext.value) return
   const next = new Date(Date.UTC(viewMonth.year, viewMonth.month + delta, 1))
@@ -273,18 +226,21 @@ async function confirmReschedule() {
   try {
     const check = await loadGuestCalendarCheck(Date.parse(slot.startsAt), Date.parse(slot.endsAt))
     calendarChecked.value = check.state === 'checked'
+    calendarDegraded.value = check.state !== 'checked' && check.state !== 'unavailable'
     if (calendarChecked.value && openingOverlapsBusy(slot, check.busy)) { actionError.value = 'conflict'; await loadOpenings(); return }
-    booking.value = await rescheduleGuestBooking(
+    const result = await rescheduleGuestBooking(
       { bookingId: props.bookingId, managementToken: props.managementToken, startsAt: slot.startsAt },
       idempotencyKey(signature),
     )
+    booking.value = receiptFrom(result)
     resetActionKey()
     resultMode.value = 'rescheduled'
     mode.value = 'summary'
     emit('updated', booking.value)
   } catch (reason) {
-    const code = String(reason?.code ?? reason?.data?.code ?? '').toUpperCase()
-    if (code.includes('SLOT') || /taken|available/i.test(String(reason?.message || ''))) {
+    const detail = errorRecord(reason)
+    const code = String(detail.code ?? nestedError(reason).code ?? '').toUpperCase()
+    if (code.includes('SLOT') || /taken|available/i.test(String(detail.message || ''))) {
       actionError.value = 'conflict'
       await loadOpenings()
     } else if (classifyLoadError(reason) === 'expired') {
@@ -303,10 +259,11 @@ async function confirmCancel() {
   actionError.value = ''
   acting.value = true
   try {
-    booking.value = await cancelGuestBooking(
+    const result = await cancelGuestBooking(
       { bookingId: props.bookingId, managementToken: props.managementToken },
       idempotencyKey('cancel'),
     )
+    booking.value = receiptFrom(result)
     resetActionKey()
     mode.value = 'cancelled'
     emit('updated', booking.value)
@@ -335,22 +292,22 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="gm" aria-live="polite">
+  <section class="gm">
     <div v-if="loading" class="gm-state" role="status">
       <span class="gm-spinner" aria-hidden="true" />
       <h1>{{ text.loading }}</h1>
     </div>
 
     <div v-else-if="loadError" class="gm-state" role="alert">
-      <span class="gm-state-icon" aria-hidden="true">!</span>
+      <span class="gm-state-icon danger" aria-hidden="true"><AppIcon name="alert" :size="24" /></span>
       <h1>{{ loadError === 'expired' ? text.expiredTitle : text.errorTitle }}</h1>
       <p>{{ loadError === 'expired' ? text.expiredText : text.errorText }}</p>
       <button v-if="loadError !== 'expired'" class="gm-button" type="button" @click="loadBooking">{{ text.retry }}</button>
       <button class="gm-button" type="button" @click="emit('close')">{{ text.close }}</button>
     </div>
 
-    <div v-else-if="mode === 'cancelled'" class="gm-state result">
-      <span class="gm-state-icon neutral" aria-hidden="true">–</span>
+    <div v-else-if="mode === 'cancelled'" class="gm-state result" role="status">
+      <span class="gm-state-icon" aria-hidden="true"><AppIcon name="close" :size="24" /></span>
       <h1>{{ text.cancelledTitle }}</h1>
       <p>{{ text.cancelledText }}</p>
       <button class="gm-button primary" type="button" @click="emit('close')">{{ text.close }}</button>
@@ -358,9 +315,9 @@ onMounted(() => {
 
     <template v-else-if="booking">
       <div v-if="mode === 'summary'" class="gm-state summary">
-        <span v-if="resultMode === 'rescheduled'" class="gm-state-icon success" aria-hidden="true">✓</span>
+        <span v-if="resultMode === 'rescheduled'" class="gm-state-icon success" aria-hidden="true"><AppIcon name="check" :size="24" /></span>
         <h1>{{ resultMode === 'rescheduled' ? text.rescheduledTitle : text.title }}</h1>
-        <p v-if="resultMode === 'rescheduled'">{{ text.rescheduledText }}</p>
+        <p v-if="resultMode === 'rescheduled'" role="status">{{ text.rescheduledText }}</p>
         <dl class="gm-facts">
           <div><dt>{{ text.when }}</dt><dd>{{ dateTime }}<small>{{ zoneText }}</small></dd></div>
           <div v-if="booking.serviceName"><dt>{{ text.with }}</dt><dd>{{ booking.serviceName }}</dd></div>
@@ -376,9 +333,9 @@ onMounted(() => {
       </div>
 
       <div v-else-if="mode === 'cancel'" class="gm-state cancel">
-        <span class="gm-state-icon danger" aria-hidden="true">!</span>
+        <span class="gm-state-icon danger" aria-hidden="true"><AppIcon name="alert" :size="24" /></span>
         <h1>{{ text.cancelTitle }}</h1>
-        <p>{{ dateTime }} · {{ booking.serviceName }}</p>
+        <p class="gm-cancel-what">{{ dateTime }}<template v-if="booking.serviceName">, {{ booking.serviceName }}</template></p>
         <p>{{ text.cancelText }}</p>
         <p v-if="actionError" class="gm-error" role="alert">{{ actionError === 'notChangeable' ? text.notChangeable : text.actionError }}</p>
         <div class="gm-actions split">
@@ -396,7 +353,7 @@ onMounted(() => {
           <button class="gm-button" type="button" :disabled="acting" @click="returnToSummary">{{ text.back }}</button>
         </header>
         <p v-if="actionError" class="gm-error" role="alert">{{ actionError === 'conflict' ? text.conflict : actionError === 'notChangeable' ? text.notChangeable : text.actionError }}</p>
-        <p v-if="!availabilityLoading && !calendarChecked" class="gm-notice" role="status">{{ text.calendarUnchecked }}</p>
+        <p v-if="!availabilityLoading && calendarDegraded" class="gm-notice" role="status">{{ text.calendarUnchecked }}</p>
         <div class="gm-picker">
           <div class="gm-calendar">
             <div class="gm-calendar-head">
@@ -410,7 +367,7 @@ onMounted(() => {
             <div class="gm-days" :aria-busy="availabilityLoading">
               <template v-for="cell in calendarCells" :key="cell.key">
                 <span v-if="cell.blank" />
-                <button v-else type="button" :class="{ open: cell.count, selected: selectedDate === cell.key }" :disabled="acting || !cell.count || availabilityLoading" :aria-label="`${dayLabel(cell.key)} · ${cell.count || text.noTimes}`" @click="selectedDate = cell.key; selectedSlot = null">{{ cell.day }}</button>
+                <button v-else type="button" :class="{ open: cell.count, selected: selectedDate === cell.key }" :disabled="acting || !cell.count || availabilityLoading" :aria-label="cell.count ? t('cal.dayTimes', { day: dayLabel(cell.key), count: cell.count }) : t('cal.dayNone', { day: dayLabel(cell.key) })" @click="selectedDate = cell.key; selectedSlot = null">{{ cell.day }}</button>
               </template>
             </div>
           </div>
@@ -421,8 +378,8 @@ onMounted(() => {
               <button class="gm-button" type="button" @click="loadOpenings">{{ text.retry }}</button>
             </div>
             <div v-else-if="slots.length" class="gm-slot-list">
-              <button v-for="slot in slots" :key="slot.startsAt" type="button" :disabled="acting" :class="{ selected: selectedSlot?.startsAt === slot.startsAt }" :aria-label="`${dayLabel(selectedDate)} · ${formatClockMode(slot.startsAt, props.locale, timezone, '24h')}`" @click="selectedSlot = slot">
-                {{ formatClockMode(slot.startsAt, props.locale, timezone, '24h') }}
+              <button v-for="slot in slots" :key="slot.startsAt" type="button" :disabled="acting" :class="{ selected: selectedSlot?.startsAt === slot.startsAt }" :aria-pressed="selectedSlot?.startsAt === slot.startsAt" :aria-label="`${dayLabel(selectedDate)}, ${clockText(slot.startsAt)}`" @click="selectedSlot = slot">
+                {{ clockText(slot.startsAt) }}
               </button>
             </div>
             <p v-else class="gm-empty">{{ selectedDate ? text.noTimes : text.pickDay }}</p>
@@ -438,6 +395,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* Styled with the guest page tokens from Book.vue (--accent, --card, --line, --err...), so every theme applies. */
 .gm {
   width: min(1120px, 100%);
   min-height: 490px;
@@ -447,18 +405,19 @@ onMounted(() => {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: var(--card);
-  box-shadow: 0 12px 34px rgba(24, 31, 45, 0.08);
+  box-shadow: 0 12px 34px var(--shadow);
 }
 .gm :where(h1, p, dl, dd) { margin: 0; }
-.gm :where(button):focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 32%, transparent); outline-offset: 2px; }
+.gm :where(button):focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 2px; }
 .gm-state { min-height: 410px; display: grid; align-content: center; justify-items: center; gap: 10px; text-align: center; }
-.gm-state h1, .gm-reschedule h1 { font-size: 25px; line-height: 1.2; letter-spacing: -0.035em; }
+.gm-state h1, .gm-reschedule h1 { font-size: 24px; line-height: 1.2; letter-spacing: -0.03em; }
 .gm-state > p { max-width: 470px; color: var(--muted); }
-.gm-state-icon { width: 54px; height: 54px; margin-bottom: 8px; display: grid; place-items: center; color: #59616d; border-radius: 50%; background: #f0f1f3; font-size: 24px; }
-.gm-state-icon.success { color: #247552; background: #eaf6ef; }
+.gm-state > p.gm-cancel-what { color: var(--ink); font-weight: 650; }
+.gm-state-icon { width: 54px; height: 54px; margin-bottom: 8px; display: grid; place-items: center; color: var(--muted); border-radius: 50%; background: var(--surface); }
+.gm-state-icon.success { color: var(--ok); background: var(--ok-bg); }
 .gm-state-icon.danger { color: var(--err); background: var(--err-bg); }
 .gm-spinner { width: 34px; height: 34px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: gm-spin 0.8s linear infinite; }
-.gm-button { min-height: 40px; padding: 0 15px; color: var(--ink); border: 1px solid #d5d8de; border-radius: 7px; background: var(--card); font: inherit; font-weight: 660; cursor: pointer; }
+.gm-button { min-height: 44px; padding: 0 16px; color: var(--ink); border: 1px solid var(--input-line); border-radius: 8px; background: var(--card); font: inherit; font-weight: 650; cursor: pointer; }
 .gm-button.primary { color: var(--on-accent, #fff); border-color: var(--accent); background: var(--accent); }
 .gm-button.danger { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
 .gm-button:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -470,9 +429,9 @@ onMounted(() => {
 .gm-facts code { user-select: all; }
 .gm-actions { margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .gm-actions.split { width: min(430px, 100%); display: grid; grid-template-columns: 1fr 1fr; }
-.gm-notice { max-width: 520px !important; padding: 10px 12px; color: var(--warn) !important; border: 1px solid var(--warn-bd); border-radius: 7px; background: var(--warn-bg); font-size: 12px; }
+.gm-notice { max-width: 520px !important; padding: 10px 12px; color: var(--warn) !important; border: 1px solid var(--warn-bd); border-radius: 8px; background: var(--warn-bg); font-size: 14px; }
 .gm-error { max-width: 680px; padding: 10px 12px; color: var(--err); border: 1px solid var(--err-bd); border-radius: 7px; background: var(--err-bg); }
-.gm-state.cancel { padding: 24px; border: 1px solid var(--err-bd); border-radius: 10px; background: var(--err-bg); }
+.gm-state.cancel { padding: 24px; }
 .gm-reschedule { display: grid; gap: 22px; }
 .gm-reschedule > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
 .gm-reschedule > header p { margin-top: 7px; color: var(--muted); }
@@ -482,14 +441,16 @@ onMounted(() => {
 .gm-calendar-head button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--ink); border: 0; border-radius: 7px; background: transparent; cursor: pointer; }
 .gm-calendar-head button:hover { background: var(--surface); }
 .gm-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.gm-days.labels { margin-bottom: 6px; color: var(--muted); font-size: 10px; font-weight: 700; text-align: center; }
-.gm-days button { width: 100%; min-width: 0; min-height: 0; max-width: 56px; justify-self: center; aspect-ratio: 1 / 1; padding: 0; color: var(--muted); border: 1px solid transparent; border-radius: 7px; background: transparent; font: inherit; font-size: 12px; cursor: default; }
-.gm-days button.open { color: var(--ink); border-color: var(--line); background: var(--surface); cursor: pointer; }
-.gm-days button.selected { color: var(--on-accent, #fff); border-color: var(--accent); background: var(--accent); font-weight: 750; }
+.gm-days.labels { margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 650; text-align: center; }
+.gm-days button { width: 100%; min-width: 0; min-height: 40px; max-width: 56px; justify-self: center; aspect-ratio: 1 / 1; padding: 0; color: var(--soft); border: 1px solid transparent; border-radius: 8px; background: transparent; font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; cursor: default; }
+.gm-days button.open { color: var(--ink); border-color: var(--line); background: var(--surface); font-weight: 650; cursor: pointer; }
+.gm-days button.open:hover { border-color: var(--accent); }
+.gm-days button.selected { color: var(--on-accent, #fff); border-color: var(--accent); background: var(--accent); font-weight: 700; }
 .gm-slots { padding-left: 22px; border-left: 1px solid var(--line); }
-.gm-slot-list { display: grid; gap: 7px; }
-.gm-slot-list button { min-height: 40px; padding: 0 10px; color: var(--ink); border: 1px solid #d5d8de; border-radius: 6px; background: var(--card); font: inherit; font-size: 12px; font-weight: 650; text-align: left; cursor: pointer; }
-.gm-slot-list button.selected { color: var(--accent); border-color: var(--accent); background: var(--surface); }
+.gm-slot-list { display: grid; gap: 8px; }
+.gm-slot-list button { min-height: 48px; padding: 0 14px; color: var(--ink); border: 1px solid var(--input-line); border-left-width: 4px; border-radius: 3px 8px 8px 3px; background: var(--card); font: inherit; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: left; cursor: pointer; }
+.gm-slot-list button:hover:not(:disabled) { border-color: var(--accent); }
+.gm-slot-list button.selected { color: var(--on-accent, #fff); border-color: var(--accent); background: var(--accent); }
 .gm-empty { color: var(--muted); }
 .gm-reschedule > footer { padding-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); }
 .gm-reschedule > footer span { color: var(--muted); font-size: 12px; }

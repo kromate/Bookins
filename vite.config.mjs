@@ -40,10 +40,13 @@ function goalmaticSeo() {
           /<meta\b[^>]*property=["']og:image["'][^>]*>/i,
           image && '<meta property="og:image" content="' + image + '">',
         )
-        upsert(
-          /<link\b[^>]*rel=["']icon["'][^>]*>/i,
-          favicon && '<link rel="icon" href="' + favicon + '">',
-        )
+        // index.html ships the current brand favicon (public/bookins). Only fall back to the hosted favicon when the
+        // page declares none, so a routine SEO sync cannot replace the brand mark with an older uploaded asset.
+        if (!/data-bookins-brand/.test(html))
+          upsert(
+            /<link\b[^>]*rel=["']icon["'][^>]*>/i,
+            favicon && '<link rel="icon" href="' + favicon + '">',
+          )
         return html
       } catch {
         return html

@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "@types/web-bluetooth"]
+  },
+  "vueCompilerOptions": {
+    "strictTemplates": true
+  },
+  "include": ["env.d.ts", "*.ts", "components/**/*.ts", "components/**/*.vue", "demo/**/*.ts", "i18n/**/*.ts", "pages/**/*.vue", "scripts/**/*.ts", "App.vue"],
+  "exclude": ["node_modules", "dist", ".audit", "tests"]
+}

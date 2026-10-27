@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <g id="bk-mark">
+      <path fill="#F2B33D" d="M11 13H22a7 7 0 0 1 7 7v2a7 7 0 0 1-7 7H11z"/>
+      <path fill="#2E3FA8" d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V29H5z"/>
+      <rect fill="#1A1F3D" x="15.5" y="19.75" width="9" height="2.5" rx="1.25"/>
+    </g>
+    <g id="bk-mark-inverse">
+      <path fill="#F2B33D" d="M11 13H22a7 7 0 0 1 7 7v2a7 7 0 0 1-7 7H11z"/>
+      <path fill="#FFFFFF" d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V29H5z"/>
+      <rect fill="#1A1F3D" x="15.5" y="19.75" width="9" height="2.5" rx="1.25"/>
+    </g>
+    <path id="bk-word" fill="none" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" d="M1.7 3.7V22.3M1.7 11.7H7.7A4.6 4.6 0 0 1 12.3 16.3V17.7A4.6 4.6 0 0 1 7.7 22.3H1.7M22.9 11.7H24.3A4.6 4.6 0 0 1 28.9 16.3V17.7A4.6 4.6 0 0 1 24.3 22.3H22.9A4.6 4.6 0 0 1 18.3 17.7V16.3A4.6 4.6 0 0 1 22.9 11.7ZM39.6 11.7H41A4.6 4.6 0 0 1 45.6 16.3V17.7A4.6 4.6 0 0 1 41 22.3H39.6A4.6 4.6 0 0 1 35 17.7V16.3A4.6 4.6 0 0 1 39.6 11.7ZM51.3 3.7V22.3M60.2 11.7L51.3 18.6M55.3 15.5L60.8 22.3M66.3 11.7V22.3M72.3 22.3V11.7M72.3 16.3A4.6 4.6 0 0 1 76.9 11.7H78.3A4.6 4.6 0 0 1 82.9 16.3V22.3M96.6 13.4C95.6 12.2 94.2 11.7 92.6 11.7C90.5 11.7 89 12.9 89 14.6C89 16.5 90.6 16.9 92.9 17.2C95.2 17.5 97.2 18 97.2 19.9C97.2 21.4 95.5 22.3 93.2 22.3C91.4 22.3 89.8 21.7 88.7 20.6"/>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#FFFFFF"/>
+  <text x="80" y="88" font-size="40" font-weight="700" fill="#1A1F3D">Bookins brand sheet</text>
+  <text x="80" y="124" font-size="20" fill="#5B6273">Concept: booked slot. A time rail holding a slot, with one entry written in.</text>
+  <line x1="80" y1="152" x2="1520" y2="152" stroke="#DDE1EA" stroke-width="2"/>
+
+  <!-- Mark and clear space -->
+  <text x="80" y="200" font-size="16" font-weight="700" fill="#1A1F3D">Mark</text>
+  <rect x="80" y="218" width="304" height="320" fill="none" stroke="#9BA1B0" stroke-width="2" stroke-dasharray="8 6"/>
+  <use href="#bk-mark" transform="translate(96 250) scale(8)"/>
+  <text x="80" y="572" font-size="15" fill="#5B6273">Clear space: one stem width on every side.</text>
+  <use href="#bk-mark" transform="translate(80 596) scale(2.5)"/>
+  <path transform="translate(176 596) scale(2.5)" fill="#1A1F3D" fill-rule="evenodd" d="M5 4.5a1.5 1.5 0 0 1 1.5-1.5h4a1.5 1.5 0 0 1 1.5 1.5V13H22a7 7 0 0 1 7 7v2a7 7 0 0 1-7 7H5zM16.75 19.75h7.5a1.25 1.25 0 0 1 0 2.5h-7.5a1.25 1.25 0 0 1 0-2.5z"/>
+  <rect x="272" y="596" width="80" height="80" rx="16" fill="#2E3FA8"/>
+  <use href="#bk-mark-inverse" transform="translate(272 596) translate(40 40) scale(1.95) translate(-17 -16)"/>
+  <rect x="372" y="620" width="32" height="32" rx="7" fill="#2E3FA8"/>
+  <use href="#bk-mark-inverse" transform="translate(372 620) translate(16 16) scale(0.78) translate(-17 -16)"/>
+  <rect x="420" y="628" width="16" height="16" rx="4" fill="#2E3FA8"/>
+  <use href="#bk-mark-inverse" transform="translate(420 628) translate(8 8) scale(0.4) translate(-17 -16)"/>
+  <text x="80" y="708" font-size="15" fill="#5B6273">Colour, one colour, reversed; favicon at 32 and 16 px.</text>
+  <text x="80" y="732" font-size="15" fill="#5B6273">Minimum size: mark 16 px, lockup 24 px tall.</text>
+
+  <!-- Lockups -->
+  <text x="600" y="200" font-size="16" font-weight="700" fill="#1A1F3D">Lockups</text>
+  <use href="#bk-mark" transform="translate(600 222) scale(3)"/>
+  <use href="#bk-word" transform="translate(600 222) scale(3) translate(38 0.6) scale(1.18)" stroke="#1A1F3D"/>
+  <circle transform="translate(600 222) scale(3) translate(38 0.6) scale(1.18)" cx="66.3" cy="5.4" r="2.1" fill="#1A1F3D"/>
+  <rect x="600" y="344" width="560" height="140" rx="16" fill="#1A1F3D"/>
+  <use href="#bk-mark-inverse" transform="translate(640 366) scale(3)"/>
+  <use href="#bk-word" transform="translate(640 366) scale(3) translate(38 0.6) scale(1.18)" stroke="#FFFFFF"/>
+  <circle transform="translate(640 366) scale(3) translate(38 0.6) scale(1.18)" cx="66.3" cy="5.4" r="2.1" fill="#FFFFFF"/>
+  <use href="#bk-mark" transform="translate(1238 210) scale(2.4) translate(26.2 0) scale(1.4)"/>
+  <use href="#bk-word" transform="translate(1238 210) scale(2.4) translate(0 48)" stroke="#1A1F3D"/>
+  <circle transform="translate(1238 210) scale(2.4) translate(0 48)" cx="66.3" cy="5.4" r="2.1" fill="#1A1F3D"/>
+  <text x="1238" y="420" font-size="15" fill="#5B6273">Stacked</text>
+  <text x="600" y="512" font-size="15" fill="#5B6273">Horizontal on light; reversed on ink or indigo. Wordmark: slot-shaped bowls on the mark's grid, one move only.</text>
+
+  <!-- Palette -->
+  <text x="600" y="566" font-size="16" font-weight="700" fill="#1A1F3D">Palette</text>
+  <g font-size="14">
+    <rect x="600" y="582" width="100" height="72" rx="8" fill="#1A1F3D"/>
+    <text x="600" y="676" fill="#1A1F3D" font-weight="700">Ink</text><text x="600" y="696" fill="#5B6273">#1A1F3D</text>
+    <rect x="712" y="582" width="100" height="72" rx="8" fill="#2E3FA8"/>
+    <text x="712" y="676" fill="#1A1F3D" font-weight="700">Indigo</text><text x="712" y="696" fill="#5B6273">#2E3FA8</text>
+    <rect x="824" y="582" width="100" height="72" rx="8" fill="#F2B33D"/>
+    <text x="824" y="676" fill="#1A1F3D" font-weight="700">Marigold</text><text x="824" y="696" fill="#5B6273">#F2B33D</text>
+    <rect x="936" y="582" width="100" height="72" rx="8" fill="#F4F5F8" stroke="#DDE1EA" stroke-width="2"/>
+    <text x="936" y="676" fill="#1A1F3D" font-weight="700">Canvas</text><text x="936" y="696" fill="#5B6273">#F4F5F8</text>
+    <rect x="1048" y="582" width="100" height="72" rx="8" fill="#DDE1EA"/>
+    <text x="1048" y="676" fill="#1A1F3D" font-weight="700">Line</text><text x="1048" y="696" fill="#5B6273">#DDE1EA</text>
+    <rect x="1160" y="582" width="100" height="72" rx="8" fill="#5B6273"/>
+    <text x="1160" y="676" fill="#1A1F3D" font-weight="700">Muted text</text><text x="1160" y="696" fill="#5B6273">#5B6273</text>
+    <rect x="1272" y="582" width="100" height="72" rx="8" fill="#1F7A55"/>
+    <text x="1272" y="676" fill="#1A1F3D" font-weight="700">Done</text><text x="1272" y="696" fill="#5B6273">#1F7A55</text>
+    <rect x="1384" y="582" width="100" height="72" rx="8" fill="#B42318"/>
+    <text x="1384" y="676" fill="#1A1F3D" font-weight="700">Danger</text><text x="1384" y="696" fill="#5B6273">#B42318</text>
+  </g>
+  <text x="600" y="730" font-size="15" fill="#5B6273">Marigold marks now, today and due only, always with ink text. Status is shape plus word, never colour alone.</text>
+
+  <!-- Type -->
+  <line x1="80" y1="768" x2="1520" y2="768" stroke="#DDE1EA" stroke-width="2"/>
+  <text x="80" y="808" font-size="16" font-weight="700" fill="#1A1F3D">Type</text>
+  <text x="80" y="840" font-size="16" fill="#3E4456">System UI stack, no web font. Scale 13, 14, 16, 18, 24, 32.</text>
+  <text x="80" y="864" font-size="16" fill="#3E4456">Weights 400, 500, 650. Tabular figures for every time and duration.</text>
+  <text x="80" y="912" font-size="28" font-weight="700" fill="#1A1F3D">09:30   10:00   14:45</text>
+
+  <!-- Do and don't -->
+  <text x="800" y="808" font-size="16" font-weight="700" fill="#1F7A55">Do</text>
+  <text x="800" y="840" font-size="15" fill="#3E4456">Keep the stem indigo and the slot marigold on light backgrounds.</text>
+  <text x="800" y="864" font-size="15" fill="#3E4456">Use the reversed version on indigo or ink. Show the name on a first view.</text>
+  <text x="800" y="904" font-size="16" font-weight="700" fill="#B42318">Don't</text>
+  <text x="800" y="936" font-size="15" fill="#3E4456">Add shadows, outlines or gradients, recolour the slot per page,</text>
+  <text x="800" y="960" font-size="15" fill="#3E4456">stretch the wordmark, or set the name in another typeface.</text>
+</svg>

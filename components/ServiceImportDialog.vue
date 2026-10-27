@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Services CSV import: 1 add a file, 2 check it, 3 import. Nothing is written until step 3, and every row is one
 // complete create or update, so a re-run (or a closed tab) never duplicates a service.
 import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from 'vue'
@@ -20,21 +20,39 @@ import {
   STAFF_COPY_WARN,
   staffCopies,
   teamMembers,
-} from '../booking.js'
-import { SERVICE_CSV_COLUMNS } from '../services.js'
-import { displayName } from '../team-ui.js'
-import { durationWords, smallestIntervalFor } from '../weekly-hours.js'
-import { isOwnerMember, ownerStaff, parseServiceIds, scheduleForStaff } from '../team.js'
-import { isDemo } from '../runtime.js'
+} from '../booking.ts'
+import { SERVICE_CSV_COLUMNS } from '../services.ts'
+import { displayName } from '../team-ui.ts'
+import { durationWords, smallestIntervalFor } from '../weekly-hours.ts'
+import { isOwnerMember, ownerStaff, parseServiceIds, scheduleForStaff } from '../team.ts'
+import { isDemo } from '../runtime.ts'
+import type { ImportHeader, ImportRow, ImportStatus, ParseServiceCsvResult, ServiceCsvField } from '../services.ts'
+import { errorMessage } from '../error-message.ts'
+
+interface ImportSummary {
+  created: number
+  updated: number
+  skipped: number
+  errors: number
+  failed: Array<{ line: number; reason: string }>
+  cancelled: boolean
+  remaining: number
+  copiesCreated: number
+  copiesUpdated: number
+  copyIssues: string[]
+  fatal: string
+}
+interface StaffPlan { members: StaffRecord[]; missing: string[] }
+type FilterKey = 'all' | ImportStatus
 
 // `resume`: opened from "Continue your import" after fixing the interval, so pick the saved file up straight away.
-const props = defineProps({ open: { type: Boolean, default: false }, resume: { type: Boolean, default: false } })
-const emit = defineEmits(['update:open', 'busy', 'imported'])
+const props = withDefaults(defineProps<{ open?: boolean; resume?: boolean }>(), { open: false, resume: false })
+const emit = defineEmits<{ 'update:open': [value: boolean]; busy: [value: boolean]; imported: [count: number] }>()
 
-const state = inject('bookingState')
-const refresh = inject('refreshBookings', async () => true)
-const toast = inject('toast', null)
-const localPreview = inject('localPreview', false)
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const refresh = inject<RefreshWorkspace>('refreshBookings', async () => true)
+const toast = inject<ToastApi | null>('toast', null)
+const localPreview = inject<boolean>('localPreview', false)
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const PREVIEW_LIMIT = 200
@@ -46,19 +64,19 @@ const fileName = ref('')
 const readError = ref('')
 const loadingFile = ref(false)
 const dragging = ref(false)
-const mapping = ref({})
-const parsed = ref(null)
-const filter = ref('all')
+const mapping = ref<Record<string, string>>({})
+const parsed = ref<ParseServiceCsvResult | null>(null)
+const filter = ref<FilterKey>('all')
 const running = ref(false)
 const phase = ref('')
 const progress = ref({ done: 0, total: 0, created: 0, updated: 0, failed: 0 })
-const summary = ref(null)
+const summary = ref<ImportSummary | null>(null)
 const closePrompt = ref(false)
 const capPrompt = ref(false)
 const draft = ref('')
-const headingRef = ref(null)
-let controller = null
-let runRows = []
+const headingRef = ref<HTMLElement | null>(null)
+let controller: AbortController | null = null
+let runRows: ImportRow[] = []
 
 watch(running, (value) => emit('busy', value))
 
@@ -85,8 +103,10 @@ function analyze() {
     return
   }
   runParse()
-  if (parsed.value.error && !parsed.value.headers.length) {
-    readError.value = parsed.value.error
+  const result = parsed.value
+  if (!result) return
+  if (result.error && !result.headers.length) {
+    readError.value = result.error
     parsed.value = null
     return
   }
@@ -94,14 +114,14 @@ function analyze() {
   goTo(2)
 }
 
-function setMapping(name, field) {
+function setMapping(name: string, field: string | number | boolean) {
   const next = { ...mapping.value }
-  if (field) next[name] = field
+  if (typeof field === 'string' && field) next[name] = field
   else delete next[name]
   mapping.value = next
   runParse()
 }
-function mappingOptions(headerName) {
+function mappingOptions(headerName: string) {
   return [
     { value: '', label: 'Not used (ignore)' },
     ...FIELD_OPTIONS.map((field) => ({
@@ -113,7 +133,7 @@ function mappingOptions(headerName) {
 }
 
 // ---- reading input ----
-const FIELD_LABELS = {
+const FIELD_LABELS: Record<ServiceCsvField | 'slug', string> = {
   name: 'Service name',
   category: 'Category',
   description: 'Description',
@@ -129,9 +149,9 @@ const FIELD_LABELS = {
   prep_notes: 'Prep notes',
   slug: 'Service ID (advanced)',
 }
-const FIELD_OPTIONS = [...SERVICE_CSV_COLUMNS, 'slug']
+const FIELD_OPTIONS: Array<ServiceCsvField | 'slug'> = [...(SERVICE_CSV_COLUMNS as readonly ServiceCsvField[]), 'slug']
 
-function readFile(file) {
+function readFile(file?: File) {
   readError.value = ''
   if (!file) return
   if (/\.(xlsx|xls|numbers|ods)$/i.test(file.name)) {
@@ -157,11 +177,12 @@ function readFile(file) {
   }
   reader.readAsText(file, 'utf-8')
 }
-const onFileInput = (event) => {
-  readFile(event.target.files?.[0])
-  event.target.value = ''
+const onFileInput = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  readFile(input.files?.[0])
+  input.value = ''
 }
-const onDrop = (event) => {
+const onDrop = (event: DragEvent) => {
   dragging.value = false
   readFile(event.dataTransfer?.files?.[0])
 }
@@ -170,7 +191,7 @@ function onPaste() {
   mapping.value = {}
 }
 
-function download(name, text, type = 'text/csv;charset=utf-8') {
+function download(name: string, text: string, type = 'text/csv;charset=utf-8') {
   const url = URL.createObjectURL(new Blob(['﻿', text], { type }))
   const link = document.createElement('a')
   link.href = url
@@ -197,11 +218,11 @@ const counts = computed(() => parsed.value?.counts || { new: 0, update: 0, skip:
 const visibleAll = computed(() => (filter.value === 'all' ? rows.value : rows.value.filter((row) => row.status === filter.value)))
 const visibleRows = computed(() => visibleAll.value.slice(0, PREVIEW_LIMIT))
 const importable = computed(() => counts.value.new + counts.value.update)
-const statusLabel = { new: 'New', update: 'Update', skip: 'Skipped', error: 'Error' }
-const statusChip = { new: 'success', update: 'info', skip: 'neutral', error: 'danger' }
-const filters = computed(() => [
+const statusLabel: Record<ImportStatus, string> = { new: 'New', update: 'Update', skip: 'Skipped', error: 'Error' }
+const statusChip: Record<ImportStatus, string> = { new: 'success', update: 'info', skip: 'neutral', error: 'danger' }
+const filters = computed<Array<{ key: FilterKey; label: string; count: number }>>(() => [
   { key: 'all', label: 'All', count: rows.value.length },
-  ...['new', 'update', 'skip', 'error'].map((key) => ({ key, label: statusLabel[key], count: counts.value[key] })).filter((item) => item.count),
+  ...(['new', 'update', 'skip', 'error'] as ImportStatus[]).map((key) => ({ key, label: statusLabel[key], count: counts.value[key] })).filter((item) => item.count),
 ])
 const summaryLine = computed(() => {
   const c = counts.value
@@ -213,17 +234,18 @@ const summaryLine = computed(() => {
 const mapperColumns = computed(() => (parsed.value?.headers || []).filter((header) => header.name && (!header.field || mapping.value[header.name])))
 const unrecognised = computed(() => (parsed.value?.unmapped || []).length)
 const recognised = computed(() => (parsed.value?.headers || []).filter((header) => header.field && !mapping.value[header.name]))
-const fieldTakenBy = (field, name) => (parsed.value?.headers || []).some((header) => header.field === field && header.name !== name)
+const fieldTakenBy = (field: string, name: string) => (parsed.value?.headers || []).some((header) => header.field === field && header.name !== name)
 
 // Services longer than the schedule's slot interval cannot be booked: the engine reserves one interval per booking.
 const intervalRows = computed(() => rows.value.filter((row) => row.status === 'error' && row.errors.some((text) => /booking interval/i.test(text))))
 const longest = computed(() => Math.max(0, ...intervalRows.value.map((row) => Number(row.values.durationMinutes) || 0)))
 // The interval Availability will preselect for the longest row.
 const neededInterval = computed(() => smallestIntervalFor(longest.value))
-const hasLongHairService = computed(() => intervalRows.value.some((row) => row.values.durationMinutes >= 180))
+const hasLongHairService = computed(() => intervalRows.value.some((row) => Number(row.values.durationMinutes) >= 180))
+const fieldLabel = (header: ImportHeader) => header.field ? FIELD_LABELS[header.field] : 'Not used'
 
 // Team names from the staff column: matched to active team members; the owner is implicit.
-function matchPerson(raw) {
+function matchPerson(raw: unknown): { owner?: true; member?: StaffRecord; missing?: string } | null {
   const text = String(raw || '').trim().toLowerCase()
   if (!text) return null
   if (/^(you|me|owner|myself|self)$/.test(text) || text === String(ownerStaff(state).name || '').toLowerCase()) return { owner: true }
@@ -233,15 +255,16 @@ function matchPerson(raw) {
   return first.length === 1 ? { member: first[0] } : { missing: String(raw).trim() }
 }
 const staffPlan = computed(() => {
-  const plan = new Map()
+  const plan = new Map<number, StaffPlan>()
   for (const row of rows.value) {
     const names = row.values?.staffNames || []
     if (!names.length) continue
-    const members = []
-    const missing = []
+    const members: StaffRecord[] = []
+    const missing: string[] = []
     for (const name of names) {
       const hit = matchPerson(name)
-      if (hit?.member && !members.some((m) => m.id === hit.member.id)) members.push(hit.member)
+      const member = hit?.member
+      if (member && !members.some((m) => m.id === member.id)) members.push(member)
       else if (hit?.missing) missing.push(hit.missing)
     }
     plan.set(row.line, { members, missing })
@@ -272,11 +295,11 @@ const importReason = computed(() => {
 const previewReason = computed(() => (!source.value.trim() ? 'Paste your rows or choose a file first.' : ''))
 const pct = computed(() => (progress.value.total ? Math.round((progress.value.done / progress.value.total) * 100) : 0))
 
-function priceText(row) {
+function priceText(row: ImportRow) {
   const price = Number(row.values?.price) || 0
   return price ? `${row.values.currency} ${price.toLocaleString()}` : 'Free'
 }
-function reasons(row) {
+function reasons(row: ImportRow): string[] {
   if (row.status === 'error') return row.errors
   if (row.status === 'skip') return row.notes
   const out = [row.status === 'update' ? `Updates your saved “${displayName(row.existing?.name || row.values.name)}”.` : 'Will be added.']
@@ -297,15 +320,16 @@ async function run() {
   if (importReason.value || running.value) return
   runRows = rows.value
   controller = new AbortController()
+  const activeController = controller
   summary.value = null
   progress.value = { done: 0, total: importable.value, created: 0, updated: 0, failed: 0 }
   phase.value = 'Saving services'
   running.value = true
   goTo(3)
-  const done = { created: 0, updated: 0, skipped: counts.value.skip, errors: counts.value.error, failed: [], cancelled: false, remaining: 0, copiesCreated: 0, copiesUpdated: 0, copyIssues: [], fatal: '' }
+  const done: ImportSummary = { created: 0, updated: 0, skipped: counts.value.skip, errors: counts.value.error, failed: [], cancelled: false, remaining: 0, copiesCreated: 0, copiesUpdated: 0, copyIssues: [], fatal: '' }
   try {
     const result = await importServices(runRows, {
-      signal: controller.signal,
+      signal: activeController.signal,
       concurrency: 4,
       onProgress: (value) => { progress.value = value },
     })
@@ -313,14 +337,14 @@ async function run() {
     phase.value = 'Updating your list'
     const loaded = await refresh()
     const wanted = result.imported.filter((item) => staffPlan.value.get(item.line)?.members.length)
-    if (wanted.length && loaded !== false && !controller.signal.aborted) {
+    if (wanted.length && loaded !== false && !activeController.signal.aborted) {
       phase.value = 'Creating team copies'
       progress.value = { ...progress.value, done: 0, total: wanted.length }
       // A member with a restricted service list gets these services added to it (that is what "offers this" means).
-      const additions = new Map()
+      const additions = new Map<string, string[]>()
       for (const item of wanted)
-        for (const member of staffPlan.value.get(item.line).members)
-          if (parseServiceIds(member).length) additions.set(member.id, [...(additions.get(member.id) || []), item.id])
+        for (const member of staffPlan.value.get(item.line)?.members || [])
+          if (member.id && item.id && parseServiceIds(member).length) additions.set(member.id, [...(additions.get(member.id) || []), item.id])
       if (additions.size) {
         try {
           for (const [memberId, ids] of additions) {
@@ -329,14 +353,14 @@ async function run() {
           }
           await refresh()
         } catch (error) {
-          done.copyIssues.push(error?.message || 'Could not update a team member\'s service list.')
+          done.copyIssues.push(errorMessage(error, 'Could not update a team member\'s service list.'))
         }
       }
       let index = 0
       for (const item of wanted) {
-        if (controller.signal.aborted) break
+        if (activeController.signal.aborted) break
         const service = state.services.find((entry) => entry.id === item.id)
-        const members = staffPlan.value.get(item.line).members.map((member) => member.id)
+        const members = (staffPlan.value.get(item.line)?.members || []).map((member) => String(member.id || '')).filter(Boolean)
         try {
           if (service) {
             const made = await createStaffServices(state, service, members, { confirmOverCap: true })
@@ -345,7 +369,7 @@ async function run() {
             for (const skip of made.skipped) if (!done.copyIssues.includes(skip.reason)) done.copyIssues.push(skip.reason)
           }
         } catch (error) {
-          const reason = error?.message || 'Could not create a team copy.'
+          const reason = errorMessage(error, 'Could not create a team copy.')
           if (!done.copyIssues.includes(reason)) done.copyIssues.push(reason)
         }
         index += 1
@@ -354,7 +378,7 @@ async function run() {
       await refresh()
     }
   } catch (error) {
-    done.fatal = error?.message || 'The import could not run.'
+    done.fatal = errorMessage(error, 'The import could not run.')
   } finally {
     running.value = false
     phase.value = ''
@@ -463,7 +487,7 @@ watch(() => props.open, (open) => {
   } else if (!running.value) resetAll()
 })
 
-function goTo(next) {
+function goTo(next: 1 | 2 | 3) {
   step.value = next
   nextTick(() => {
     headingRef.value?.closest('.gm-dialog-content')?.scrollTo({ top: 0 })
@@ -471,7 +495,7 @@ function goTo(next) {
   })
 }
 
-function beforeUnload(event) {
+function beforeUnload(event: BeforeUnloadEvent) {
   if (running.value) {
     event.preventDefault()
     event.returnValue = ''
@@ -492,6 +516,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
   <GmDialog
     :open="open"
     title="Import services"
+    variant="wide"
     content-class="card modal service-import-dialog"
     overlay-class="modal-backdrop bookins-modal-backdrop"
     @update:open="(value) => { if (!value) requestClose() }"
@@ -499,11 +524,10 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
     <div class="import-body">
       <div class="modal-header">
         <div>
-          <p class="eyebrow">Import services</p>
-          <h2 ref="headingRef" tabindex="-1">{{ step === 3 && summary ? 'Import finished' : stepTitles[step - 1] }}</h2>
+          <h2 ref="headingRef" tabindex="-1">{{ step === 3 && summary ? 'Import finished' : `Import services: ${stepTitles[step - 1]}` }}</h2>
           <ol class="steps" aria-label="Import progress">
             <li v-for="(title, index) in stepTitles" :key="title" :class="{ current: step === index + 1, done: step > index + 1 }" :aria-current="step === index + 1 ? 'step' : undefined">
-              <span class="step-no">{{ step > index + 1 ? '✓' : index + 1 }}</span>{{ title }}
+              <span class="step-no" aria-hidden="true">{{ step > index + 1 ? '✓' : index + 1 }}</span>{{ title }}
             </li>
           </ol>
         </div>
@@ -525,13 +549,13 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
         <div v-if="readError" class="notice error" role="alert"><AppIcon name="alert" :size="18" /><span>{{ readError }}</span></div>
 
         <section class="source-card">
-          <h3>1. Start from the template <GmHint text="One row per service. Only the service name and duration are required. Prices can be written like 5000, N5,000 or ₦5,000. Duration can be 90, 90 min or 1h30. Leave a column blank to keep the default." label="About the template" /></h3>
+          <h3>Start from the template <GmHint text="One row per service. Only the service name and duration are required. Prices can be written like 5000, N5,000 or ₦5,000. Duration can be 90, 90 min or 1h30. Leave a column blank to keep the default." label="About the template" /></h3>
           <p class="muted">A CSV with the right columns and three example rows. Open it in Google Sheets or Excel, add your services, then paste or upload it here.</p>
           <button class="secondary" type="button" @click="downloadTemplate"><AppIcon name="download" :size="17" />Download template</button>
         </section>
 
         <section class="source-card">
-          <h3>2. Paste from Google Sheets or Excel</h3>
+          <h3>Paste from Google Sheets or Excel</h3>
           <label class="visually-hidden" for="service-import-paste">Pasted rows</label>
           <textarea
             id="service-import-paste"
@@ -561,7 +585,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
       <div v-else-if="step === 2 && parsed" class="step-two">
         <p class="muted file-line">
           <AppIcon name="copy" :size="16" />
-          <span>{{ fileName || 'Pasted rows' }} · {{ rows.length }} {{ rows.length === 1 ? 'row' : 'rows' }}</span>
+          <span>{{ fileName || 'Pasted rows' }}, {{ rows.length }} {{ rows.length === 1 ? 'row' : 'rows' }}</span>
           <button class="ghost small-button" type="button" @click="goTo(1)">Change file</button>
         </p>
 
@@ -576,10 +600,10 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
           <div class="mapper-grid">
             <div v-for="header in mapperColumns" :key="header.name" class="mapper-row">
               <label :for="`map-${header.name}`"><span class="col-name">{{ header.name }}</span> is…</label>
-              <GmSelect :id="`map-${header.name}`" class="input" :model-value="mapping[header.name] || ''" :options="mappingOptions(header.name)" :label="`Match ${header.name}`" @change="setMapping(header.name, $event)" />
+              <GmSelect :id="`map-${header.name}`" class="input" :model-value="mapping[header.name] || ''" :options="mappingOptions(header.name)" :label="`Match ${header.name}`" @update:model-value="setMapping(header.name, $event)" />
             </div>
           </div>
-          <p v-if="recognised.length" class="muted small-print">Recognised: {{ recognised.map((header) => `${header.name} → ${FIELD_LABELS[header.field]}`).join(' · ') }}</p>
+          <p v-if="recognised.length" class="muted small-print">Recognised: {{ recognised.map((header) => `${header.name} → ${fieldLabel(header)}`).join('; ') }}</p>
         </section>
 
         <template v-if="!parsed.error">
@@ -649,7 +673,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
         <template v-if="running">
           <p class="phase" role="status" aria-live="polite">{{ phase }}…</p>
           <div class="progress" role="progressbar" aria-label="Import progress" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="pct"><span :style="{ width: `${pct}%` }" /></div>
-          <p class="muted tnum">{{ progress.done }} of {{ progress.total }} · {{ progress.created }} added, {{ progress.updated }} updated, {{ progress.failed }} failed</p>
+          <p class="muted tnum">{{ progress.done }} of {{ progress.total }}: {{ progress.created }} added, {{ progress.updated }} updated, {{ progress.failed }} failed</p>
           <p class="muted small-print">Keep this window open. You can stop any time: services already saved stay saved, and importing again finishes the rest without duplicates.</p>
         </template>
         <template v-else-if="summary">
@@ -707,7 +731,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
 .steps { margin: var(--space-3) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); list-style: none; font-size: var(--text-sm); color: var(--muted); }
 .steps li { display: inline-flex; align-items: center; gap: 6px; }
 .steps li.current { color: var(--ink, #101928); font-weight: 700; }
-.step-no { width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--muted-soft, #f1f3f8); font-size: var(--text-xs); font-weight: 700; }
+.step-no { width: 22px; height: 22px; display: inline-grid; place-items: center; border-radius: 50%; background: var(--surface-sunken); font-size: var(--text-xs); font-weight: 700; }
 .steps li.current .step-no { background: var(--accent); color: #fff; }
 .steps li.done .step-no { background: var(--success-soft, #e6f6ee); color: var(--success, #0a7d4b); }
 .import-body > .notice, .step-one > .notice, .step-two > .notice { margin-bottom: var(--space-3); }
@@ -724,7 +748,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
 .draft { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .draft > span { flex: 1; min-width: 200px; }
 .file-line { margin: 0; display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.mapper { padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--muted-soft, #f6f7fb); }
+.mapper { padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
 .mapper h3 { margin: 0 0 4px; font-size: var(--text-md); display: flex; align-items: center; gap: 6px; }
 .mapper > p { margin: 0 0 var(--space-2); }
 .mapper-grid { display: grid; gap: var(--space-2); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
@@ -746,7 +770,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
 .table-wrap { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .table-wrap.short { max-height: 220px; }
 .rows-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
-.rows-table th { position: sticky; top: 0; z-index: 1; padding: 8px 10px; text-align: left; background: var(--muted-soft, #f1f3f8); color: var(--muted); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
+.rows-table th { position: sticky; top: 0; z-index: 1; padding: 8px 10px; text-align: left; background: var(--surface-sunken); color: var(--muted); font-size: var(--text-xs); font-weight: 700; white-space: nowrap; }
 .rows-table td { padding: 8px 10px; border-top: 1px solid var(--line); vertical-align: top; }
 .rows-table .svc { min-width: 150px; }
 .rows-table .svc strong, .rows-table .svc small { display: block; }
@@ -756,7 +780,7 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
 .rows-table .why > .row-error { color: var(--danger); }
 .row-skip td { color: var(--muted); }
 .phase { margin: 0; font-weight: 700; }
-.progress { height: 12px; border-radius: 999px; background: var(--muted-soft, #eceff6); overflow: hidden; }
+.progress { height: 12px; border-radius: 999px; background: var(--surface-sunken); overflow: hidden; }
 .progress > span { display: block; height: 100%; background: var(--accent); transition: width var(--dur-fast) var(--ease); }
 .result { display: flex; gap: var(--space-3); align-items: flex-start; }
 .result h3 { margin: 0 0 4px; font-size: var(--text-lg); }
@@ -764,7 +788,6 @@ const failedCount = computed(() => (summary.value ? summary.value.failed.length 
 .issues { margin: 0; padding-left: 18px; font-size: var(--text-sm); color: var(--muted); }
 .import-footer { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .footer-spacer { flex: 1; }
-:global(.service-import-dialog) { width: min(900px, 100%); }
 @media (max-width: 700px) {
   .back-btn { display: none; }
   .import-footer { justify-content: space-between; }

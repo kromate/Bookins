@@ -1,10 +1,10 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
-import { initLocale, intlLocale, locale, setLocale, t } from '../i18n/guest.js'
+import { initLocale, intlLocale, locale, setLocale, t } from '../i18n/guest.ts'
 import AppIcon from '../components/AppIcon.vue'
 import BookinsLogo from '../components/BookinsLogo.vue'
 import GuestBookingManagement from '../components/GuestBookingManagement.vue'
-import { demoGuestApi } from '../demo/guest.js'
+import { demoGuestApi } from '../demo/guest.ts'
 import {
   isLocalPreview,
   buildGuestManagementLink,
@@ -17,10 +17,10 @@ import {
   readGuestManagementLink,
   clearGuestManagementLink,
   submitGuestBooking,
-} from '../booking.js'
-import { bookingTheme, normalizeBookingAppearance } from '../booking-appearance.js'
-import { filterGroups, LAYOUTS, parseBio, readPageParams, slugify, teamRows } from '../guest-page.js'
-import { groupServices, presentService } from '../service-meta.js'
+} from '../booking.ts'
+import { bookingTheme, normalizeBookingAppearance } from '../booking-appearance.ts'
+import { filterGroups, LAYOUTS, parseBio, readPageParams, slugify, teamRows } from '../guest-page.ts'
+import { groupServices, presentService } from '../service-meta.ts'
 import {
   buildBookingIcs,
   detectGuestTimeZone,
@@ -31,7 +31,112 @@ import {
   searchTimeZones,
   zonedDateKey,
   zoneDisplayLabel,
-} from '../time-display.js'
+} from '../time-display.ts'
+
+interface GuestProfile {
+  displayName: string
+  bio: string
+  photoUrl: string | null
+  timezone: string
+  bookingAppearance: unknown
+}
+interface GuestService extends ServiceRecord {
+  id: string
+  name: string
+  description: string
+  durationMinutes: number
+  price: number
+  currency: string
+}
+interface GuestPage { profile: GuestProfile; services: GuestService[] }
+interface GuestConfirmation {
+  bookingId: string
+  reference: string
+  managementToken?: string
+  managementExpiresAt?: string
+  serviceId: string
+  serviceName: string
+  startsAt: string
+  endsAt?: string
+  timezone: string
+  status: string
+  staffName?: string
+}
+interface ManagementSession { bookingId: string; managementToken: string }
+interface PageError { kind: 'link' | 'runtime' | 'notReady' | 'network' | 'generic'; retry: boolean }
+interface Banner { kind: 'slot' | 'contact' | 'retry' | 'unavailable'; key: string }
+interface CalendarCheck { state: 'idle' | 'checking' | 'checked' | 'unavailable' | 'degraded' | string }
+interface NextHint { state: 'idle' | 'searching' | 'found' | 'none'; key: string }
+interface SessionCacheEntry {
+  store: Map<string, Opening>
+  covered: Set<string>
+  calendarCheck: CalendarCheck
+  calendarCheckDisabled: boolean
+  at: number
+}
+type CalendarCell = { key: string; blank: true } | { key: string; blank: false; day: number; count: number; past: boolean }
+interface GuestBookingPayload { serviceId: string; startsAt: string; contact: ContactInput; notes: string }
+type DisplayService = ServiceRecord & Partial<PresentedService> & { durationMinutes?: number; priceVaries?: boolean }
+
+function asRecord(value: unknown): UnknownRecord {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : {}
+}
+function textValue(value: unknown): string { return typeof value === 'string' ? value : '' }
+function normalizeGuestService(value: unknown): GuestService | null {
+  const item = asRecord(value)
+  const id = textValue(item.id)
+  const name = textValue(item.name)
+  if (!id || !name) return null
+  return {
+    ...item,
+    id,
+    name,
+    description: textValue(item.description),
+    durationMinutes: Number(item.durationMinutes ?? item.duration_minutes) || 60,
+    price: Number(item.price) || 0,
+    currency: textValue(item.currency) || 'NGN',
+  }
+}
+function normalizeGuestPage(value: unknown): GuestPage {
+  const result = asRecord(value)
+  const profile = asRecord(result.profile)
+  return {
+    profile: {
+      displayName: textValue(profile.displayName),
+      bio: textValue(profile.bio),
+      photoUrl: textValue(profile.photoUrl) || null,
+      timezone: textValue(profile.timezone) || 'UTC',
+      bookingAppearance: profile.bookingAppearance,
+    },
+    services: Array.isArray(result.services) ? result.services.flatMap(item => {
+      const service = normalizeGuestService(item)
+      return service ? [service] : []
+    }) : [],
+  }
+}
+function normalizeOpening(value: unknown): Opening | null {
+  const item = asRecord(value)
+  const startsAt = textValue(item.startsAt)
+  const endsAt = textValue(item.endsAt)
+  if (!startsAt || !endsAt) return null
+  return { startsAt, endsAt, timezone: textValue(item.timezone), localDate: textValue(item.localDate), localTime: textValue(item.localTime) }
+}
+function normalizeConfirmation(value: unknown): GuestConfirmation {
+  const result = asRecord(value)
+  return {
+    bookingId: textValue(result.bookingId),
+    reference: textValue(result.reference),
+    managementToken: textValue(result.managementToken) || undefined,
+    managementExpiresAt: textValue(result.managementExpiresAt) || undefined,
+    serviceId: textValue(result.serviceId),
+    serviceName: textValue(result.serviceName),
+    startsAt: textValue(result.startsAt),
+    endsAt: textValue(result.endsAt) || undefined,
+    timezone: textValue(result.timezone) || 'UTC',
+    status: textValue(result.status),
+    staffName: textValue(result.staffName) || undefined,
+  }
+}
 
 const props = defineProps({ demoPreview: { type: Boolean, default: false } })
 const initialManagementSession = readGuestManagementLink()
@@ -53,32 +158,32 @@ const theme = ref(params.theme ? queryAppearance.theme : 'indigo')
 const layoutPref = ref(params.layout ? queryAppearance.layout : 'month')
 
 const loading = ref(true)
-const pageError = ref(null) // { kind, retry }
-const page = ref(null)
-const selectedService = ref(null)
-const selectedSlot = ref(null)
-const pendingSlot = ref(null) // small screens: a tapped time waits for the sticky Continue bar
+const pageError = ref<PageError | null>(null) // { kind, retry }
+const page = ref<GuestPage | null>(null)
+const selectedService = ref<DisplayService | null>(null)
+const selectedSlot = ref<Opening | null>(null)
+const pendingSlot = ref<Opening | null>(null) // small screens: a tapped time waits for the sticky Continue bar
 const submitting = ref(false)
-const confirmation = ref(null)
-const managementSession = ref(initialManagementSession)
-const managementInitialBooking = ref(null)
-const managementInitialMode = ref('summary')
+const confirmation = ref<GuestConfirmation | null>(null)
+const managementSession = ref<ManagementSession | null>(initialManagementSession)
+const managementInitialBooking = ref<GuestConfirmation | null>(null)
+const managementInitialMode = ref<'summary' | 'reschedule' | 'cancel'>('summary')
 const managementLinkCopied = ref(false)
 const notes = ref('')
 const contact = reactive({ name: params.name, email: params.email, phone: params.phone })
 const touched = reactive({ name: false, email: false, phone: false })
 const serverFieldErrors = reactive({ name: '', email: '', phone: '' })
 const submitAttempted = ref(false)
-const banner = ref(null)
-const bannerPanel = ref(null)
-const stepHeading = ref(null)
-const confirmHeading = ref(null)
+const banner = ref<Banner | null>(null)
+const bannerPanel = ref<HTMLElement | null>(null)
+const stepHeading = ref<HTMLElement | null>(null)
+const confirmHeading = ref<HTMLElement | null>(null)
 const photoFailed = ref(false)
 
 // Responsive: at <= 820px the date picker becomes a slots-first week strip with a month bottom sheet.
 const mobileQuery = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(max-width: 820px)') : null
 const isMobile = ref(Boolean(mobileQuery?.matches))
-const onMobileChange = event => { isMobile.value = event.matches }
+const onMobileChange = (event: MediaQueryListEvent) => { isMobile.value = event.matches }
 const reducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 
 // Availability state
@@ -91,13 +196,13 @@ function storedZone() {
   } catch { return '' }
 }
 const zoneChoice = ref(storedZone() || guestTz)
-const openingStore = shallowRef(new Map())
-let covered = new Set()
+const openingStore = shallowRef<Map<string, Opening>>(new Map())
+let covered = new Set<string>()
 // Per-service session cache of loaded openings (5 min), so returning to a service is instant.
-const sessionCache = new Map()
+const sessionCache = new Map<string, SessionCacheEntry>()
 // Calendar remains a declared guest capability separate from Bookins' authoritative slot record.
 // A failed check degrades visibly, and a selected slot is checked again before confirmation.
-const calendarCheck = ref({ state: props.demoPreview ? 'unavailable' : 'idle' })
+const calendarCheck = ref<CalendarCheck>({ state: props.demoPreview ? 'unavailable' : 'idle' })
 let calendarCheckDisabled = props.demoPreview
 let requestSeq = 0
 let nextSearchSeq = 0
@@ -105,25 +210,34 @@ const rangeLoading = ref(false)
 const rangeError = ref('') // i18n key; empty when there is no error
 let rangeRetried = false
 let pageRetried = false
-const nextHint = ref({ state: 'idle', key: '' })
+const nextHint = ref<NextHint>({ state: 'idle', key: '' })
 const selectedDate = ref('')
 const viewMonth = reactive({ year: 0, month: 0 })
 const windowStart = ref('')
 const sheetOpen = ref(false)
 
 // Idempotency: one key per booking attempt (service + slot + contact + notes).
-let attemptKey = null
+let attemptKey: string | null = null
 let attemptSignature = ''
 const allowUncheckedSubmit = ref(false)
 // Key of an attempt whose outcome is unknown (lost response). A later SLOT_TAKEN for the
 // same key may be the guest's own booking, so it must not be reported as someone else's.
-let uncertainKey = null
+let uncertainKey: string | null = null
 let interacted = false
 
 const ownerTz = computed(() => {
   const first = openingStore.value.values().next().value
   return displayTimeZone(first?.timezone || page.value?.profile?.timezone)
 })
+const loadedPage = computed<GuestPage>(() => page.value ?? {
+  profile: { displayName: '', bio: '', photoUrl: null, timezone: 'UTC', bookingAppearance: {} },
+  services: [],
+})
+const activeService = computed<DisplayService & { name: string; durationMinutes: number }>(() => ({
+  ...(selectedService.value ?? {}),
+  name: String(selectedService.value?.name || ''),
+  durationMinutes: Number(selectedService.value?.durationMinutes) || 0,
+}))
 const displayedTimezone = computed(() => zoneChoice.value)
 const todayKey = computed(() => zonedDateKey(new Date(), displayedTimezone.value))
 const step = computed(() => (selectedSlot.value ? 3 : selectedService.value ? 2 : 1))
@@ -145,27 +259,27 @@ const hostInitial = computed(() => (Array.from(String(page.value?.profile?.displ
 const bio = computed(() => parseBio(page.value?.profile?.bio))
 
 // ---- date helpers (calendar keys are plain YYYY-MM-DD strings, UTC arithmetic) ----
-const pad = value => String(value).padStart(2, '0')
-function addDays(key, count) {
+const pad = (value: number) => String(value).padStart(2, '0')
+function addDays(key: string, count: number) {
   const value = new Date(`${key}T00:00:00Z`)
   value.setUTCDate(value.getUTCDate() + count)
   return value.toISOString().slice(0, 10)
 }
-function daysBetween(from, to) {
+function daysBetween(from: string, to: string) {
   return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000)
 }
-const weekdayOf = key => new Date(`${key}T00:00:00Z`).getUTCDay()
-const monthKey = (year, month) => `${year}-${pad(month + 1)}`
-const monthFirst = (year, month) => `${monthKey(year, month)}-01`
-const monthLast = (year, month) => `${monthKey(year, month)}-${pad(new Date(Date.UTC(year, month + 1, 0)).getUTCDate())}`
-function setViewFromKey(key) {
+const weekdayOf = (key: string) => new Date(`${key}T00:00:00Z`).getUTCDay()
+const monthKey = (year: number, month: number) => `${year}-${pad(month + 1)}`
+const monthFirst = (year: number, month: number) => `${monthKey(year, month)}-01`
+const monthLast = (year: number, month: number) => `${monthKey(year, month)}-${pad(new Date(Date.UTC(year, month + 1, 0)).getUTCDate())}`
+function setViewFromKey(key: string) {
   viewMonth.year = Number(key.slice(0, 4))
   viewMonth.month = Number(key.slice(5, 7)) - 1
 }
-function dayLabel(key, options = { weekday: 'long', month: 'short', day: 'numeric' }) {
+function dayLabel(key: string, options: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'short', day: 'numeric' }) {
   return new Date(`${key}T12:00:00Z`).toLocaleDateString(intlLocale(), { ...options, timeZone: 'UTC' })
 }
-const zoneLabel = (zone, at = new Date()) => zoneDisplayLabel(zone, intlLocale(), at)
+const zoneLabel = (zone: string, at = new Date()) => zoneDisplayLabel(zone, intlLocale(), at)
 const displayedZoneLabel = computed(() => zoneLabel(displayedTimezone.value))
 
 // ---- date view: month (default), week, column; small screens always use the slots-first strip ----
@@ -177,23 +291,23 @@ const canWindowPrev = computed(() => windowStart.value > windowMin.value)
 const canWindowNext = computed(() => addDays(windowStart.value, windowLen.value) <= addDays(todayKey.value, 365))
 const windowTitle = computed(() => {
   if (!windowDays.value.length) return ''
-  const short = { month: 'short', day: 'numeric' }
-  return `${dayLabel(windowDays.value[0], short)} – ${dayLabel(windowDays.value.at(-1), { ...short, year: 'numeric' })}`
+  const short: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }
+  return `${dayLabel(windowDays.value[0] || todayKey.value, short)} – ${dayLabel(windowDays.value.at(-1) || todayKey.value, { ...short, year: 'numeric' })}`
 })
-function alignWindow(key) {
+function alignWindow(key: string) {
   const from = key < todayKey.value ? todayKey.value : key
   windowStart.value = dateView.value === 'week' ? addDays(from, -weekdayOf(from)) : from
 }
 
 // ---- availability ----
 const availableDays = computed(() => {
-  const days = new Map()
+  const days = new Map<string, Opening[]>()
   const zone = displayedTimezone.value
   const sorted = [...openingStore.value.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
   for (const opening of sorted) {
     const key = zonedDateKey(opening.startsAt, zone)
     if (!days.has(key)) days.set(key, [])
-    days.get(key).push(opening)
+    days.get(key)?.push(opening)
   }
   return days
 })
@@ -213,27 +327,28 @@ const calendarCells = computed(() => {
   const { year, month } = viewMonth
   const total = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
   const lead = new Date(Date.UTC(year, month, 1)).getUTCDay()
-  const cells = Array.from({ length: lead }, (_, index) => ({ key: `blank-${index}`, blank: true }))
+  const cells: CalendarCell[] = Array.from({ length: lead }, (_, index) => ({ key: `blank-${index}`, blank: true as const }))
   for (let day = 1; day <= total; day += 1) {
     const key = `${monthKey(year, month)}-${pad(day)}`
     const count = availableDays.value.get(key)?.length || 0
-    cells.push({ key, day, count, past: key < todayKey.value })
+    cells.push({ key, day, count, past: key < todayKey.value, blank: false })
   }
   // Always six rows so the card never changes height between months.
   while (cells.length < 42) cells.push({ key: `tail-${cells.length}`, blank: true })
   return cells
 })
-const monthHasOpenings = computed(() => calendarCells.value.some(cell => cell.count > 0))
+const monthHasOpenings = computed(() => calendarCells.value.some(cell => !cell.blank && cell.count > 0))
 const canGoPrev = computed(() => monthKey(viewMonth.year, viewMonth.month) > todayKey.value.slice(0, 7))
 const canGoNext = computed(() => monthKey(viewMonth.year, viewMonth.month) < addDays(todayKey.value, 365).slice(0, 7))
 const slotsForSelectedDay = computed(() => availableDays.value.get(selectedDate.value) || [])
+const openingCount = (key: string) => availableDays.value.get(key)?.length || 0
 const columns = computed(() =>
   windowDays.value.map(key => ({ key, past: key < todayKey.value, slots: availableDays.value.get(key) || [] })),
 )
 const windowHasOpenings = computed(() => columns.value.some(column => column.slots.length))
 const viewHasOpenings = computed(() => (dateView.value === 'month' ? monthHasOpenings.value : windowHasOpenings.value))
 
-function firstDayAfter(key) {
+function firstDayAfter(key: string) {
   for (const day of availableDays.value.keys()) if (day > key) return day
   return ''
 }
@@ -281,7 +396,7 @@ function rememberAvailability() {
     at: entry?.at ?? Date.now(),
   })
 }
-function restoreAvailability(id) {
+function restoreAvailability(id: string) {
   const entry = sessionCache.get(id)
   if (!entry || Date.now() - entry.at > SESSION_TTL) {
     sessionCache.delete(id)
@@ -293,9 +408,15 @@ function restoreAvailability(id) {
   calendarCheckDisabled = entry.calendarCheckDisabled ?? props.demoPreview
 }
 
-async function fetchSpan(serviceId, from, to) {
+async function fetchSpan(serviceId: string, from: string, to: string): Promise<Opening[]> {
   const result = await api()(serviceId, from, to)
-  const list = result?.openings || []
+  const record = asRecord(result)
+  const list = Array.isArray(record.openings)
+    ? record.openings.flatMap(value => {
+      const opening = normalizeOpening(value)
+      return opening ? [opening] : []
+    })
+    : []
   if (list.length >= RESULT_CAP && from < to) {
     const mid = addDays(from, Math.floor(daysBetween(from, to) / 2))
     const left = await fetchSpan(serviceId, from, mid)
@@ -305,11 +426,11 @@ async function fetchSpan(serviceId, from, to) {
   return list
 }
 
-function markCalendarCheck(state) {
+function markCalendarCheck(state: CalendarCheck['state']) {
   calendarCheck.value = { state }
 }
 
-async function withoutBusy(list, seq = requestSeq, force = false) {
+async function withoutBusy(list: Opening[], seq = requestSeq, force = false): Promise<Opening[]> {
   if ((calendarCheckDisabled && !force) || !list.length) return list
   const starts = list.map(item => Date.parse(item.startsAt)).filter(Number.isFinite)
   const ends = list.map(item => Date.parse(item.endsAt) || Date.parse(item.startsAt)).filter(Number.isFinite)
@@ -344,19 +465,20 @@ async function retryCalendarCheck() {
 }
 
 /** Load [from, through] (schedule-zone dates, at most 31 days per call). Returns false when superseded. */
-async function ensureRange(from, through, seq) {
+async function ensureRange(from: string, through: string, seq: number): Promise<boolean> {
   const serviceId = selectedService.value?.id
   if (!serviceId) return false
   const first = from < addDays(todayKey.value, -1) ? addDays(todayKey.value, -1) : from
-  const missing = []
+  const missing: string[] = []
   for (let day = first; day <= through; day = addDays(day, 1)) if (!covered.has(day)) missing.push(day)
   if (!missing.length) return true
   for (let index = 0; index < missing.length; ) {
     const chunkStart = missing[index]
+    if (!chunkStart) break
     let chunkEnd = chunkStart
     let length = 1
     while (index + length < missing.length && length < MAX_RANGE_DAYS && missing[index + length] === addDays(chunkEnd, 1)) {
-      chunkEnd = missing[index + length]
+      chunkEnd = missing[index + length] || chunkEnd
       length += 1
     }
     const fetched = await fetchSpan(serviceId, chunkStart, chunkEnd)
@@ -373,13 +495,13 @@ async function ensureRange(from, through, seq) {
   return true
 }
 
-function firstDayOnOrAfter(key) {
+function firstDayOnOrAfter(key: string) {
   for (const day of availableDays.value.keys()) if (day >= key) return day
   return ''
 }
 
 /** Scans forward in <=31-day calls until a day with openings is found (or the search window ends). */
-async function findNextAvailable(fromKey, seq, searchSeq) {
+async function findNextAvailable(fromKey: string, seq: number, searchSeq: number): Promise<string | null> {
   const start = fromKey < todayKey.value ? todayKey.value : fromKey
   const limit = addDays(todayKey.value, SEARCH_AHEAD_DAYS)
   for (let cursor = start; cursor <= limit; cursor = addDays(cursor, MAX_RANGE_DAYS)) {
@@ -394,7 +516,7 @@ async function findNextAvailable(fromKey, seq, searchSeq) {
   return ''
 }
 
-async function boundedNextAvailable(fromKey, seq) {
+async function boundedNextAvailable(fromKey: string, seq: number): Promise<string | null> {
   const searchSeq = ++nextSearchSeq
   try {
     return await readWithDeadline(() => findNextAvailable(fromKey, seq, searchSeq), SEARCH_DEADLINE_MS)
@@ -404,14 +526,14 @@ async function boundedNextAvailable(fromKey, seq) {
   }
 }
 
-async function searchNext(fromKey, seq = requestSeq) {
+async function searchNext(fromKey: string, seq = requestSeq) {
   nextHint.value = { state: 'searching', key: '' }
   const found = await boundedNextAvailable(fromKey, seq)
   if (found === null || seq !== requestSeq) return
   nextHint.value = { state: found ? 'found' : 'none', key: found }
 }
 
-function errorKeyFor(reason, fallback) {
+function errorKeyFor(reason: unknown, fallback: string) {
   const code = errorCode(reason)
   if (code === 'BOOKING_SERVICE_NOT_FOUND') return 'err.serviceGone'
   if (code === 'BOOKING_SCHEDULE_UNAVAILABLE') return 'err.noSchedule'
@@ -420,14 +542,14 @@ function errorKeyFor(reason, fallback) {
   return fallback
 }
 
-function spanFor(mode) {
+function spanFor(mode: 'month' | 'window'): [string, string] {
   return mode === 'month'
     ? [monthFirst(viewMonth.year, viewMonth.month), monthLast(viewMonth.year, viewMonth.month)]
     : [windowStart.value, addDays(windowStart.value, windowLen.value - 1)]
 }
 
 /** Loads what the current view shows: the visible month (mode 'month') or the week/column/strip window. */
-async function loadView(mode = dateView.value === 'month' ? 'month' : 'window') {
+async function loadView(mode: 'month' | 'window' = dateView.value === 'month' ? 'month' : 'window') {
   const seq = ++requestSeq
   rangeLoading.value = true
   rangeError.value = ''
@@ -459,13 +581,13 @@ async function loadView(mode = dateView.value === 'month' ? 'month' : 'window') 
   }
 }
 
-const whenIdle = callback =>
+const whenIdle = (callback: IdleRequestCallback) =>
   typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(callback, { timeout: 2500 }) : setTimeout(callback, 250)
 
 /** Quietly warms the next month / window once the browser is idle. Failures are ignored; the normal load retries. */
-function prefetchNext(seq, mode) {
-  let from
-  let to
+function prefetchNext(seq: number, mode: 'month' | 'window') {
+  let from: string
+  let to: string
   if (mode === 'month') {
     const next = new Date(Date.UTC(viewMonth.year, viewMonth.month + 1, 1))
     from = monthFirst(next.getUTCFullYear(), next.getUTCMonth())
@@ -511,7 +633,7 @@ function retryAvailability() {
   else initialJump()
 }
 
-function shiftMonth(delta) {
+function shiftMonth(delta: number) {
   const value = new Date(Date.UTC(viewMonth.year, viewMonth.month + delta, 1))
   viewMonth.year = value.getUTCFullYear()
   viewMonth.month = value.getUTCMonth()
@@ -519,7 +641,7 @@ function shiftMonth(delta) {
   loadView('month')
 }
 
-function shiftWindow(direction) {
+function shiftWindow(direction: number) {
   const step = dateView.value === 'column' ? COLUMN_DAYS : 7
   const next = addDays(windowStart.value, direction * step)
   windowStart.value = next < windowMin.value ? windowMin.value : next
@@ -536,7 +658,7 @@ function currentAnchor() {
   return windowStart.value || todayKey.value
 }
 
-function switchLayout(next) {
+function switchLayout(next: string) {
   if (next === layoutPref.value) return
   const anchor = currentAnchor()
   layoutPref.value = next
@@ -555,47 +677,47 @@ async function jumpToNext() {
   selectedDate.value = key
 }
 
-function pickDay(cell) {
-  if (cell.count) selectedDate.value = cell.key
+function pickDay(cell: CalendarCell) {
+  if (!cell.blank && cell.count) selectedDate.value = cell.key
 }
 
-function pickStripDay(key) {
+function pickStripDay(key: string) {
   selectedDate.value = key
   if (!availableDays.value.get(key)?.length && !firstDayAfter(key)) searchNext(addDays(key, 1)).catch(() => {})
 }
 
 // ---- month bottom sheet (small screens) ----
-const sheetEl = ref(null)
-const sheetTrigger = ref(null)
+const sheetEl = ref<HTMLElement | null>(null)
+const sheetTrigger = ref<HTMLElement | null>(null)
 function openSheet() {
   setViewFromKey(selectedDate.value || windowStart.value || todayKey.value)
   sheetOpen.value = true
   loadView('month')
-  nextTick(() => sheetEl.value?.querySelector('button:not(:disabled)')?.focus())
+  nextTick(() => sheetEl.value?.querySelector<HTMLElement>('button:not(:disabled)')?.focus())
 }
 function closeSheet() {
   sheetOpen.value = false
   nextTick(() => sheetTrigger.value?.focus())
 }
-function pickFromSheet(cell) {
-  if (!cell.count) return
+function pickFromSheet(cell: CalendarCell) {
+  if (cell.blank || !cell.count) return
   selectedDate.value = cell.key
   if (!windowDays.value.includes(cell.key)) alignWindow(cell.key)
   closeSheet()
   loadView('window')
 }
-function onSheetKey(event) {
+function onSheetKey(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.stopPropagation()
     return closeSheet()
   }
   if (event.key !== 'Tab') return
-  const items = [...sheetEl.value.querySelectorAll('button:not(:disabled)')]
+  const items = [...(sheetEl.value?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') || [])]
   if (!items.length) return
   const first = items[0]
   const last = items.at(-1)
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+  if (event.shiftKey && document.activeElement === first && last) { event.preventDefault(); last.focus() }
+  else if (!event.shiftKey && document.activeElement === last && first) { event.preventDefault(); first.focus() }
 }
 watch(sheetOpen, open => { document.body.style.overflow = open ? 'hidden' : '' })
 
@@ -605,28 +727,30 @@ const rovingStart = computed(() => {
   const all = columns.value.flatMap(column => column.slots)
   return all.some(slot => slot.startsAt === roving.value) ? roving.value : all[0]?.startsAt || ''
 })
-function columnKeydown(event) {
-  const target = event.target.closest?.('[data-col]')
+function columnKeydown(event: KeyboardEvent) {
+  const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-col]') : null
   if (!target) return
   const col = Number(target.dataset.col)
   const row = Number(target.dataset.row)
   const lengths = columns.value.map(column => column.slots.length)
   let nextCol = col
   let nextRow = row
-  if (event.key === 'ArrowDown') nextRow = Math.min(row + 1, lengths[col] - 1)
+  const currentLength = lengths[col] || 0
+  if (event.key === 'ArrowDown') nextRow = Math.min(row + 1, currentLength - 1)
   else if (event.key === 'ArrowUp') nextRow = Math.max(row - 1, 0)
   else if (event.key === 'Home') nextRow = 0
-  else if (event.key === 'End') nextRow = lengths[col] - 1
+  else if (event.key === 'End') nextRow = currentLength - 1
   else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
     const dir = event.key === 'ArrowRight' ? 1 : -1
     let probe = col + dir
     while (probe >= 0 && probe < lengths.length && !lengths[probe]) probe += dir
     if (probe < 0 || probe >= lengths.length) return event.preventDefault()
     nextCol = probe
-    nextRow = Math.min(row, lengths[probe] - 1)
+    nextRow = Math.min(row, (lengths[probe] || 0) - 1)
   } else return
   event.preventDefault()
-  event.currentTarget.querySelector(`[data-col="${nextCol}"][data-row="${nextRow}"]`)?.focus()
+  if (event.currentTarget instanceof HTMLElement)
+    event.currentTarget.querySelector<HTMLElement>(`[data-col="${nextCol}"][data-row="${nextRow}"]`)?.focus()
 }
 
 // Re-bucket days when the display zone changes; a chosen time keeps pointing at the same instant.
@@ -657,11 +781,11 @@ watch(isMobile, () => {
 const tzOpen = ref(false)
 const tzQuery = ref('')
 const tzActive = ref(0)
-const tzBox = ref(null)
-const tzInput = ref(null)
-const tzButton = ref(null)
+const tzBox = ref<HTMLElement | null>(null)
+const tzInput = ref<HTMLInputElement | null>(null)
+const tzButton = ref<HTMLButtonElement | null>(null)
 const tzResults = computed(() => (tzOpen.value ? searchTimeZones(tzQuery.value, { pinned: [zoneChoice.value, guestTz, ownerTz.value] }) : []))
-const tzTag = zone => (zone === guestTz ? t('tz.device') : zone === ownerTz.value ? t('tz.host') : '')
+const tzTag = (zone: string) => (zone === guestTz ? t('tz.device') : zone === ownerTz.value ? t('tz.host') : '')
 watch(tzQuery, () => { tzActive.value = 0 })
 function openTz() {
   tzQuery.value = ''
@@ -673,7 +797,7 @@ function closeTz(refocus = true) {
   tzOpen.value = false
   if (refocus) nextTick(() => tzButton.value?.focus())
 }
-function chooseZone(zone) {
+function chooseZone(zone: string) {
   zoneChoice.value = zone
   try {
     if (zone === guestTz) globalThis.localStorage?.removeItem(TZ_KEY)
@@ -681,12 +805,13 @@ function chooseZone(zone) {
   } catch { /* the choice just is not remembered */ }
   closeTz()
 }
-function onTzKey(event) {
+function onTzKey(event: KeyboardEvent) {
   const last = tzResults.value.length - 1
   if (event.key === 'ArrowDown') tzActive.value = Math.min(tzActive.value + 1, last)
   else if (event.key === 'ArrowUp') tzActive.value = Math.max(tzActive.value - 1, 0)
   else if (event.key === 'Enter') {
-    if (tzResults.value[tzActive.value]) chooseZone(tzResults.value[tzActive.value])
+    const zone = tzResults.value[tzActive.value]
+    if (zone) chooseZone(zone)
   } else if (event.key === 'Escape') {
     event.stopPropagation()
     return closeTz()
@@ -695,12 +820,12 @@ function onTzKey(event) {
   event.preventDefault()
   nextTick(() => tzBox.value?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' }))
 }
-function onDocumentPointer(event) {
-  if (tzOpen.value && !tzBox.value?.contains(event.target)) closeTz(false)
+function onDocumentPointer(event: PointerEvent) {
+  if (tzOpen.value && event.target instanceof Node && !tzBox.value?.contains(event.target)) closeTz(false)
 }
 
 // ---- formatting ----
-function priceLabel(service) {
+function priceLabel(service: DisplayService) {
   if (!Number(service.price)) return t('svc.free')
   let text
   try {
@@ -708,7 +833,7 @@ function priceLabel(service) {
       style: 'currency',
       currency: service.currency || 'NGN',
       maximumFractionDigits: 0,
-    }).format(service.price)
+    }).format(Number(service.price))
   } catch {
     text = `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
   }
@@ -722,22 +847,25 @@ function storedClock() {
     return value === '12h' || value === '24h' ? value : ''
   } catch { return '' }
 }
-const clockChoice = ref(storedClock()) // empty = follow the language default
+const clockChoice = ref<'' | '12h' | '24h'>(storedClock()) // empty = follow the language default
 const clockMode = computed(() => clockChoice.value || defaultClockMode(locale.value))
-function setClock(mode) {
+function setClock(mode: '12h' | '24h') {
   clockChoice.value = mode
   try { globalThis.localStorage?.setItem(CLOCK_KEY, mode) } catch { /* choice just is not remembered */ }
 }
-const clockText = (value, zone = displayedTimezone.value) => formatClockMode(value, intlLocale(), zone, clockMode.value)
-const slotTime = slot => clockText(slot.startsAt)
-const dateText = (value, zone, dateStyle) => new Date(value).toLocaleDateString(intlLocale(), { dateStyle, timeZone: zone })
-const longDateTime = (value, zone = displayedTimezone.value) => `${dateText(value, zone, 'full')} · ${clockText(value, zone)}`
+const clockText = (value: TimestampInput, zone = displayedTimezone.value) => formatClockMode(value, intlLocale(), zone, clockMode.value)
+const slotTime = (slot: Opening) => clockText(slot.startsAt)
+const dateText = (value: TimestampInput, zone: string, dateStyle: 'full' | 'long' | 'medium' | 'short') => {
+  const date = value instanceof Date ? value : typeof value === 'number' || typeof value === 'string' ? new Date(value) : value && 'toDate' in value ? value.toDate() : new Date(Number.NaN)
+  return date.toLocaleDateString(intlLocale(), { dateStyle, timeZone: zone })
+}
+const longDateTime = (value: TimestampInput, zone = displayedTimezone.value) => `${dateText(value, zone, 'full')}, ${clockText(value, zone)}`
 const selectedSlotLabel = computed(() =>
-  selectedSlot.value ? `${dateText(selectedSlot.value.startsAt, displayedTimezone.value, 'full')} · ${clockText(selectedSlot.value.startsAt)}` : '',
+  selectedSlot.value ? `${dateText(selectedSlot.value.startsAt, displayedTimezone.value, 'full')}, ${clockText(selectedSlot.value.startsAt)}` : '',
 )
 const pendingLabel = computed(() =>
   pendingSlot.value
-    ? `${dayLabel(zonedDateKey(pendingSlot.value.startsAt, displayedTimezone.value), { weekday: 'short', day: 'numeric', month: 'short' })} · ${clockText(pendingSlot.value.startsAt)}`
+    ? `${dayLabel(zonedDateKey(pendingSlot.value.startsAt, displayedTimezone.value), { weekday: 'short', day: 'numeric', month: 'short' })}, ${clockText(pendingSlot.value.startsAt)}`
     : '',
 )
 const slotPlaceholders = [0, 1, 2, 3, 4, 5]
@@ -751,28 +879,30 @@ async function copyReference() {
 }
 
 // ---- error classification ----
-function errorCode(reason) {
-  const raw = reason?.code ?? reason?.data?.code ?? reason?.error?.code ?? reason?.cause?.code
+function errorCode(reason: unknown) {
+  const source = asRecord(reason)
+  const raw = source.code ?? asRecord(source.data).code ?? asRecord(source.error).code ?? asRecord(source.cause).code
   const code = typeof raw === 'string' ? raw.toUpperCase() : ''
   if (code.startsWith('BOOKING_')) return code
-  const message = String(reason?.message || '')
+  const message = String(source.message || '')
   if (/taken|booked by someone|no longer (available|free)|already booked/i.test(message)) return 'BOOKING_SLOT_TAKEN'
   if (/contact|e-?mail|valid name|name is required/i.test(message)) return 'BOOKING_CONTACT_INVALID'
   if (/service.*(unavailable|not found)/i.test(message)) return 'BOOKING_SERVICE_NOT_FOUND'
   if (/no active availability/i.test(message)) return 'BOOKING_SCHEDULE_UNAVAILABLE'
   return code
 }
-function isNetworkError(reason) {
-  const message = String(reason?.message || '')
+function isNetworkError(reason: unknown) {
+  const message = String(asRecord(reason).message || '')
   return (
     (typeof navigator !== 'undefined' && navigator.onLine === false) ||
     /network|failed to fetch|offline|timed? ?out|load failed|connection/i.test(message)
   )
 }
-function classifyPageError(reason) {
+function classifyPageError(reason: unknown): PageError {
+  const source = asRecord(reason)
   const code = errorCode(reason)
-  const message = String(reason?.message || '')
-  const status = Number(reason?.status ?? reason?.data?.status ?? reason?.statusCode)
+  const message = String(source.message || '')
+  const status = Number(source.status ?? asRecord(source.data).status ?? source.statusCode)
   if (reason instanceof TypeError && /GoalmaticGuest|undefined|null/i.test(message) && !isNetworkError(reason))
     return pageErrors.runtime
   if (/GoalmaticGuest/i.test(message)) return pageErrors.runtime
@@ -782,7 +912,7 @@ function classifyPageError(reason) {
   if (isNetworkError(reason)) return pageErrors.network
   return pageErrors.generic
 }
-const pageErrors = {
+const pageErrors: Record<PageError['kind'], PageError> = {
   link: { kind: 'link', retry: false },
   runtime: { kind: 'runtime', retry: true },
   notReady: { kind: 'notReady', retry: false },
@@ -791,7 +921,7 @@ const pageErrors = {
 }
 
 // ---- navigation ----
-function commitSlot(slot) {
+function commitSlot(slot: Opening) {
   interacted = true
   selectedSlot.value = slot
   selectedDate.value = zonedDateKey(slot.startsAt, displayedTimezone.value)
@@ -799,7 +929,7 @@ function commitSlot(slot) {
   banner.value = null
   allowUncheckedSubmit.value = false
 }
-function selectSlot(slot) {
+function selectSlot(slot: Opening) {
   interacted = true
   // Small screens: tapping a time only highlights it; the sticky Continue bar moves on.
   if (isMobile.value) pendingSlot.value = slot
@@ -820,7 +950,8 @@ function back() {
   resetAvailability()
 }
 
-async function choose(service) {
+async function choose(service: DisplayService | undefined) {
+  if (!service?.id) return
   selectedService.value = service
   selectedSlot.value = null
   banner.value = null
@@ -841,14 +972,15 @@ const showHeadings = computed(() => serviceGroups.value.length > 1)
 const showSearch = computed(() => hasCategories.value && serviceCount.value > 6)
 const visibleGroups = computed(() => filterGroups(serviceGroups.value, showSearch.value ? query.value : ''))
 const visibleCount = computed(() => visibleGroups.value.reduce((total, group) => total + group.rows.length, 0))
-const optionLabel = (option, index) => {
+type TeamOption = ReturnType<typeof teamRows>[number]['options'][number]
+const optionLabel = (option: TeamOption, index: number) => {
   if (option.owner) {
     const host = page.value?.profile?.displayName
     return host ? t('sum.with', { host }) : t('team.host')
   }
   return t('sum.with', { host: option.copy.staffName || t('team.option', { n: index + 1 }) })
 }
-const initialOf = text => (Array.from(String(text || '').trim())[0] || '•').toUpperCase()
+const initialOf = (text: unknown) => (Array.from(String(text || '').trim())[0] || '•').toUpperCase()
 
 function openFromParam() {
   const want = params.service
@@ -863,7 +995,7 @@ function openFromParam() {
   const row = rows.find(item => slugify(item.name) === slug)
   if (!row) return
   if (row.team) openTeam.value = row.key
-  else return choose(row.options[0].copy)
+  else return choose(row.options[0]?.copy)
 }
 
 async function start() {
@@ -876,12 +1008,13 @@ async function start() {
       return
     }
     const result = await (props.demoPreview ? demoGuestApi.loadGuestPage() : loadGuestPage())
-    page.value = { ...result, services: Array.isArray(result?.services) ? result.services : [], profile: result?.profile || {} }
+    page.value = normalizeGuestPage(result)
     const savedAppearance = normalizeBookingAppearance(page.value.profile.bookingAppearance)
     theme.value = params.theme ? queryAppearance.theme : savedAppearance.theme
     layoutPref.value = params.layout ? queryAppearance.layout : savedAppearance.layout
     // A service-subject link returns exactly one service (including private ones): skip straight to times.
-    if (page.value.services.length === 1) await choose(presentService(page.value.services[0]))
+    const firstService = page.value.services[0]
+    if (firstService && page.value.services.length === 1) await choose(presentService(firstService))
     else await openFromParam()
   } catch (reason) {
     pageError.value = classifyPageError(reason)
@@ -903,16 +1036,17 @@ const fieldErrors = computed(() => ({
       ? ''
       : t('form.errPhone'),
 }))
-const shownError = field =>
+type ContactField = keyof typeof contact
+const shownError = (field: ContactField) =>
   (serverFieldErrors[field] ? t(serverFieldErrors[field]) : '') ||
   (touched[field] || submitAttempted.value ? fieldErrors.value[field] : '')
-for (const field of ['name', 'email', 'phone']) watch(() => contact[field], () => { serverFieldErrors[field] = '' })
+for (const field of ['name', 'email', 'phone'] as const) watch(() => contact[field], () => { serverFieldErrors[field] = '' })
 
 function newKey() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
 }
-function keyForAttempt(payload) {
+function keyForAttempt(payload: GuestBookingPayload) {
   const signature = JSON.stringify([payload.serviceId, payload.startsAt, payload.contact, payload.notes])
   if (!attemptKey || signature !== attemptSignature) {
     attemptKey = newKey()
@@ -926,7 +1060,7 @@ function resetAttempt() {
   uncertainKey = null
 }
 
-function showBanner(kind, key) {
+function showBanner(kind: Banner['kind'], key: string) {
   banner.value = { kind, key }
   nextTick(() => bannerPanel.value?.focus())
 }
@@ -945,14 +1079,14 @@ async function refreshAfterSlotTaken() {
   if (keepDate && availableDays.value.has(keepDate)) selectedDate.value = keepDate
 }
 
-async function handleSubmitError(reason, key) {
+async function handleSubmitError(reason: unknown, key: string) {
   const code = errorCode(reason)
   if (code === 'BOOKING_SLOT_TAKEN' && key && key === uncertainKey) {
     return showBanner('retry', 'banner.uncertainTaken')
   }
   if (code === 'BOOKING_SLOT_TAKEN') return refreshAfterSlotTaken()
   if (code === 'BOOKING_CONTACT_INVALID') {
-    const message = String(reason?.message || '')
+    const message = String(asRecord(reason).message || '')
     if (/e-?mail/i.test(message)) serverFieldErrors.email = 'form.srvEmail'
     else if (/name/i.test(message)) serverFieldErrors.name = 'form.srvName'
     else if (/phone/i.test(message)) serverFieldErrors.phone = 'form.srvPhone'
@@ -961,7 +1095,7 @@ async function handleSubmitError(reason, key) {
       serverFieldErrors.email = fieldErrors.value.email ? (contact.email.trim() ? 'form.errEmail' : 'form.errEmailEmpty') : 'form.srvEmail'
     }
     showBanner('contact', 'banner.contact')
-    return nextTick(() => document.querySelector('[aria-invalid="true"]')?.focus())
+    return nextTick(() => document.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus())
   }
   if (code === 'BOOKING_SERVICE_NOT_FOUND' || code === 'BOOKING_SCHEDULE_UNAVAILABLE') {
     selectedSlot.value = null
@@ -971,8 +1105,8 @@ async function handleSubmitError(reason, key) {
     resetAttempt()
     showBanner('unavailable', 'banner.serviceGone')
     try {
-      const refreshed = await loadGuestPage()
-      page.value = { ...page.value, services: Array.isArray(refreshed?.services) ? refreshed.services : [] }
+      const refreshed = normalizeGuestPage(await loadGuestPage())
+      if (page.value) page.value = { ...page.value, services: refreshed.services }
     } catch { /* keep the list we already have */ }
     return
   }
@@ -993,13 +1127,15 @@ async function submit() {
   submitAttempted.value = true
   if (fieldErrors.value.name || fieldErrors.value.email || fieldErrors.value.phone) {
     await nextTick()
-    document.querySelector('.bk-form [aria-invalid="true"]')?.focus()
+    document.querySelector<HTMLElement>('.bk-form [aria-invalid="true"]')?.focus()
     return
   }
   submitting.value = true
   banner.value = null
   let key = ''
   try {
+    const serviceId = selectedService.value.id
+    if (!serviceId) return
     const slot = selectedSlot.value
     if (!allowUncheckedSubmit.value) {
       const previousCalendarState = calendarCheck.value.state
@@ -1027,13 +1163,13 @@ async function submit() {
       }
     }
     const payload = {
-      serviceId: selectedService.value.id,
+      serviceId,
       startsAt: slot.startsAt,
       contact: { name: contact.name.trim(), email: contact.email.trim(), phone: contact.phone.trim() },
       notes: notes.value.trim(),
     }
     key = keyForAttempt(payload)
-    confirmation.value = await submitGuestBooking(payload, key)
+    confirmation.value = normalizeConfirmation(await submitGuestBooking(payload, key))
     sessionCache.clear() // the booked time must not come back from the cache
     resetAttempt()
   } catch (reason) {
@@ -1105,7 +1241,7 @@ async function copyManagementLink() {
   } catch { /* the private link remains available as an ordinary link */ }
 }
 
-function openManagement(mode = 'summary') {
+function openManagement(mode: 'summary' | 'reschedule' | 'cancel' = 'summary') {
   const value = confirmation.value
   if (!value?.bookingId || !value.managementToken) return
   managementInitialBooking.value = value
@@ -1125,7 +1261,7 @@ function closeManagement() {
   start()
 }
 
-function acceptManagedBooking(value) {
+function acceptManagedBooking(value: Partial<GuestConfirmation>) {
   if (confirmation.value) confirmation.value = { ...confirmation.value, ...value }
 }
 
@@ -1138,7 +1274,8 @@ async function bookAnother() {
   resetAttempt()
   interacted = true
   window.scrollTo({ top: 0 })
-  if (singleService.value) await choose(presentService(page.value.services[0]))
+  const onlyService = page.value?.services[0]
+  if (singleService.value && onlyService) await choose(presentService(onlyService))
   else {
     selectedService.value = null
     query.value = ''
@@ -1173,11 +1310,11 @@ watch(confirmation, async value => {
   confirmHeading.value?.focus()
 })
 
-function chooseService(service) {
+function chooseService(service: DisplayService | undefined) {
   interacted = true
-  choose(service)
+  if (service) void choose(service)
 }
-function toggleTeam(key) {
+function toggleTeam(key: string) {
   openTeam.value = openTeam.value === key ? '' : key
 }
 
@@ -1206,6 +1343,8 @@ const view = computed(() => (step.value === 1 ? 'profile' : 'book'))
 const stage = computed(() => (selectedSlot.value ? 'details' : 'schedule'))
 
 function syncRootBackground() {
+  // The Demo guest preview is framed inside the owner shell, so it must not repaint the owner page behind it.
+  if (props.demoPreview) return
   document.documentElement.style.backgroundColor = bookingTheme({ theme: theme.value })?.background || ''
 }
 onMounted(() => {
@@ -1230,8 +1369,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="bk" :data-theme="theme" :data-demo-guest-ready="demoPreview && !loading && !pageError ? 'true' : undefined">
+    <!-- Host first: the business is the brand here. Bookins only signs the footer, and never links guests away. -->
     <header class="bk-header">
-      <a href="/" aria-label="Bookins"><BookinsLogo :inverse="theme === 'midnight'" /></a>
+      <span class="bk-header-host">{{ page && (confirmation || managementSession) ? loadedPage.profile.displayName : '' }}</span>
       <div class="bk-header-end">
         <span v-if="demoPreview" class="bk-secure"><AppIcon name="lock" :size="14" />{{ t('header.demo') }}</span>
         <div class="bk-lang" role="group" :aria-label="t('lang.label')">
@@ -1253,6 +1393,7 @@ onBeforeUnmount(() => {
         :initial-booking="managementInitialBooking"
         :initial-mode="managementInitialMode"
         :locale="locale"
+        :clock="clockMode"
         @close="closeManagement"
         @updated="acceptManagedBooking"
       />
@@ -1273,7 +1414,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-else-if="pageError" class="bk-state" role="alert">
-        <span class="bk-state-symbol" aria-hidden="true">!</span>
+        <span class="bk-state-symbol" aria-hidden="true"><AppIcon name="alert" :size="22" /></span>
         <h1>{{ t(`err.${pageError.kind}.title`) }}</h1>
         <p>{{ t(`err.${pageError.kind}.text`) }}</p>
         <button v-if="pageError.retry" class="bk-btn" type="button" @click="retryPage">{{ t('retry') }}</button>
@@ -1282,9 +1423,9 @@ onBeforeUnmount(() => {
       <article v-else-if="confirmation" class="bk-card bk-confirm">
         <span class="bk-confirm-check"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg></span>
         <h1 ref="confirmHeading" tabindex="-1">{{ t('confirm.title') }}</h1>
-        <p class="bk-muted">{{ t('confirm.copy', { host: page.profile.displayName }) }}</p>
+        <p class="bk-muted">{{ t('confirm.copy', { host: loadedPage.profile.displayName }) }}</p>
         <dl class="bk-facts">
-          <div><dt>{{ t('confirm.what') }}</dt><dd>{{ confirmation.serviceName }} · {{ t('confirm.minutes', { count: confirmationDuration }) }}</dd></div>
+          <div><dt>{{ t('confirm.what') }}</dt><dd>{{ confirmation.serviceName }}<small>{{ t('confirm.minutes', { count: confirmationDuration }) }}</small></dd></div>
           <div>
             <dt>{{ t('confirm.when') }}</dt>
             <dd>
@@ -1293,7 +1434,7 @@ onBeforeUnmount(() => {
               <small v-if="confirmationOwnerTz !== displayedTimezone">{{ t('confirm.hostTime', { time: longDateTime(confirmation.startsAt, confirmationOwnerTz), zone: zoneLabel(confirmationOwnerTz) }) }}</small>
             </dd>
           </div>
-          <div><dt>{{ t('confirm.who') }}</dt><dd>{{ selectedService?.staffName ? `${page.profile.displayName} · ${selectedService.staffName}` : page.profile.displayName }}</dd></div>
+          <div><dt>{{ t('confirm.who') }}</dt><dd>{{ selectedService?.staffName ? activeService.staffName : loadedPage.profile.displayName }}<small v-if="selectedService?.staffName">{{ loadedPage.profile.displayName }}</small></dd></div>
           <div>
             <dt>{{ t('confirm.reference') }}</dt>
             <dd class="bk-ref">
@@ -1303,30 +1444,32 @@ onBeforeUnmount(() => {
             </dd>
           </div>
         </dl>
+        <!-- WhatsApp first: it is where most guests keep appointment details. -->
         <div class="bk-confirm-actions">
+          <a class="bk-btn primary" :href="shareUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.shareWa') }}</a>
           <button class="bk-btn" type="button" @click="downloadIcs"><AppIcon name="calendar" :size="15" />{{ t('confirm.ics') }}</button>
           <a class="bk-btn" :href="googleUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.google') }}</a>
-          <a class="bk-btn" :href="shareUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.shareWa') }}</a>
           <button class="bk-btn" type="button" @click="copyDetails"><AppIcon name="copy" :size="15" />{{ detailsCopied ? t('confirm.detailsCopied') : t('confirm.copyDetails') }}</button>
           <span class="bk-sr" role="status">{{ detailsCopied ? t('confirm.detailsCopied') : '' }}</span>
         </div>
-        <div v-if="confirmation.managementToken && managementUrl" class="bk-private-actions">
-          <p>{{ locale === 'fr' ? 'Gardez ce lien privé. Toute personne qui le possède peut modifier cette réservation.' : 'Keep this link private. Anyone with it can change this booking.' }}</p>
+        <section v-if="confirmation.managementToken && managementUrl" class="bk-private-actions" aria-labelledby="bk-manage-title">
+          <h2 id="bk-manage-title">{{ t('confirm.manageTitle') }}</h2>
+          <p>{{ t('confirm.privateNote') }}</p>
           <div>
+            <button class="bk-btn" type="button" @click="openManagement('reschedule')">{{ t('confirm.reschedule') }}</button>
             <button class="bk-btn" type="button" @click="copyManagementLink">
               <AppIcon name="copy" :size="15" />
-              {{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : (locale === 'fr' ? 'Copier le lien privé' : 'Copy private management link') }}
+              {{ managementLinkCopied ? t('confirm.privateCopied') : t('confirm.privateCopy') }}
             </button>
-            <button class="bk-btn" type="button" @click="openManagement('reschedule')">{{ locale === 'fr' ? 'Reprogrammer' : 'Reschedule' }}</button>
-            <button class="bk-btn danger" type="button" @click="openManagement('cancel')">{{ locale === 'fr' ? 'Annuler la réservation' : 'Cancel booking' }}</button>
-            <span class="bk-sr" role="status">{{ managementLinkCopied ? (locale === 'fr' ? 'Lien privé copié' : 'Private link copied') : '' }}</span>
+            <button class="bk-btn danger" type="button" @click="openManagement('cancel')">{{ t('confirm.cancel') }}</button>
+            <span class="bk-sr" role="status">{{ managementLinkCopied ? t('confirm.privateCopied') : '' }}</span>
           </div>
-        </div>
+        </section>
         <p v-if="changeUrl && !confirmation.managementToken" class="bk-change">
-          {{ t('confirm.change', { host: page.profile.displayName }) }}
-          <a class="bk-btn small" :href="changeUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.changeCta', { host: page.profile.displayName }) }}</a>
+          {{ t('confirm.change', { host: loadedPage.profile.displayName }) }}
+          <a class="bk-btn small" :href="changeUrl" target="_blank" rel="noopener noreferrer">{{ t('confirm.changeCta', { host: loadedPage.profile.displayName }) }}</a>
         </p>
-        <button class="bk-btn primary wide" type="button" @click="bookAnother">{{ t('confirm.another') }}</button>
+        <button class="bk-btn wide" type="button" @click="bookAnother">{{ t('confirm.another') }}</button>
         <p class="bk-fine">{{ t('confirm.note') }}</p>
       </article>
 
@@ -1339,7 +1482,7 @@ onBeforeUnmount(() => {
               <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
               <div>
                 <p class="bk-host-eyebrow">{{ t('host.eyebrow') }}</p>
-                <h1>{{ page.profile.displayName }}</h1>
+                <h1>{{ loadedPage.profile.displayName }}</h1>
                 <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
               </div>
             </div>
@@ -1347,7 +1490,7 @@ onBeforeUnmount(() => {
               <i v-for="n in 3" :key="n" :class="{ active: n <= step }" />
             </div>
           </div>
-          <div v-if="page.services.length" class="bk-card bk-services">
+          <div v-if="loadedPage.services.length" class="bk-card bk-services">
             <div class="bk-services-title">
               <h2 ref="stepHeading" tabindex="-1">{{ t('svc.title') }}</h2>
               <p>{{ t('svc.text') }}</p>
@@ -1367,9 +1510,8 @@ onBeforeUnmount(() => {
                     class="bk-service"
                     :aria-expanded="row.team ? openTeam === row.key : undefined"
                     :aria-controls="row.team ? `team-${row.key}` : undefined"
-                    @click="row.team ? toggleTeam(row.key) : chooseService(row.options[0].copy)"
+                    @click="row.team ? toggleTeam(row.key) : chooseService(row.options[0]?.copy)"
                   >
-                    <span class="bk-radio" aria-hidden="true" />
                     <span class="bk-service-copy">
                       <span class="bk-service-name">{{ row.name }}</span>
                       <span v-if="row.description" class="bk-service-desc">{{ row.description }}</span>
@@ -1380,11 +1522,11 @@ onBeforeUnmount(() => {
                       <span class="bk-chip">{{ priceLabel(row) }}</span>
                       <span v-if="row.team" class="bk-chip team"><AppIcon name="user" :size="12" />{{ t('svc.team', { count: row.options.length }) }}</span>
                     </span>
+                    <span class="bk-go" :class="{ open: row.team && openTeam === row.key }" aria-hidden="true"><AppIcon name="chevron" :size="18" /></span>
                   </button>
                   <div v-if="row.team && openTeam === row.key" :id="`team-${row.key}`" class="bk-team" role="group" :aria-label="t('svc.pickWho')">
                     <button v-for="(option, index) in row.options" :key="option.copy.id" type="button" class="bk-pro" @click="chooseService(option.copy)">
-                      <span class="bk-radio" aria-hidden="true" />
-                      <span class="bk-avatar" aria-hidden="true">{{ initialOf(option.owner ? page.profile.displayName : option.copy.staffName || t('team.option', { n: index + 1 })) }}</span>
+                      <span class="bk-avatar" aria-hidden="true">{{ initialOf(option.owner ? loadedPage.profile.displayName : option.copy.staffName || t('team.option', { n: index + 1 })) }}</span>
                       <span class="bk-pro-name">{{ optionLabel(option, index) }}</span>
                       <span class="bk-pro-price">{{ priceLabel(option.copy) }}</span>
                     </button>
@@ -1396,7 +1538,7 @@ onBeforeUnmount(() => {
           <div v-else class="bk-card bk-empty">
             <AppIcon name="calendar" :size="24" />
             <h2>{{ t('svc.emptyTitle') }}</h2>
-            <p>{{ t('svc.emptyText', { host: page.profile.displayName }) }}</p>
+            <p>{{ t('svc.emptyText', { host: loadedPage.profile.displayName }) }}</p>
           </div>
         </section>
 
@@ -1412,12 +1554,8 @@ onBeforeUnmount(() => {
                 <span v-else class="bk-avatar big" aria-hidden="true">{{ hostInitial }}</span>
                 <div>
                   <p>{{ t('host.eyebrow') }}</p>
-                  <h1>{{ page.profile.displayName }}</h1>
-                  <div class="bk-service-meta">
-                    <span>{{ selectedService.name }}</span><i aria-hidden="true" />
-                    <span>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</span><i aria-hidden="true" />
-                    <span>{{ priceLabel(selectedService) }}</span>
-                  </div>
+                  <h1>{{ loadedPage.profile.displayName }}</h1>
+                  <p v-if="bio.text" class="bk-bio">{{ bio.text }}</p>
                 </div>
               </div>
               <div class="bk-progress" :aria-label="t('time.title')">
@@ -1428,19 +1566,19 @@ onBeforeUnmount(() => {
               <button v-if="showBack" class="bk-back" :disabled="submitting" type="button" @click="back">
                 <AppIcon name="arrow-left" :size="15" />{{ t('back') }}
               </button>
-              <h2 class="bk-summary-title">{{ t('sum.eyebrow') }}</h2>
-              <h1 class="bk-title">{{ selectedService.name }}</h1>
-              <p v-if="selectedService.description" class="bk-desc">{{ selectedService.description }}</p>
+              <p class="bk-summary-title">{{ t('sum.eyebrow') }}</p>
+              <h2 class="bk-title">{{ activeService.name }}</h2>
+              <p v-if="activeService.description" class="bk-desc">{{ activeService.description }}</p>
               <ul class="bk-meta">
                 <li v-if="selectedSlot" class="bk-meta-when">
                   <AppIcon name="calendar" :size="15" />
                   <span>{{ selectedSlotLabel }}<small>{{ displayedZoneLabel }}</small></span>
                 </li>
-                <li v-if="selectedService.staffName"><AppIcon name="user" :size="15" /><span>{{ t('sum.with', { host: selectedService.staffName }) }}</span></li>
-                <li><AppIcon name="clock" :size="15" /><span>{{ t('confirm.minutes', { count: selectedService.durationMinutes }) }}</span></li>
-                <li><AppIcon name="wallet" :size="15" /><span>{{ priceLabel(selectedService) }}</span></li>
-                <li v-if="selectedService.price" class="bk-meta-note"><span>{{ t('sum.payment') }}</span></li>
-                <li v-if="selectedService.prepNotes" class="bk-meta-note prep"><span>{{ t('svc.prep', { notes: selectedService.prepNotes }) }}</span></li>
+                <li v-if="activeService.staffName"><AppIcon name="user" :size="15" /><span>{{ t('sum.with', { host: activeService.staffName }) }}</span></li>
+                <li><AppIcon name="clock" :size="15" /><span>{{ t('confirm.minutes', { count: activeService.durationMinutes }) }}</span></li>
+                <li><AppIcon name="wallet" :size="15" /><span>{{ priceLabel(activeService) }}</span></li>
+                <li v-if="activeService.price" class="bk-meta-note"><span>{{ t('sum.payment') }}</span></li>
+                <li v-if="activeService.prepNotes" class="bk-meta-note prep"><span>{{ t('svc.prep', { notes: activeService.prepNotes }) }}</span></li>
               </ul>
               <div ref="tzBox" class="bk-tz">
                 <button
@@ -1498,7 +1636,7 @@ onBeforeUnmount(() => {
                 <div class="bk-viewbar">
                   <div class="bk-view-heading">
                     <h2 ref="stepHeading" tabindex="-1">{{ t('time.title') }}</h2>
-                    <p>{{ t('time.sub', { service: selectedService.name, count: selectedService.durationMinutes }) }}</p>
+                    <p>{{ t('time.sub', { service: activeService.name, count: activeService.durationMinutes }) }}</p>
                   </div>
                   <div class="bk-view-tools">
                     <div class="bk-range">
@@ -1528,7 +1666,6 @@ onBeforeUnmount(() => {
                   <span>{{ t('cal.degraded') }}</span>
                   <button class="bk-btn small" type="button" @click="retryCalendarCheck">{{ t('cal.retry') }}</button>
                 </div>
-                <div v-else-if="calendarCheck.state === 'unavailable' && !demoPreview" class="bk-calendar-status" role="status">{{ t('cal.unavailable') }}</div>
 
                 <!-- Month grid: the desktop month view, or the bottom sheet on small screens -->
                 <div v-if="sheetOpen && dateView !== 'month'" class="bk-backdrop" @click="closeSheet" />
@@ -1581,7 +1718,7 @@ onBeforeUnmount(() => {
                     class="bk-sd"
                     :class="{ selected: key === selectedDate, has: availableDays.has(key) }"
                     :aria-pressed="key === selectedDate"
-                    :aria-label="availableDays.get(key)?.length ? t('cal.dayTimes', { day: dayLabel(key), count: availableDays.get(key).length }) : t('cal.dayNone', { day: dayLabel(key) })"
+                    :aria-label="openingCount(key) ? t('cal.dayTimes', { day: dayLabel(key), count: openingCount(key) }) : t('cal.dayNone', { day: dayLabel(key) })"
                     @click="pickStripDay(key)"
                   >
                     <small>{{ dayLabel(key, { weekday: 'short' }) }}</small>
@@ -1629,7 +1766,7 @@ onBeforeUnmount(() => {
                     <strong v-else-if="nextHint.state === 'searching'">{{ t('slots.searching') }}</strong>
                     <template v-else>
                       <strong>{{ t('slots.noneTitle') }}</strong>
-                      <p>{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                      <p>{{ t('slots.noneText', { host: loadedPage.profile.displayName }) }}</p>
                     </template>
                   </div>
                 </div>
@@ -1670,7 +1807,7 @@ onBeforeUnmount(() => {
                       <strong>{{ t('slots.dayEmpty', { day: dayLabel(selectedDate) }) }}</strong>
                       <button v-if="nextTarget" class="bk-next" type="button" @click="jumpToNext"><AppIcon name="calendar" :size="14" />{{ t('slots.nextChip', { when: nextWhen }) }}</button>
                       <p v-else-if="nextHint.state === 'searching'" role="status">{{ t('slots.searching') }}</p>
-                      <p v-else-if="nextHint.state === 'none'">{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                      <p v-else-if="nextHint.state === 'none'">{{ t('slots.noneText', { host: loadedPage.profile.displayName }) }}</p>
                     </div>
                     <div v-else-if="monthHasOpenings" class="bk-note">
                       <strong>{{ t('slots.pickDayTitle') }}</strong>
@@ -1684,7 +1821,7 @@ onBeforeUnmount(() => {
                       </template>
                       <template v-else>
                         <strong>{{ t('slots.noneTitle') }}</strong>
-                        <p>{{ t('slots.noneText', { host: page.profile.displayName }) }}</p>
+                        <p>{{ t('slots.noneText', { host: loadedPage.profile.displayName }) }}</p>
                       </template>
                     </div>
                   </div>
@@ -1704,7 +1841,6 @@ onBeforeUnmount(() => {
                   <span>{{ t('cal.degraded') }}</span>
                   <button class="bk-btn small" type="button" :disabled="submitting" @click="retryCalendarCheck">{{ t('cal.retry') }}</button>
                 </div>
-                <div v-else-if="calendarCheck.state === 'unavailable' && !demoPreview" class="bk-calendar-status details" role="status">{{ t('cal.unavailable') }}</div>
                 <form class="bk-form" novalidate @submit.prevent="submit">
                   <div class="bk-field">
                     <label for="booking-guest-name">{{ t('form.name') }}</label>
@@ -1760,7 +1896,7 @@ onBeforeUnmount(() => {
                       @blur="touched.phone = true"
                     />
                     <p v-if="shownError('phone')" id="booking-guest-phone-error" class="bk-error">{{ shownError('phone') }}</p>
-                    <p v-else id="booking-guest-phone-hint" class="bk-hint">{{ t('form.phoneHint', { host: page.profile.displayName }) }}</p>
+                    <p v-else id="booking-guest-phone-hint" class="bk-hint">{{ t('form.phoneHint', { host: loadedPage.profile.displayName }) }}</p>
                   </div>
                   <div class="bk-field">
                     <label for="booking-guest-notes">{{ t('form.notes') }} <span>{{ t('form.optional') }}</span></label>
@@ -1790,45 +1926,45 @@ onBeforeUnmount(() => {
         </section>
       </Transition>
     </main>
-    <footer class="bk-footer"><BookinsLogo compact /><span>{{ t('footer') }}</span></footer>
+    <footer class="bk-footer"><BookinsLogo compact mono decorative class="bk-footer-mark" /><span>{{ t('footer') }}</span></footer>
   </div>
 </template>
 
 <style scoped>
+/* Guest booking page. Themes mirror booking-appearance.ts (accent, onAccent, background, card, ink, muted); the extra
+   shades here are derived from them. The page belongs to the host: Bookins only signs the footer. */
 .bk {
-  --accent: #2336dc;
-  --accent-hover: #1728bb;
+  --accent: #2e3fa8;
+  --accent-hover: #24328a;
   --on-accent: #ffffff;
-  --ink: #172039;
-  --body: #3f4960;
-  --muted: #606b82;
-  --soft: #737d91;
-  --line: #dce1ec;
-  --line-soft: #edf0f7;
-  --surface: #f3f5fc;
-  --bg: #f3f5fc;
+  --ink: #1a1f3d;
+  --body: #3d4459;
+  --muted: #5b6273;
+  --soft: #646b7d;
+  --line: #dde1ea;
+  --line-soft: #eef0f4;
+  --surface: #f4f5f8;
+  --bg: #eceef3;
   --card: #ffffff;
-  --on-ink: #ffffff;
-  --ink-hover: #29334d;
-  --hover: #f7f8fc;
-  --faint: #b7bdcb;
-  --input-line: #cbd2e1;
-  --ring: rgba(35, 54, 220, 0.18);
+  --hover: #f7f8fb;
+  --faint: #b9bfcc;
+  --input-line: #c9cfdb;
+  --ring: rgba(46, 63, 168, 0.2);
   --bar: rgba(255, 255, 255, 0.96);
-  --skel-a: #eceef1;
-  --skel-b: #f6f7f8;
+  --skel-a: #eceef2;
+  --skel-b: #f6f7f9;
   --err: #b42318;
   --err-bg: #fef3f2;
   --err-bd: #fecdca;
-  --warn: #93370d;
-  --warn-bg: #fffaeb;
-  --warn-bd: #fedf89;
-  --ok: #027a48;
-  --ok-bg: #ecfdf3;
-  --demo-fg: #35217b;
-  --demo-bg: #f5f1ff;
-  --demo-bd: #d9cef9;
-  --shadow: rgba(30, 45, 92, 0.08);
+  --warn: #8a4b06;
+  --warn-bg: #fff8eb;
+  --warn-bd: #f5d79e;
+  --ok: #1f7a55;
+  --ok-bg: #e8f5ee;
+  --demo-fg: #24328a;
+  --demo-bg: #eef0fb;
+  --demo-bd: #c9cff0;
+  --shadow: rgba(26, 31, 61, 0.08);
   --focus: var(--accent);
   --display: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   min-height: 100vh;
@@ -1837,81 +1973,86 @@ onBeforeUnmount(() => {
   color: var(--ink);
   background: var(--bg);
   font-family: var(--font-ui, ui-sans-serif, system-ui, sans-serif);
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.5;
 }
 .bk[data-theme='sage'] {
-  --accent: #23644b;
-  --accent-hover: #174d39;
-  --ink: #183329;
-  --body: #3e594e;
-  --muted: #5b7065;
-  --soft: #70847a;
-  --line: #d7e3da;
+  --accent: #2f6b52;
+  --accent-hover: #23533f;
+  --ink: #17302a;
+  --body: #3a5248;
+  --muted: #52665c;
+  --soft: #5a6d63;
+  --line: #d6e2da;
   --line-soft: #e9f0eb;
-  --surface: #f1f6f2;
-  --bg: #f1f6f2;
-  --hover: #f6faf7;
-  --input-line: #c6d6cb;
-  --ring: rgba(35, 100, 75, 0.18);
-  --shadow: rgba(24, 51, 41, 0.08);
+  --surface: #eef4f0;
+  --bg: #e7eee9;
+  --hover: #f5f9f6;
+  --input-line: #c3d3c8;
+  --ring: rgba(47, 107, 82, 0.18);
+  --demo-fg: #23533f;
+  --demo-bg: #e9f2ec;
+  --demo-bd: #c3d8ca;
+  --shadow: rgba(23, 48, 42, 0.08);
 }
 .bk[data-theme='sand'] {
-  --accent: #995a34;
-  --accent-hover: #7c4426;
-  --ink: #38291f;
-  --body: #5f4d40;
-  --muted: #756354;
-  --soft: #8b7868;
-  --line: #e8dcd0;
-  --line-soft: #f2eae1;
-  --surface: #faf5ee;
-  --bg: #faf5ee;
-  --card: #fffcf7;
-  --bar: rgba(255, 252, 247, 0.96);
-  --hover: #fdf8f1;
-  --input-line: #dac8b8;
-  --ring: rgba(153, 90, 52, 0.18);
-  --shadow: rgba(75, 48, 30, 0.08);
+  --accent: #6f4e0f;
+  --accent-hover: #573c08;
+  --ink: #2f2618;
+  --body: #54473a;
+  --muted: #6b5d48;
+  --soft: #6f624e;
+  --line: #e6dccd;
+  --line-soft: #f1ebe1;
+  --surface: #f8f3ea;
+  --bg: #f0e9dc;
+  --card: #fffdf8;
+  --bar: rgba(255, 253, 248, 0.96);
+  --hover: #fcf8f1;
+  --input-line: #d8cbb6;
+  --ring: rgba(111, 78, 15, 0.18);
+  --demo-fg: #573c08;
+  --demo-bg: #f6eedd;
+  --demo-bd: #e2d1ae;
+  --shadow: rgba(47, 38, 24, 0.08);
 }
 .bk[data-theme='midnight'] {
   color-scheme: dark;
-  --accent: #a8b8ff;
-  --accent-hover: #c2ccff;
-  --on-accent: #172047;
-  --ink: #f1f4fc;
-  --body: #ced5e5;
-  --muted: #aab5cc;
-  --soft: #929eb6;
-  --line: #313a4d;
-  --line-soft: #252d3d;
-  --surface: #232b3b;
-  --bg: #111621;
-  --card: #1b2231;
-  --on-ink: #111621;
-  --ink-hover: #ffffff;
-  --hover: #202839;
-  --faint: #566178;
-  --input-line: #414c62;
-  --ring: rgba(168, 184, 255, 0.24);
-  --bar: rgba(27, 34, 49, 0.96);
-  --skel-a: #202126;
-  --skel-b: #2b2c32;
+  --accent: #a9b6ff;
+  --accent-hover: #c3ccff;
+  --on-accent: #141833;
+  --ink: #eef0fb;
+  --body: #cfd3ea;
+  --muted: #b3b9d6;
+  --soft: #a0a7c8;
+  --line: #343b6b;
+  --line-soft: #2a3060;
+  --surface: #262c55;
+  --bg: #141833;
+  --card: #1d2244;
+  --hover: #232955;
+  --faint: #59608f;
+  --input-line: #4a5288;
+  --ring: rgba(169, 182, 255, 0.26);
+  --bar: rgba(29, 34, 68, 0.96);
+  --skel-a: #232955;
+  --skel-b: #2c3364;
   --err: #fda29b;
-  --err-bg: #2a1513;
-  --err-bd: #5c2620;
-  --warn: #fec84b;
-  --warn-bg: #2b2210;
-  --warn-bd: #5c4513;
-  --ok: #6ce9a6;
-  --ok-bg: #10281d;
-  --demo-fg: #d9ccff;
-  --demo-bg: #231a3d;
-  --demo-bd: #43347a;
-  --shadow: rgba(0, 0, 0, 0.34);
+  --err-bg: #2c1622;
+  --err-bd: #5c2630;
+  --warn: #f6c56b;
+  --warn-bg: #2b2418;
+  --warn-bd: #5c4a20;
+  --ok: #7ad7aa;
+  --ok-bg: #122a2a;
+  --demo-fg: #d4daff;
+  --demo-bg: #232955;
+  --demo-bd: #434b86;
+  --shadow: rgba(0, 0, 0, 0.36);
   --focus: var(--accent);
 }
-.bk :where(h1, h2, h3, p, ul, dl, dd) { margin: 0; padding: 0; }
+/* Scoped CSS puts the id on .bk, so this reaches into child components; the booking-change card (.gm) keeps its own spacing. */
+.bk :where(h1, h2, h3, p, ul, dl, dd):where(:not(.gm, .gm *)) { margin: 0; padding: 0; }
 .bk :where(ul) { list-style: none; }
 .bk :where(a, button, select, input, textarea):focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .bk-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -1919,47 +2060,48 @@ onBeforeUnmount(() => {
 
 /* ---- header / footer ---- */
 .bk-header {
-  width: 100%; max-width: 1400px; height: 72px; margin: 0 auto;
-  padding: 0 32px;
+  width: min(1120px, calc(100% - 40px)); height: 64px; margin: 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
 }
-.bk-header > a { display: flex; text-decoration: none; color: var(--ink); }
-.bk-header-end { display: flex; align-items: center; gap: 14px; }
+.bk-header-host { min-width: 0; overflow: hidden; color: var(--ink); font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.bk-header-end { display: flex; align-items: center; gap: 10px; }
 .bk-secure { display: flex; align-items: center; gap: 6px; color: var(--soft); font-size: 13px; }
-.bk-lang { display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.bk-lang { display: flex; padding: 2px; border: 1px solid var(--input-line); border-radius: 8px; background: var(--card); }
 .bk-lang button {
-  min-width: 44px; min-height: 32px; padding: 0 8px; color: var(--muted);
-  border: 0; border-radius: 6px; background: transparent; font-size: 13px; font-weight: 600; cursor: pointer;
+  min-width: 44px; min-height: 36px; padding: 0 8px; color: var(--muted);
+  border: 0; border-radius: 6px; background: transparent; font-size: 13px; font-weight: 650; cursor: pointer;
 }
 .bk-lang button.active { color: var(--on-accent); background: var(--accent); }
 .bk-demo {
-  width: calc(100% - 64px); max-width: 1336px; margin: 4px auto 0; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 4px 12px;
-  color: var(--demo-fg); border: 1px solid var(--demo-bd); border-radius: 10px; background: var(--demo-bg);
+  width: min(1120px, calc(100% - 40px)); margin: 0 auto 4px; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 4px 12px;
+  color: var(--demo-fg); border: 1px solid var(--demo-bd); border-left: 4px solid var(--demo-fg); border-radius: 3px 10px 10px 3px; background: var(--demo-bg);
 }
-.bk-main { width: 100%; max-width: 1400px; margin: 0 auto; padding: 32px 32px 64px; flex: 1; }
-.bk-footer { padding: 0 20px 32px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--soft); font-size: 13px; }
+.bk-main { width: 100%; margin: 0 auto; padding: 16px 20px 48px; flex: 1; }
+.bk-footer { padding: 0 20px 24px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--soft); font-size: 13px; }
+.bk-footer-mark { height: 18px !important; color: var(--soft); }
 
 /* ---- shared ---- */
-.bk-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+.bk-card { border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
 .bk-avatar {
-  width: 24px; height: 24px; flex: none; display: grid; place-items: center; object-fit: cover;
+  width: 28px; height: 28px; flex: none; display: grid; place-items: center; object-fit: cover;
   color: var(--on-accent); border-radius: 50%; background: var(--accent); font-size: 13px; font-weight: 700;
 }
-.bk-avatar.big { width: 72px; height: 72px; font-size: 28px; }
+.bk-avatar.big { width: 56px; height: 56px; font-size: 20px; }
 .bk-btn {
-  min-height: 40px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  color: var(--ink); border: 1px solid var(--line); border-radius: 8px; background: var(--card);
-  font: inherit; font-weight: 600; text-decoration: none; cursor: pointer;
+  min-height: 44px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--ink); border: 1px solid var(--input-line); border-radius: 8px; background: var(--card);
+  font: inherit; font-weight: 650; text-decoration: none; cursor: pointer;
 }
-.bk-btn:hover:not(:disabled) { background: var(--line-soft); }
+.bk-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--card); }
 .bk-btn.primary { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
 .bk-btn.danger { color: var(--err); border-color: var(--err-bd); background: var(--err-bg); }
 .bk-btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-bg); }
 .bk-btn.wide { width: 100%; }
-.bk-btn.small { min-height: 32px; padding: 0 12px; font-size: 13px; }
+.bk-btn.small { min-height: 36px; padding: 0 12px; font-size: 14px; }
 .bk-btn:disabled { color: var(--soft); border-color: var(--line); background: var(--line); cursor: not-allowed; }
 .bk-skel {
   display: block; border-radius: 6px; background: linear-gradient(100deg, var(--skel-a) 30%, var(--skel-b) 50%, var(--skel-a) 70%); background-size: 220% 100%;
@@ -1968,79 +2110,101 @@ onBeforeUnmount(() => {
 .bk-skel-line.wide { width: 85%; }
 .bk-skel-line.short { width: 35%; }
 .bk-skel-avatar { width: 56px; height: 56px; border-radius: 50%; }
-.bk-skel-slot { height: 40px; border-radius: 8px; }
-.bk-skel-slot.compact { height: 36px; }
+.bk-skel-slot { height: 48px; border-radius: 8px; }
+.bk-skel-slot.compact { height: 48px; }
 .bk-skel-card { margin-bottom: 16px; padding: 24px; display: grid; gap: 12px; }
-.bk-loading { max-width: 640px; margin: 0 auto; }
-.bk-state { max-width: 520px; margin: 80px auto; text-align: center; display: grid; justify-items: center; gap: 10px; }
+.bk-loading { max-width: 1120px; margin: 0 auto; }
+.bk-state {
+  min-height: 420px; max-width: 590px; margin: 0 auto; padding: 48px 32px; display: grid; align-content: center; justify-items: center; gap: 10px; text-align: center;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: 0 12px 34px var(--shadow);
+}
 .bk-state h1 { font-family: var(--display); font-size: 24px; font-weight: 650; letter-spacing: -0.03em; }
 .bk-state p { color: var(--muted); }
-.bk-state-symbol { width: 44px; height: 44px; display: grid; place-items: center; color: var(--err); border-radius: 50%; background: var(--err-bg); font-size: 20px; font-weight: 800; }
-.bk-banner { max-width: 640px; margin: 0 auto 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--err-bd); background: var(--err-bg); color: var(--err); }
-.bk-banner.banner-slot, .bk-banner.banner-retry { color: var(--warn); border-color: var(--warn-bd); background: var(--warn-bg); }
+.bk-state-symbol { width: 48px; height: 48px; display: grid; place-items: center; color: var(--err); border-radius: 50%; background: var(--err-bg); }
+.bk-banner { max-width: 1120px; margin: 0 auto 12px; padding: 12px 14px; border-radius: 3px 8px 8px 3px; border: 1px solid var(--err-bd); border-left: 4px solid var(--err); background: var(--err-bg); color: var(--err); }
+.bk-banner.banner-slot, .bk-banner.banner-retry { color: var(--warn); border-color: var(--warn-bd); border-left-color: var(--warn); background: var(--warn-bg); }
 .bk-banner:focus { outline: none; }
 .bk-banner:focus-visible { outline: 2px solid var(--focus); }
 
 /* ---- profile ---- */
-.bk-profile { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(260px, 300px) minmax(0, 1fr); align-items: start; gap: 24px; }
-.bk-host { padding: 30px; display: grid; justify-items: start; gap: 8px; box-shadow: 0 12px 32px var(--shadow); }
-.bk-host .bk-avatar { margin-bottom: 8px; }
-.bk-host-eyebrow { color: var(--accent); font-size: 14px; font-weight: 700; }
-.bk-host h1 { font-family: var(--display); font-size: clamp(28px, 3vw, 38px); font-weight: 700; line-height: 1.08; letter-spacing: -0.04em; }
-.bk-bio { max-width: 60ch; color: var(--body); white-space: pre-line; }
-.bk-services { overflow: hidden; box-shadow: 0 12px 32px var(--shadow); }
-.bk-services-title { padding: 24px 28px 12px; display: grid; gap: 3px; }
-.bk-services-title h2 { color: var(--ink); font-size: 20px; letter-spacing: -0.02em; }
+/* One card: the host on top, the service list below. */
+.bk-profile { max-width: 1120px; margin: 0 auto; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--card); box-shadow: 0 12px 34px var(--shadow); }
+.bk-host { min-height: 112px; padding: 24px 32px; display: flex; align-items: center; justify-content: space-between; gap: 32px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.bk-host-identity { min-width: 0; display: flex; align-items: center; gap: 16px; }
+.bk-host-identity.compact p { margin-bottom: 2px; color: var(--muted); font-size: 14px; }
+.bk-host-identity.compact .bk-bio { margin-top: 4px; color: var(--body); }
+.bk-host-identity.compact h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.03em; }
+.bk-host-eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 14px; font-weight: 500; }
+.bk-host h1 { font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.15; letter-spacing: -0.03em; overflow-wrap: anywhere; }
+.bk-bio { max-width: 64ch; margin-top: 4px; color: var(--body); font-size: 14px; white-space: pre-line; }
+/* Three short bars: service, time, details. The current and finished steps take the accent. */
+.bk-progress { flex: none; display: flex; align-items: center; gap: 6px; }
+.bk-progress i { width: 24px; height: 4px; border-radius: 2px; background: var(--line); }
+.bk-progress i.active { background: var(--accent); }
+.bk-services { padding: 28px 32px 32px; overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
+.bk-services-title { max-width: 680px; margin: 0 auto 20px; padding: 0; display: grid; gap: 6px; }
+.bk-services-title h2 { color: var(--ink); font-size: 22px; line-height: 1.2; letter-spacing: -0.02em; }
 .bk-services-title p { color: var(--muted); }
 .bk-services-title h2:focus { outline: none; }
-.bk-search { position: relative; margin: 8px 16px 4px; }
+.bk-services > ul, .bk-services > .bk-group, .bk-services > .bk-nomatch { width: min(680px, 100%); margin-left: auto; margin-right: auto; }
+.bk-search { position: relative; width: min(680px, 100%); margin: 0 auto 12px; }
 .bk-search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
-.bk-search .bk-input { padding-left: 34px; }
-.bk-group { padding: 14px 24px 6px; color: var(--ink); font-size: 13px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; border-top: 1px solid var(--line-soft); }
-.bk-services-title + .bk-group, .bk-search + .bk-group, .bk-search + p + .bk-group { border-top: 0; }
-.bk-nomatch { padding: 20px 24px; color: var(--muted); }
+.bk-search .bk-input { padding-left: 36px; }
+.bk-group { padding: 16px 0 8px; color: var(--ink); font-size: 14px; font-weight: 700; }
+.bk-nomatch { padding: 20px 0; color: var(--muted); }
+.bk-services li + li { margin-top: 10px; }
+/* A service is a row you choose, so it ends in a chevron rather than an empty radio. */
 .bk-service {
-  width: 100%; padding: 18px 28px; display: grid; gap: 6px; text-align: left; color: var(--ink);
-  border: 0; border-top: 1px solid var(--line-soft); background: transparent; font: inherit; cursor: pointer;
+  width: 100%; min-height: 84px; padding: 16px 18px; display: grid; grid-template-columns: minmax(0, 1fr) auto 24px; align-items: center; gap: 14px;
+  text-align: left; color: var(--ink); border: 1px solid var(--input-line); border-left-width: 4px; border-radius: 3px 10px 10px 3px; background: var(--card);
+  font: inherit; cursor: pointer;
 }
-.bk-services li:first-child > .bk-service { border-top: 0; }
-.bk-services > ul:last-child li:last-child > .bk-service:last-child { border-radius: 0 0 12px 12px; }
-.bk-service:hover { background: var(--hover); }
-.bk-service-name { font-size: 17px; font-weight: 700; }
+.bk-service:hover { border-color: var(--accent); background: var(--hover); }
+.bk-service[aria-expanded='true'] { border-color: var(--accent); }
+.bk-service-copy { min-width: 0; display: grid; gap: 4px; }
+.bk-service-name { font-size: 16px; font-weight: 700; }
 .bk-service-desc {
-  max-width: 62ch; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  max-width: 62ch; color: var(--muted); font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .bk-service-prep { max-width: 62ch; color: var(--body); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bk-chips { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 6px; }
-.bk-chip {
-  min-height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px;
-  color: var(--body); border-radius: 6px; background: var(--surface); font-size: 14px; font-weight: 600;
-}
-.bk-team { padding: 4px 24px 14px; display: grid; gap: 6px; }
+.bk-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 12px; }
+.bk-chip { display: inline-flex; align-items: center; gap: 4px; color: var(--body); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bk-go { display: grid; place-items: center; color: var(--muted); }
+.bk-service:hover .bk-go { color: var(--accent); }
+.bk-go.open svg { transform: rotate(90deg); }
+.bk-team { padding: 10px 0 0 22px; display: grid; gap: 8px; }
 .bk-pro {
-  min-height: 44px; padding: 0 12px; display: flex; align-items: center; gap: 10px; text-align: left; color: var(--ink);
-  border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-weight: 600; cursor: pointer;
+  min-height: 56px; padding: 0 14px; display: flex; align-items: center; gap: 10px; text-align: left; color: var(--ink);
+  border: 1px solid var(--input-line); border-radius: 10px; background: var(--card); font: inherit; font-weight: 650; cursor: pointer;
 }
 .bk-pro:hover { border-color: var(--accent); }
+.bk-pro-name { min-width: 0; }
 .bk-pro-price { margin-left: auto; color: var(--muted); font-weight: 500; }
 .bk-empty { padding: 40px 24px; display: grid; justify-items: center; gap: 6px; color: var(--muted); text-align: center; }
 .bk-empty h2 { color: var(--ink); font-size: 16px; }
 
 /* ---- scheduler ---- */
-.bk-book { max-width: 1320px; margin: 0 auto; container: booking-page / inline-size; }
-.bk-grid { display: grid; grid-template-columns: minmax(270px, 300px) minmax(0, 1fr); min-height: 600px; overflow: hidden; box-shadow: 0 16px 48px var(--shadow); }
-.bk-info { position: relative; z-index: 3; padding: 30px 28px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.bk-book { max-width: 1240px; margin: 0 auto; container: booking-page / inline-size; }
+.bk-grid {
+  width: 100%; display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: auto minmax(490px, auto);
+  overflow: hidden; box-shadow: 0 12px 34px var(--shadow);
+}
+.bk-grid.stage-schedule { max-width: 1120px; margin: 0 auto; }
+.bk-grid.stage-details { grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 48px; }
+.bk-book-hero { grid-column: 1 / -1; grid-row: 1; min-height: 112px; padding: 24px 32px; display: flex; align-items: center; justify-content: space-between; gap: 32px; border-bottom: 1px solid var(--line); }
+.bk-info { position: relative; z-index: 3; grid-column: 1; grid-row: 2; padding: 24px 20px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.stage-details .bk-info { margin: 36px 0 40px 40px; padding: 24px; align-self: start; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 3px 10px 10px 3px; background: var(--surface); }
 .bk-back {
-  align-self: flex-start; min-height: 32px; margin: -4px 0 6px -8px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; gap: 4px;
-  color: var(--muted); border: 0; border-radius: 6px; background: transparent; font: inherit; font-weight: 600; cursor: pointer;
+  align-self: flex-start; min-height: 40px; margin: -8px 0 4px -8px; padding: 0 8px 0 6px; display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); border: 0; border-radius: 6px; background: transparent; font: inherit; font-weight: 650; cursor: pointer;
 }
 .bk-back:hover:not(:disabled) { color: var(--ink); background: var(--line-soft); }
-.bk-host-line { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; }
-.bk-title { margin-top: 8px; font-family: var(--display); font-size: 28px; font-weight: 700; line-height: 1.12; letter-spacing: -0.04em; overflow-wrap: anywhere; }
+.bk-summary-title { color: var(--muted); font-size: 14px; font-weight: 600; }
+.bk-title { font-family: var(--display); font-size: 20px; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .bk-desc {
-  color: var(--muted); white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+  color: var(--muted); font-size: 14px; white-space: pre-line; display: -webkit-box; -webkit-line-clamp: 6; line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
 }
-.bk-meta { margin-top: 18px; display: grid; gap: 12px; color: var(--body); font-weight: 600; }
+.bk-meta { margin-top: 12px; display: grid; gap: 12px; color: var(--body); font-size: 14px; font-weight: 600; }
 .bk-meta li { display: flex; align-items: flex-start; gap: 10px; }
 .bk-meta svg { flex: none; margin-top: 3px; color: var(--muted); }
 .bk-meta small { display: block; color: var(--muted); font-size: 13px; font-weight: 500; }
@@ -2048,9 +2212,10 @@ onBeforeUnmount(() => {
 .bk-meta-when { color: var(--ink); }
 
 /* time zone picker */
-.bk-tz { position: relative; margin-top: auto; padding-top: 14px; }
+.bk-tz { position: relative; margin-top: auto; padding-top: 16px; }
+.stage-details .bk-tz { margin-top: 4px; }
 .bk-tz-btn {
-  max-width: 100%; min-height: 32px; margin-left: -6px; padding: 0 6px; display: inline-flex; align-items: center; gap: 8px; text-align: left;
+  max-width: 100%; min-height: 40px; margin-left: -6px; padding: 0 6px; display: inline-flex; align-items: center; gap: 8px; text-align: left;
   color: var(--body); border: 1px solid transparent; border-radius: 6px; background: transparent; font: inherit; font-weight: 600; cursor: pointer;
 }
 .bk-tz-btn:hover:not(:disabled), .bk-tz-btn[aria-expanded='true'] { background: var(--line-soft); }
@@ -2068,65 +2233,68 @@ onBeforeUnmount(() => {
 .bk-tz-none { color: var(--muted); cursor: default !important; }
 
 /* view bar: range heading + nav on the left, view switcher on the right */
-.bk-schedule { display: grid; grid-template-columns: minmax(500px, 600px) minmax(280px, 1fr); grid-template-rows: auto auto minmax(0, 1fr); min-width: 0; }
+.bk-schedule { grid-column: 2; grid-row: 2; display: grid; grid-template-columns: minmax(360px, 1fr) 220px; grid-template-rows: auto auto auto; align-content: start; min-width: 0; }
 .bk-schedule.dv-week, .bk-schedule.dv-column { grid-template-columns: minmax(0, 1fr); }
-.bk-viewbar { grid-column: 1 / -1; grid-row: 1; padding: 24px 28px 16px; min-height: 100px; display: flex; align-items: center; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line-soft); }
-.bk-view-heading { min-width: 190px; display: grid; gap: 2px; }
-.bk-view-heading h2 { font-size: 21px; line-height: 1.2; letter-spacing: -0.025em; }
+.bk-viewbar { grid-column: 1 / -1; grid-row: 1; padding: 22px 28px 14px; display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 16px; border-bottom: 1px solid var(--line-soft); }
+.bk-view-heading { min-width: 0; display: grid; gap: 4px; }
+.bk-view-heading h2 { font-size: 22px; line-height: 1.2; letter-spacing: -0.02em; }
 .bk-view-heading h2:focus { outline: none; }
 .bk-view-heading h2:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
-.bk-view-heading p { max-width: 34ch; color: var(--muted); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bk-view-tools { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
-.bk-calendar-status { grid-column: 1 / -1; grid-row: 2; margin: 10px 28px 0; color: var(--muted); font-size: 13px; }
-.bk-calendar-status.warning { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--warn); border: 1px solid var(--warn-bd); border-radius: 8px; background: var(--warn-bg); }
+.bk-view-heading p { color: var(--muted); font-size: 14px; }
+.bk-view-tools { width: 100%; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.bk-calendar-status { grid-column: 1 / -1; grid-row: 2; margin: 10px 28px 0; color: var(--muted); font-size: 14px; }
+.bk-calendar-status.warning { padding: 10px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--warn); border: 1px solid var(--warn-bd); border-left: 4px solid var(--warn); border-radius: 3px 8px 8px 3px; background: var(--warn-bg); }
 .bk-calendar-status.details { margin: 12px 0 0; }
-.bk-range { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-.bk-range h3, .bk-sheet-bar h3 { font-size: 15px; text-transform: capitalize; }
+.bk-range { min-width: 0; display: flex; align-items: center; gap: 8px; }
+/* Intl gives lowercase month and weekday names in French; capitalise the first letter only. */
+.bk-range h3, .bk-sheet-bar h3 { font-size: 16px; text-transform: capitalize; }
 .bk-range h3 span, .bk-sheet-bar h3 span { color: var(--muted); font-weight: 500; }
-.bk-switch { flex: none; display: flex; padding: 3px; border-radius: 10px; background: var(--surface); }
+.bk-switch { flex: none; display: flex; padding: 3px; border-radius: 8px; background: var(--surface); }
 .bk-switch button {
-  min-height: 30px; padding: 0 12px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
-  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  min-height: 36px; padding: 0 12px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
+  font: inherit; font-size: 14px; font-weight: 650; cursor: pointer;
 }
-.bk-switch button.active { color: var(--on-accent); background: var(--accent); box-shadow: none; }
-.bk-calendar { grid-column: 1; grid-row: 3; align-self: start; padding: 20px 28px 28px; min-width: 0; }
+.bk-switch button.active { color: var(--on-accent); background: var(--accent); }
+.bk-calendar { grid-column: 1; grid-row: 3; align-self: start; width: min(476px, 100%); padding: 20px 28px 28px; min-width: 0; }
 .bk-cal-nav { display: flex; gap: 4px; }
 .bk-cal-nav button {
-  width: 36px; height: 36px; display: grid; place-items: center; color: var(--ink); border: 0; border-radius: 8px; background: transparent; cursor: pointer;
+  width: 40px; height: 40px; display: grid; place-items: center; color: var(--ink); border: 0; border-radius: 8px; background: transparent; cursor: pointer;
 }
 .bk-cal-nav button:hover:not(:disabled) { background: var(--line-soft); }
 .bk-cal-nav button:disabled { color: var(--faint); cursor: not-allowed; }
-.bk-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; transition: opacity 0.15s ease; }
+.bk-days { width: min(420px, 100%); display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; transition: opacity 0.15s ease; }
 .bk-days.loading { opacity: 0.5; pointer-events: none; }
 .bk-weekdays { margin-bottom: 6px; }
-.bk-weekdays span { color: var(--muted); font-size: 13px; font-weight: 700; text-align: center; }
+.bk-weekdays span { color: var(--muted); font-size: 12px; font-weight: 650; text-align: center; }
 .bk-day {
-  position: relative; width: 100%; min-height: 44px; aspect-ratio: 1; color: var(--soft); border: 1px solid transparent; border-radius: 10px; background: transparent;
+  position: relative; width: 100%; max-width: 56px; justify-self: center; aspect-ratio: 1 / 1; padding: 0; color: var(--soft);
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
   font: inherit; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; cursor: default;
 }
-.bk-day.open { color: var(--ink); border-color: var(--line); background: var(--card); font-weight: 700; cursor: pointer; }
-.bk-day.open:hover { border-color: var(--accent); background: var(--surface); }
-.bk-day.selected, .bk-day.selected:hover { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
+.bk-day.open { color: var(--ink); border-color: var(--line); background: var(--surface); font-weight: 700; cursor: pointer; }
+.bk-day.open:hover { border-color: var(--accent); }
+.bk-day.selected, .bk-day.selected.open, .bk-day.selected:hover { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
 .bk-day.today::after {
   content: ''; position: absolute; left: 50%; bottom: 5px; width: 4px; height: 4px; border-radius: 50%; background: currentColor; transform: translateX(-50%);
 }
 .bk-day.today:not(.open) { color: var(--ink); }
 
-.bk-slots { grid-column: 2; grid-row: 3; position: relative; border-left: 1px solid var(--line); min-width: 0; }
-.bk-slots-inner { position: absolute; inset: 0; padding: 20px 24px 28px; overflow-y: auto; scrollbar-width: thin; }
-.bk-slots-head { margin-bottom: 16px; min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.bk-slots-head h3 { font-size: 16px; font-weight: 500; text-transform: capitalize; }
+.bk-slots { grid-column: 2; grid-row: 3; align-self: stretch; position: relative; border-left: 1px solid var(--line); min-width: 0; }
+.bk-slots-inner { min-height: 100%; padding: 20px 20px 28px; }
+.bk-slots-head { margin-bottom: 12px; min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bk-slots-head h3 { font-size: 15px; font-weight: 500; text-transform: capitalize; }
 .bk-slots-head h3 strong { font-weight: 650; }
 .bk-clock { display: flex; padding: 2px; border-radius: 8px; background: var(--surface); }
 .bk-clock button {
-  min-height: 28px; min-width: 36px; padding: 0 8px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
-  font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  min-height: 36px; min-width: 44px; padding: 0 8px; color: var(--muted); border: 0; border-radius: 6px; background: transparent;
+  font: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
 }
-.bk-clock button.active { color: var(--on-accent); background: var(--accent); box-shadow: none; }
-.bk-slot-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
+.bk-clock button.active { color: var(--on-accent); background: var(--accent); }
+/* Time chips carry the booked-slot shape: a firm left edge, at least 48px tall, 15px text. */
+.bk-slot-list { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .bk-slot {
-  min-height: 46px; padding: 0 12px; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; background: var(--card);
-  font: inherit; font-weight: 600; font-variant-numeric: tabular-nums; cursor: pointer;
+  min-height: 48px; padding: 0 14px; color: var(--ink); border: 1px solid var(--input-line); border-left-width: 4px; border-radius: 3px 8px 8px 3px; background: var(--card);
+  font: inherit; font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; text-align: left; cursor: pointer;
 }
 .bk-slot:hover { color: var(--accent); border-color: var(--accent); }
 .bk-slot.picked, .bk-slot.picked:hover { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
@@ -2134,7 +2302,7 @@ onBeforeUnmount(() => {
 .bk-note strong { color: var(--ink); font-size: 14px; }
 .bk-note.error { color: var(--err); }
 .bk-next {
-  min-height: 36px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; text-align: left; line-height: 1.3; color: var(--ink);
+  min-height: 44px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 8px; text-align: left; line-height: 1.3; color: var(--ink);
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface); font: inherit; font-weight: 600; cursor: pointer;
 }
 .bk-next:hover { border-color: var(--accent); }
@@ -2149,51 +2317,55 @@ onBeforeUnmount(() => {
 .bk-col-head {
   position: sticky; top: 0; z-index: 1; padding: 4px 0 8px; display: grid; justify-items: center; background: var(--card);
 }
-.bk-col-head small { color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.bk-col-head small { color: var(--muted); font-size: 13px; font-weight: 650; text-transform: capitalize; }
 .bk-col-head strong { font-size: 18px; font-weight: 650; line-height: 1.2; }
 .bk-col.past .bk-col-head { opacity: 0.45; }
-.bk-slot.compact { min-height: 36px; padding: 0 4px; font-size: 13px; }
+.bk-slot.compact { min-height: 48px; padding: 0 4px; border-left-width: 1px; border-radius: 8px; font-size: 15px; text-align: center; }
 .bk-col-none { padding-top: 6px; color: var(--soft); font-size: 13px; text-align: center; }
 .bk-cols-note { padding-top: 12px; }
 
 /* ---- details ---- */
-.bk-details { width: 100%; max-width: 760px; margin: 0 auto; padding: 36px 48px 40px; }
-.bk-form-title { font-family: var(--display); font-size: 18px; font-weight: 650; letter-spacing: -0.02em; }
+.bk-details { grid-column: 2; grid-row: 2; width: auto; max-width: none; margin: 0; padding: 36px 40px 40px 0; }
+.bk-details > .bk-muted { margin-top: 8px; }
+.bk-form-title { font-family: var(--display); font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -0.02em; }
 .bk-form-title:focus { outline: none; }
 .bk-form-title:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
-.bk-form { margin-top: 18px; display: grid; gap: 16px; }
-.bk-field { display: grid; gap: 6px; }
-.bk-field label { color: var(--ink); font-weight: 600; }
+.bk-form { margin-top: 28px; display: grid; gap: 20px; }
+.bk-field { display: grid; gap: 8px; }
+.bk-field label { color: var(--ink); font-size: 15px; font-weight: 650; }
 .bk-field label span { color: var(--soft); font-weight: 500; }
 .bk-input {
-  width: 100%; min-height: 40px; padding: 8px 12px; color: var(--ink); border: 1px solid var(--input-line); border-radius: 8px; background: var(--card); font: inherit; box-shadow: none;
+  width: 100%; min-height: 48px; padding: 8px 12px; color: var(--ink); border: 1px solid var(--input-line); border-radius: 8px; background: var(--card); font: inherit; font-size: 16px; box-shadow: none;
 }
-textarea.bk-input { resize: vertical; min-height: 84px; }
+textarea.bk-input { resize: vertical; min-height: 88px; }
 .bk-input::placeholder { color: var(--soft); }
 .bk-input:focus { outline: none; border-color: var(--ink); box-shadow: 0 0 0 2px var(--ring); }
 .bk-input[aria-invalid='true'] { border-color: var(--err); }
 .bk-error { color: var(--err); font-size: 13px; }
 .bk-hint { color: var(--muted); font-size: 13px; }
 .bk-hint.right { text-align: right; }
-.bk-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.bk-actions { margin-top: 4px; padding-top: 20px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--line); }
+.bk-actions .bk-btn { min-height: 48px; padding: 0 20px; }
 .bk-fine { color: var(--soft); font-size: 13px; }
 
-/* ---- confirmation ---- */
-.bk-confirm { max-width: 560px; margin: 24px auto 0; padding: 36px 32px 28px; display: grid; justify-items: center; gap: 8px; text-align: center; }
-.bk-confirm h1 { font-family: var(--display); font-size: 24px; font-weight: 650; letter-spacing: -0.035em; }
+/* ---- confirmation: a reference card, like a ticket for the appointment ---- */
+.bk-confirm { max-width: 610px; min-height: 490px; margin: 0 auto; padding: 44px 32px 32px; display: grid; justify-items: center; align-content: start; gap: 8px; text-align: center; box-shadow: 0 12px 34px var(--shadow); }
+.bk-confirm h1 { font-family: var(--display); font-size: 26px; font-weight: 650; letter-spacing: -0.03em; }
 .bk-confirm h1:focus { outline: none; }
 .bk-confirm h1:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
-.bk-confirm-check { width: 52px; height: 52px; margin-bottom: 8px; display: grid; place-items: center; color: var(--ok); border-radius: 50%; background: var(--ok-bg); }
-.bk-facts { width: 100%; margin: 20px 0 8px; padding-top: 16px; display: grid; gap: 14px; border-top: 1px solid var(--line); text-align: left; }
-.bk-facts > div { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 12px; }
+.bk-confirm-check { width: 54px; height: 54px; margin-bottom: 8px; display: grid; place-items: center; color: var(--ok); border-radius: 50%; background: var(--ok-bg); }
+.bk-facts { width: 100%; max-width: 460px; margin: 20px 0 8px; padding: 18px 18px 18px 20px; display: grid; gap: 14px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 3px 10px 10px 3px; background: var(--surface); text-align: left; }
+.bk-facts > div { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 12px; }
 .bk-facts dt { color: var(--muted); font-weight: 600; }
-.bk-facts dd { font-weight: 600; overflow-wrap: anywhere; }
+.bk-facts dd { font-weight: 650; overflow-wrap: anywhere; }
 .bk-facts dd small { display: block; color: var(--muted); font-weight: 500; }
 .bk-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.bk-ref code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 15px; user-select: all; }
-.bk-confirm-actions { width: 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 4px 0 4px; }
-.bk-private-actions { width: 100%; margin-top: 8px; padding-top: 16px; border-top: 1px solid var(--line); }
-.bk-private-actions > p { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+.bk-ref code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 17px; letter-spacing: 0.04em; user-select: all; }
+.bk-confirm-actions { width: 100%; max-width: 460px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+.bk-confirm-actions > :first-child { grid-column: 1 / -1; }
+.bk-private-actions { width: 100%; max-width: 460px; margin-top: 12px; padding-top: 16px; display: grid; gap: 8px; border-top: 1px solid var(--line); }
+.bk-private-actions h2 { font-size: 16px; font-weight: 650; }
+.bk-private-actions > p { color: var(--muted); font-size: 13px; }
 .bk-private-actions > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .bk-change { display: grid; justify-items: center; gap: 8px; color: var(--body); }
 .bk-confirm .bk-fine { margin-top: 8px; }
@@ -2209,6 +2381,7 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
   .bk-confirm { animation: bk-fade 0.25s ease; }
   .bk-skel { animation: bk-shimmer 1.4s ease-in-out infinite; }
   .bk-day, .bk-slot, .bk-btn, .bk-service, .bk-sd, .bk-next { transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease; }
+  .bk-go svg { transition: transform 0.15s ease; }
   .bk-confirm-check svg { stroke-dashoffset: 28; animation: bk-draw 0.4s 0.15s ease-out forwards; }
   .bk-confirm-check { animation: bk-pop 0.3s ease-out; }
   .bk-calendar.is-sheet { animation: bk-sheet 0.22s ease-out; }
@@ -2221,33 +2394,28 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
 @keyframes bk-draw { to { stroke-dashoffset: 0; } }
 @keyframes bk-pop { from { transform: scale(0.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
-/* Compact viewport gutters. The booking card itself responds through container queries below. */
-@media (min-width: 821px) and (max-width: 1160px) {
-  .bk-main { padding-left: 24px; padding-right: 24px; }
-  .bk-header { padding-left: 24px; padding-right: 24px; }
-  .bk-profile { grid-template-columns: minmax(240px, 280px) minmax(0, 1fr); }
-}
-
-/* Embedded owner previews can be much narrower than the viewport. Respond to the actual card width. */
+/* Embedded owner previews can be much narrower than the viewport, so the card responds to its own width. */
 @container booking-page (max-width: 1100px) {
-  .bk-grid { grid-template-columns: minmax(240px, 270px) minmax(0, 1fr); }
-  .bk-info { padding: 26px 22px; }
-  .bk-viewbar { align-items: flex-start; flex-direction: column; gap: 12px; }
-  .bk-view-tools { width: 100%; justify-content: space-between; }
-  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto auto; }
-  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: min(100%, 600px); justify-self: center; }
-  .bk-schedule.dv-month .bk-slots { grid-column: 1; grid-row: 4; min-height: 260px; border-top: 1px solid var(--line); border-left: 0; }
-  .bk-schedule.dv-month .bk-slots-inner { position: static; max-height: 360px; }
+  .bk-grid { grid-template-columns: 240px minmax(0, 1fr); }
+  .bk-grid.stage-details { grid-template-columns: 280px minmax(0, 1fr); column-gap: 28px; }
+  .stage-details .bk-info { margin-left: 28px; }
+  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr) 200px; grid-template-rows: auto auto minmax(0, 1fr); }
+  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: 100%; }
+  .bk-schedule.dv-month .bk-slots { grid-column: 2; grid-row: 3; min-height: 0; border-top: 0; border-left: 1px solid var(--line); }
 }
 
-@container booking-page (max-width: 700px) {
-  .bk-grid { grid-template-columns: minmax(0, 1fr); min-height: 0; overflow: visible; }
-  .bk-info { padding: 22px; border-right: 0; border-bottom: 1px solid var(--line); }
+@container booking-page (max-width: 760px) {
+  .bk-grid, .bk-grid.stage-details { display: block; }
+  .bk-book-hero { min-height: 0; padding: 20px; }
+  .bk-info { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .stage-details .bk-info { margin: 24px 20px 0; padding: 18px; }
   .bk-tz { margin-top: 10px; }
-  .bk-details { max-width: none; padding: 28px; }
-  .bk-viewbar { flex-direction: column; align-items: stretch; }
-  .bk-view-heading, .bk-view-tools, .bk-range { min-width: 0; max-width: 100%; }
-  .bk-view-heading p { white-space: normal; }
+  .bk-schedule { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .bk-schedule.dv-month .bk-calendar { width: min(100%, 476px); justify-self: center; }
+  .bk-schedule.dv-month .bk-slots { grid-column: 1; grid-row: 4; min-height: 220px; border-top: 1px solid var(--line); border-left: 0; }
+  .bk-schedule.dv-month .bk-slot-list { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+  .bk-details { padding: 24px 20px; }
+  .bk-form-title { font-size: 22px; }
   .bk-view-tools { flex-wrap: wrap; justify-content: flex-start; }
   .bk-range { width: 100%; flex-wrap: wrap; justify-content: space-between; }
   .bk-range h3 { min-width: 0; overflow-wrap: anywhere; }
@@ -2255,15 +2423,21 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
 
 /* ---- tablet / mobile: info -> slots-first strip -> times; month in a bottom sheet ---- */
 @media (max-width: 820px) {
-  .bk-header { padding: 0 16px; height: 56px; }
+  .bk-header { width: calc(100% - 24px); height: 56px; }
   .bk-secure { display: none; }
   .bk-lang button { min-height: 40px; }
-  .bk-back { min-height: 40px; }
-  .bk-tz-btn { min-height: 40px; }
-  .bk-clock button { min-height: 40px; min-width: 44px; }
-  .bk-main { padding: 12px 12px 40px; }
-  .bk-profile { grid-template-columns: 1fr; gap: 12px; }
-  .bk-services { box-shadow: none; }
+  .bk-main { padding: 8px 12px 32px; }
+  .bk-demo { width: calc(100% - 24px); }
+  .bk-profile, .bk-grid { border-radius: 10px; }
+  .bk-host { min-height: 0; padding: 20px; align-items: flex-start; flex-direction: column; gap: 16px; }
+  .bk-host h1, .bk-host-identity.compact h1 { font-size: 22px; }
+  .bk-services { padding: 24px 16px 28px; }
+  .bk-services-title h2 { font-size: 20px; }
+  .bk-service { grid-template-columns: minmax(0, 1fr) 24px; gap: 8px 10px; padding: 14px; }
+  .bk-service .bk-chips { grid-column: 1; grid-row: 2; justify-content: flex-start; }
+  .bk-service .bk-go { grid-column: 2; grid-row: 1 / span 2; }
+  .bk-team { padding-left: 12px; }
+  .bk-book-hero { align-items: flex-start; flex-direction: column; gap: 16px; }
   .bk-grid { grid-template-columns: 1fr; min-height: 0; overflow: visible; }
   .bk-info { padding: 16px 16px 14px; border-right: 0; border-bottom: 1px solid var(--line); }
   .bk-desc { -webkit-line-clamp: 3; line-clamp: 3; }
@@ -2287,16 +2461,16 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
     min-height: 66px; padding: 6px 0; display: grid; justify-items: center; align-content: center; gap: 1px; color: var(--soft);
     border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; cursor: pointer;
   }
-  .bk-sd small { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .bk-sd small { font-size: 13px; font-weight: 650; text-transform: capitalize; }
   .bk-sd strong { font-size: 16px; font-weight: 650; }
   .bk-sd i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; visibility: hidden; }
   .bk-sd.has { color: var(--ink); background: var(--surface); }
   .bk-sd.has i { visibility: visible; }
   .bk-sd.selected { color: var(--on-accent); border-color: var(--accent); background: var(--accent); }
   .bk-slots { grid-column: 1; border-left: 0; border-top: 1px solid var(--line); }
-  .bk-slots-inner { position: static; padding: 16px 16px 24px; overflow: visible; min-height: 220px; }
-  .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .bk-slot { min-height: 46px; }
+  .bk-slots-inner { padding: 16px 16px 24px; min-height: 220px; }
+  .bk-slot-list, .bk-schedule.dv-month .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bk-slot { text-align: center; }
   .bk-continue {
     position: sticky; bottom: 0; z-index: 6; padding: 12px 16px calc(12px + env(safe-area-inset-bottom)); display: flex; align-items: center; gap: 12px;
     border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(8px);
@@ -2308,395 +2482,19 @@ textarea.bk-input { resize: vertical; min-height: 84px; }
     border-radius: 16px 16px 0 0; background: var(--card); box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.25);
   }
   .bk-sheet-bar { margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
-  .bk-details { max-width: none; padding: 18px 16px 0; }
-  .bk-actions {
-    position: sticky; bottom: 0; z-index: 5; margin: 4px -16px 0; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--line); background: var(--bar); backdrop-filter: blur(8px);
-  }
+  .bk-details { max-width: none; padding: 18px 16px 20px; }
+  .bk-form { margin-top: 24px; }
+  .bk-actions { margin: 8px 0 0; padding: 16px 0 0; }
   .bk-actions .bk-btn.primary { flex: 1; }
-  .bk-input { min-height: 44px; font-size: 16px; }
-  .bk-host { padding: 20px; box-shadow: none; }
-  .bk-services-title, .bk-service, .bk-group, .bk-team { padding-left: 16px; padding-right: 16px; }
-  .bk-confirm { padding: 28px 18px 22px; margin-top: 8px; }
+  .bk-confirm { min-height: 0; padding: 28px 18px 22px; }
+  .bk-confirm-actions { grid-template-columns: 1fr; }
   .bk-facts > div { grid-template-columns: 1fr; gap: 2px; }
 }
 @media (max-width: 380px) {
-  .bk-slot-list { grid-template-columns: 1fr; }
-  .bk-day { min-height: 0; }
-  .bk-header { padding-left: 12px; padding-right: 12px; }
+  .bk-slot-list, .bk-schedule.dv-month .bk-slot-list { grid-template-columns: 1fr; }
   .bk-lang button { min-width: 40px; }
   .bk-view-tools { align-items: flex-end; flex-wrap: wrap; }
   .bk-range { width: 100%; justify-content: space-between; gap: 2px; }
   .bk-calendar.is-sheet { padding-left: 10px; padding-right: 10px; }
-}
-</style>
-
-<style scoped>
-/* Approved guest direction: one quiet booking surface with compact, square controls. */
-.bk {
-  --ink: #20242d;
-  --body: #4f5662;
-  --muted: #707580;
-  --soft: #8b919c;
-  --line: #e5e7eb;
-  --line-soft: #f0f1f3;
-  --surface: #f7f8fa;
-  --bg: #e9ebef;
-  --input-line: #d5d8de;
-  --shadow: rgba(24, 31, 45, 0.08);
-  font-size: 14px;
-  line-height: 1.45;
-}
-.bk[data-theme='sage'] {
-  --accent: #36765a;
-  --accent-hover: #245d43;
-  --surface: #eaf4ed;
-  --bg: #e8ece9;
-  --ring: rgba(54, 118, 90, 0.16);
-}
-.bk[data-theme='sand'] {
-  --accent: #9d6538;
-  --accent-hover: #7f4d28;
-  --surface: #fbf0e5;
-  --bg: #eeeae5;
-  --card: #fffdf9;
-  --ring: rgba(157, 101, 56, 0.16);
-}
-.bk[data-theme='midnight'] {
-  --accent: #a8b8ff;
-  --accent-hover: #c2ccff;
-  --on-accent: #172047;
-  --ink: #f1f4fc;
-  --body: #c7d0e2;
-  --muted: #afb9ce;
-  --soft: #98a5bc;
-  --line: #36405a;
-  --line-soft: #2a3349;
-  --surface: #252e4b;
-  --bg: #151b2d;
-  --card: #20283c;
-  --input-line: #505b73;
-}
-.bk-header {
-  width: min(1120px, calc(100% - 40px));
-  max-width: none;
-  height: 72px;
-  padding: 8px 2px 0;
-}
-.bk-header > a { color: var(--accent); }
-.bk-header :deep(.bookins-logo) { height: 40px; }
-.bk-header-end { gap: 10px; }
-.bk-lang {
-  padding: 2px;
-  border-color: var(--input-line);
-  border-radius: 7px;
-}
-.bk-lang button { min-width: 40px; min-height: 30px; border-radius: 5px; font-size: 12px; }
-.bk-main {
-  width: 100%;
-  max-width: none;
-  padding: 20px 20px 48px;
-}
-.bk-footer { padding-bottom: 22px; }
-.bk-card { border-radius: 14px; }
-.bk-btn {
-  min-height: 40px;
-  padding: 0 15px;
-  border-color: var(--input-line);
-  border-radius: 7px;
-  font-weight: 660;
-}
-.bk-btn:hover:not(:disabled) { border-color: #aeb4c0; background: var(--card); }
-.bk-btn.primary:hover:not(:disabled) { border-color: var(--accent-hover); background: var(--accent-hover); }
-.bk-input { border-radius: 7px; }
-
-.bk-profile {
-  max-width: 1120px;
-  display: block;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--card);
-  box-shadow: 0 12px 34px var(--shadow);
-}
-.bk-host {
-  min-height: 110px;
-  padding: 21px 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  border: 0;
-  border-bottom: 1px solid var(--line);
-  border-radius: 0;
-  box-shadow: none;
-}
-.bk-host-identity { min-width: 0; display: flex; align-items: center; gap: 14px; }
-.bk-host-identity.compact p { margin-bottom: 2px; color: var(--muted); font-size: 13px; }
-.bk-host-identity.compact h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
-.bk-avatar.big {
-  width: 52px;
-  height: 52px;
-  border-radius: 13px;
-  color: #fff;
-  background: #20242d;
-  font-size: 17px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
-}
-.bk-host .bk-avatar { margin: 0; }
-.bk-host-eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 13px; font-weight: 500; }
-.bk-host h1 { font-size: 26px; line-height: 1.15; letter-spacing: -0.035em; }
-.bk-bio { max-width: 64ch; margin-top: 3px; color: var(--body); font-size: 13px; }
-.bk-progress { flex: none; display: flex; align-items: center; gap: 7px; }
-.bk-progress i { width: 23px; height: 3px; border-radius: 10px; background: #dfe2e7; }
-.bk-progress i.active { background: var(--accent); }
-.bk-services {
-  padding: 28px 32px 30px;
-  overflow: visible;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.bk-services-title { max-width: 680px; margin: 0 auto 20px; padding: 0; }
-.bk-services-title h2 { font-size: 22px; line-height: 1.2; letter-spacing: -0.026em; }
-.bk-services-title p { margin-top: 7px; }
-.bk-services > ul,
-.bk-services > .bk-group,
-.bk-services > .bk-nomatch { width: min(680px, 100%); margin-left: auto; margin-right: auto; }
-.bk-search { width: min(680px, 100%); margin: 0 auto 12px; }
-.bk-group { padding: 14px 0 7px; border: 0; text-transform: none; letter-spacing: 0; }
-.bk-services li + li { margin-top: 10px; }
-.bk-service {
-  min-height: 83px;
-  padding: 17px 18px;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 13px;
-  border: 1px solid var(--input-line) !important;
-  border-radius: 8px !important;
-  background: var(--card);
-}
-.bk-service:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--input-line)) !important; background: var(--card); }
-.bk-radio { width: 18px; height: 18px; border: 1.5px solid #b5bac3; border-radius: 50%; background: var(--card); }
-.bk-service-copy { min-width: 0; display: grid; gap: 3px; }
-.bk-service-name { font-size: 15px; }
-.bk-service-desc { font-size: 12px; }
-.bk-service-prep { font-size: 12px; }
-.bk-chips { margin: 0; justify-content: flex-end; }
-.bk-chip { padding: 0; color: var(--body); background: transparent; font-size: 13px; }
-.bk-team { padding: 10px 0 0 33px; gap: 8px; }
-.bk-pro { min-height: 56px; border-radius: 8px; }
-.bk-pro .bk-radio { display: none; }
-.bk-pro-name { min-width: 0; }
-
-.bk-book { max-width: 1240px; }
-.bk-banner { max-width: 1120px; border-radius: 7px; }
-.bk-grid {
-  width: 100%;
-  display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
-  grid-template-rows: auto minmax(490px, auto);
-  min-height: 0;
-  border-color: var(--line);
-  box-shadow: 0 12px 34px var(--shadow);
-}
-.bk-grid.stage-schedule { max-width: 1120px; margin: 0 auto; }
-.bk-grid.stage-details {
-  grid-template-columns: 320px minmax(0, 1fr);
-  column-gap: 48px;
-  grid-template-rows: auto auto;
-}
-.bk-book-hero {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  min-height: 110px;
-  padding: 21px 32px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 32px;
-  border-bottom: 1px solid var(--line);
-}
-.bk-service-meta { margin-top: 2px; display: flex; align-items: center; flex-wrap: wrap; gap: 9px; color: var(--body); font-size: 13px; }
-.bk-service-meta i { width: 4px; height: 4px; border-radius: 50%; background: var(--soft); }
-.bk-info {
-  grid-column: 1;
-  grid-row: 2;
-  z-index: 3;
-  padding: 24px 20px;
-  border-right: 1px solid var(--line);
-  gap: 7px;
-}
-.stage-details .bk-info {
-  margin: 36px 0 40px 40px;
-  padding: 24px;
-  align-self: start;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-}
-.bk-summary-title { margin-bottom: 4px; font-size: 15px; }
-.bk-back { margin: -8px 0 6px -6px; }
-.bk-title { margin-top: 2px; font-size: 20px; letter-spacing: -0.025em; }
-.bk-desc { font-size: 13px; }
-.bk-meta { margin-top: 12px; gap: 11px; font-size: 13px; }
-.bk-tz { padding-top: 16px; }
-.stage-details .bk-tz { margin-top: 4px; }
-.bk-schedule {
-  grid-column: 2;
-  grid-row: 2;
-  grid-template-columns: minmax(360px, 1fr) 190px;
-  grid-template-rows: auto auto auto;
-  align-content: start;
-}
-.bk-viewbar {
-  min-height: 0;
-  padding: 22px 28px 14px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: start;
-  gap: 16px;
-}
-.bk-view-heading h2 { font-size: 22px; }
-.bk-view-heading p { margin-top: 5px; }
-.bk-view-tools { width: 100%; justify-content: space-between; gap: 16px; }
-.bk-switch { border-radius: 8px; }
-.bk-switch button { border-radius: 5px; }
-.bk-calendar { width: min(476px, 100%); padding: 20px 28px 28px; }
-.bk-days { width: min(420px, 100%); gap: 4px; }
-.bk-weekdays span { font-size: 10px; }
-.bk-day {
-  width: 100%;
-  min-width: 0;
-  max-width: 56px;
-  min-height: 0;
-  max-height: none;
-  justify-self: center;
-  aspect-ratio: 1 / 1;
-  padding: 0;
-  border-radius: 7px;
-  font-size: 12px;
-}
-.bk-day.open { border-color: #e8eaf0; background: var(--surface); }
-.bk-day:not(.open) { border-color: transparent; background: transparent; }
-.bk-day.selected,
-.bk-day.selected.open,
-.bk-day.selected:hover {
-  color: var(--on-accent);
-  border-color: var(--accent);
-  background: var(--accent);
-}
-.bk-slots { align-self: stretch; }
-.bk-slots-inner { position: static; min-height: 100%; padding: 20px 21px 28px; overflow: visible; }
-.bk-slots-head h3 { font-size: 13px; }
-.bk-slot-list { grid-template-columns: 1fr; gap: 7px; }
-.bk-slot {
-  min-height: 40px;
-  padding: 0 10px;
-  border-color: var(--input-line);
-  border-radius: 6px;
-  font-size: 12px;
-  text-align: left;
-}
-.bk-clock { margin-bottom: 4px; }
-.bk-calendar-status.warning { border-radius: 7px; }
-
-.bk-details {
-  grid-column: 2;
-  grid-row: 2;
-  width: auto;
-  max-width: none;
-  margin: 0;
-  padding: 36px 40px 40px 0;
-}
-.bk-form-title { font-size: 26px; line-height: 1.2; }
-.bk-details > .bk-muted { margin-top: 7px; }
-.bk-form { margin-top: 28px; gap: 20px; }
-.bk-field { gap: 8px; }
-.bk-field label { font-size: 14px; }
-.bk-input { min-height: 46px; font-size: 15px; }
-textarea.bk-input { min-height: 82px; }
-.bk-actions { margin-top: 4px; padding-top: 20px; border-top: 1px solid var(--line); }
-.bk-actions .bk-btn { min-height: 44px; padding: 0 20px; }
-
-.bk-confirm {
-  max-width: 610px;
-  min-height: 490px;
-  margin: 0 auto;
-  padding: 48px 32px 32px;
-  border-color: var(--line);
-  border-radius: 14px;
-  box-shadow: 0 12px 34px var(--shadow);
-}
-.bk-confirm h1 { font-size: 25px; }
-.bk-confirm-check { width: 54px; height: 54px; margin-bottom: 10px; }
-.bk-facts { max-width: 430px; padding: 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
-.bk-facts > div { grid-template-columns: 86px minmax(0, 1fr); }
-.bk-state {
-  min-height: 420px;
-  max-width: 590px;
-  margin: 0 auto;
-  padding: 48px 32px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--card);
-  box-shadow: 0 12px 34px var(--shadow);
-}
-
-@container booking-page (max-width: 1100px) {
-  .bk-grid { grid-template-columns: 240px minmax(0, 1fr); }
-  .bk-grid.stage-details { grid-template-columns: 280px minmax(0, 1fr); column-gap: 28px; }
-  .stage-details .bk-info { margin-left: 28px; }
-  .bk-schedule.dv-month { grid-template-columns: minmax(0, 1fr) 190px; grid-template-rows: auto auto minmax(0, 1fr); }
-  .bk-schedule.dv-month .bk-calendar { grid-column: 1; grid-row: 3; width: 100%; }
-  .bk-schedule.dv-month .bk-slots { grid-column: 2; grid-row: 3; min-height: 0; border-top: 0; border-left: 1px solid var(--line); }
-  .bk-schedule.dv-month .bk-slots-inner { position: static; max-height: none; }
-}
-
-@container booking-page (max-width: 760px) {
-  .bk-grid,
-  .bk-grid.stage-details { display: block; }
-  .bk-book-hero { min-height: 0; padding: 21px 20px; }
-  .bk-info { padding: 18px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
-  .stage-details .bk-info { margin: 24px 20px 0; padding: 18px; border: 1px solid var(--line); }
-  .bk-schedule { display: grid; }
-  .bk-details { padding: 24px 20px; }
-  .bk-form-title { font-size: 22px; }
-}
-
-@media (max-width: 820px) {
-  .bk-header { width: calc(100% - 24px); height: 56px; padding-top: 0; }
-  .bk-main { padding: 14px 12px 32px; }
-  .bk-profile { border-radius: 10px; }
-  .bk-host { min-height: 0; padding: 21px 20px; }
-  .bk-host h1, .bk-host-identity.compact h1 { font-size: 21px; }
-  .bk-bio { display: none; }
-  .bk-services { padding: 25px 20px 28px; }
-  .bk-services-title h2 { font-size: 20px; }
-  .bk-service { grid-template-columns: 18px minmax(0, 1fr); gap: 10px; padding: 14px; }
-  .bk-service .bk-chips { grid-column: 2; justify-content: flex-start; }
-  .bk-team { padding-left: 28px; }
-  .bk-book-hero .bk-progress { margin-top: 17px; }
-  .bk-book-hero { align-items: flex-start; flex-direction: column; gap: 0; }
-  .bk-grid { border-radius: 10px; }
-  .bk-summary-title { font-size: 13px; }
-  .bk-schedule { grid-template-columns: 1fr; }
-  .bk-slot-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .bk-slot { min-height: 44px; text-align: center; }
-  .bk-details { padding-bottom: 0; }
-  .bk-form { margin-top: 24px; }
-  .bk-actions { margin-left: -20px; margin-right: -20px; padding-left: 20px; padding-right: 20px; }
-  .bk-confirm { min-height: 420px; padding-top: 32px; }
-}
-
-@media (max-width: 600px) {
-  .bk-progress i { width: 20px; }
-  .bk-host { align-items: flex-start; flex-direction: column; gap: 16px; }
-  .bk-service .bk-chip.team { width: 100%; }
-  .bk-pro { padding: 8px 10px; }
-}
-@media (max-width: 820px) {
-  .stage-details .bk-actions { position:static; margin:8px 0 0; padding:16px 0; backdrop-filter:none; }
-  .stage-details .bk-details { padding-bottom:20px; }
 }
 </style>

@@ -1,37 +1,25 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, useAttrs, useId, watch } from 'vue'
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'radix-vue'
 
 defineOptions({ inheritAttrs: false })
-const props = defineProps({
-  modelValue: { type: String, default: '' },
-  step: { type: Number, default: 60 },
-  min: { type: String, default: '' },
-  max: { type: String, default: '' },
-  disabled: Boolean,
-  required: Boolean,
-  id: { type: String, default: '' },
-  label: { type: String, default: '' },
-  name: { type: String, default: undefined },
-  form: { type: String, default: undefined },
-  portalTarget: { type: [String, Object], default: 'body' },
-})
-const emit = defineEmits(['update:modelValue', 'change', 'update:open', 'invalid'])
+const props = withDefaults(defineProps<{ modelValue?: string; step?: number; min?: string; max?: string; disabled?: boolean; required?: boolean; id?: string; label?: string; name?: string; form?: string; portalTarget?: string | HTMLElement }>(), { modelValue: '', step: 60, min: '', max: '', disabled: false, required: false, id: '', label: '', portalTarget: 'body' })
+const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string]; 'update:open': [value: boolean]; invalid: [] }>()
 const attrs = useAttrs()
 const generatedId = `gm-time-${useId()}`
 const controlId = computed(() => props.id || generatedId)
-const accessibleLabel = computed(() => props.label || attrs['aria-label'] || 'Time')
+const accessibleLabel = computed(() => props.label || String(attrs['aria-label'] || 'Time'))
 const open = ref(false)
-const nativeControl = ref(null)
-const trigger = ref(null)
+const nativeControl = ref<HTMLInputElement | null>(null)
+const trigger = ref<HTMLButtonElement | null>(null)
 const missingRequired = ref(false)
 const draftHour = ref('09')
 const draftMinute = ref('00')
 
-const validTime = (value) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value || '')
+const validTime = (value: string) => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value || '')
 const hours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'))
 const minutes = computed(() => {
-  const values = new Set()
+  const values = new Set<string>()
   if (props.step > 0 && props.step % 60 === 0) {
     const increment = props.step / 60
     const base = validTime(props.min) ? Number(props.min.slice(0, 2)) * 60 + Number(props.min.slice(3, 5)) : 0
@@ -48,9 +36,9 @@ const draftAllowed = computed(() => selectable(draftValue.value))
 const displayValue = computed(() => validTime(props.modelValue) ? props.modelValue : 'Choose a time')
 const nativeStep = computed(() => {
   if (!validTime(props.modelValue) || props.step <= 0) return props.step
-  const [hour, minute] = props.modelValue.split(':').map(Number)
-  const base = validTime(props.min) ? props.min.split(':').map(Number) : [0, 0]
-  const elapsedSeconds = (hour * 60 + minute - (base[0] * 60 + base[1])) * 60
+  const [hour = 0, minute = 0] = props.modelValue.split(':').map(Number)
+  const [baseHour = 0, baseMinute = 0] = validTime(props.min) ? props.min.split(':').map(Number) : [0, 0]
+  const elapsedSeconds = (hour * 60 + minute - (baseHour * 60 + baseMinute)) * 60
   return elapsedSeconds % props.step === 0 ? props.step : 'any'
 })
 
@@ -64,23 +52,23 @@ watch(open, (value) => {
   const source = validTime(props.modelValue) ? props.modelValue : firstAllowed()
   draftHour.value = source.slice(0, 2)
   draftMinute.value = source.slice(3, 5)
-  nextTick(() => document.querySelector(`[data-gm-time-hour="${draftHour.value}"]`)?.scrollIntoView({ block: 'nearest' }))
+  nextTick(() => document.querySelector('.gm-time-hours [aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }))
 })
 onBeforeUnmount(() => { if (typeof window !== 'undefined') window.removeEventListener('keydown', closeFromEscape, true) })
 watch(() => props.modelValue, (value) => {
   if (value) missingRequired.value = false
 })
 
-function allowed(value) {
+function allowed(value: string) {
   return validTime(value) && (!props.min || value >= props.min) && (!props.max || value <= props.max)
 }
-function followsStep(value) {
+function followsStep(value: string) {
   if (!validTime(value) || props.step <= 0) return true
-  const [hour, minute] = value.split(':').map(Number)
-  const base = validTime(props.min) ? props.min.split(':').map(Number) : [0, 0]
-  return ((hour * 60 + minute - (base[0] * 60 + base[1])) * 60) % props.step === 0
+  const [hour = 0, minute = 0] = value.split(':').map(Number)
+  const [baseHour = 0, baseMinute = 0] = validTime(props.min) ? props.min.split(':').map(Number) : [0, 0]
+  return ((hour * 60 + minute - (baseHour * 60 + baseMinute)) * 60) % props.step === 0
 }
-function selectable(value) {
+function selectable(value: string) {
   return allowed(value) && (followsStep(value) || value === props.modelValue)
 }
 function firstAllowed() {
@@ -90,18 +78,18 @@ function firstAllowed() {
   }
   return '09:00'
 }
-function hourAllowed(hour) {
+function hourAllowed(hour: string) {
   return minutes.value.some((minute) => selectable(`${hour}:${minute}`))
 }
-function minuteAllowed(minute) {
+function minuteAllowed(minute: string) {
   return selectable(`${draftHour.value}:${minute}`)
 }
-function chooseHour(hour) {
+function chooseHour(hour: string) {
   if (!hourAllowed(hour)) return
   draftHour.value = hour
   if (!minuteAllowed(draftMinute.value)) draftMinute.value = minutes.value.find(minuteAllowed) || draftMinute.value
 }
-function chooseMinute(minute) {
+function chooseMinute(minute: string) {
   if (minuteAllowed(minute)) draftMinute.value = minute
 }
 function apply() {
@@ -115,23 +103,27 @@ function clear() {
   emit('change', '')
   open.value = false
 }
-function closeFromEscape(event) {
+function closeFromEscape(event: KeyboardEvent) {
   if (!open.value || event.key !== 'Escape') return
   event.preventDefault()
   event.stopPropagation()
   open.value = false
   nextTick(() => trigger.value?.focus({ preventScroll: true }))
 }
-function onOptionKeydown(event, selector) {
+function onOptionKeydown(event: KeyboardEvent, selector: string) {
   if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
-  const options = [...event.currentTarget.closest(selector).querySelectorAll('button:not(:disabled)')]
-  const index = options.indexOf(event.currentTarget)
+  const current = event.currentTarget
+  if (!(current instanceof HTMLButtonElement)) return
+  const container = current.closest(selector)
+  if (!container) return
+  const options = [...container.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
+  const index = options.indexOf(current)
   if (index < 0) return
   event.preventDefault()
   const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length
   options[next]?.focus()
 }
-function onInvalid(event) {
+function onInvalid(event: Event) {
   if (event.target !== nativeControl.value) return
   event.preventDefault()
   missingRequired.value = true
@@ -175,7 +167,7 @@ function onInvalid(event) {
         </button>
       </PopoverTrigger>
       <PopoverPortal :to="portalTarget">
-        <PopoverContent :aria-label="accessibleLabel" class="gm-picker-content gm-time-content" :side-offset="6" :collision-padding="12">
+        <PopoverContent class="gm-picker-content gm-time-content" :side-offset="6" :collision-padding="12">
           <p class="gm-time-title">{{ accessibleLabel }}</p>
           <div class="gm-time-columns">
             <div>
@@ -186,7 +178,6 @@ function onInvalid(event) {
                   :key="hour"
                   type="button"
                   role="option"
-                  :data-gm-time-hour="hour"
                   :aria-selected="draftHour === hour"
                   :tabindex="draftHour === hour ? 0 : -1"
                   :disabled="!hourAllowed(hour)"

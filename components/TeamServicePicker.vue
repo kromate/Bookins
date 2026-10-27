@@ -1,17 +1,15 @@
-<script setup>
+<script setup lang="ts">
 // "Choose services" list for the Team dialog, built for 60+ services: search, one checkbox per category,
 // Select all / none, and a live count of the guest-page copies those services could become.
 import { computed, ref, useId } from 'vue'
-import { serviceDisplayMeta } from '../booking.js'
-import { displayName } from '../team-ui.js'
+import { serviceDisplayMeta } from '../booking.ts'
+import { displayName } from '../team-ui.ts'
 
-const props = defineProps({
-  services: { type: Array, default: () => [] }, // base services
-  disabled: Boolean,
-  // { services, members, pairs, existing, adding, total, max, warnAt, overMax } or null
-  estimate: { type: Object, default: null },
-})
-const selected = defineModel('selected', { type: Array, default: () => [] })
+interface CopyEstimate { services: number; members: number; pairs: number; existing: number; adding: number; total: number; max: number; warnAt: number; overMax: boolean }
+interface ServiceEntry { service: ServiceRecord; category: string; name: string }
+interface ServiceGroup { category: string; label: string; list: ServiceEntry[] }
+const props = withDefaults(defineProps<{ services?: ServiceRecord[]; disabled?: boolean; estimate?: CopyEstimate | null }>(), { services: () => [], disabled: false, estimate: null })
+const selected = defineModel<string[]>('selected', { default: () => [] })
 const uid = useId()
 const search = ref('')
 
@@ -24,10 +22,11 @@ const visible = computed(() => {
   return entries.value.filter((entry) => words.every((word) => `${entry.name} ${entry.category}`.toLowerCase().includes(word)))
 })
 const groups = computed(() => {
-  const byCategory = new Map()
+  const byCategory = new Map<string, ServiceEntry[]>()
   for (const entry of visible.value) {
-    if (!byCategory.has(entry.category)) byCategory.set(entry.category, [])
-    byCategory.get(entry.category).push(entry)
+    const category = byCategory.get(entry.category) ?? []
+    category.push(entry)
+    byCategory.set(entry.category, category)
   }
   return [...byCategory.entries()]
     .map(([category, list]) => ({ category, label: category || 'Other services', list }))
@@ -35,9 +34,9 @@ const groups = computed(() => {
 })
 const showHeadings = computed(() => groups.value.some((group) => group.category))
 const chosen = computed(() => new Set(selected.value))
-const visibleChosen = computed(() => visible.value.filter((entry) => chosen.value.has(entry.service.id)).length)
+const visibleChosen = computed(() => visible.value.filter((entry) => Boolean(entry.service.id && chosen.value.has(entry.service.id))).length)
 
-function set(ids, on) {
+function set(ids: string[], on: boolean) {
   const next = new Set(selected.value)
   for (const id of ids) {
     if (on) next.add(id)
@@ -45,12 +44,13 @@ function set(ids, on) {
   }
   selected.value = [...next]
 }
-const idsOf = (list) => list.map((entry) => entry.service.id)
-const stateOf = (group) => {
-  const count = group.list.filter((entry) => chosen.value.has(entry.service.id)).length
+const idsOf = (list: ServiceEntry[]) => list.flatMap((entry) => entry.service.id ? [entry.service.id] : [])
+const stateOf = (group: ServiceGroup) => {
+  const count = group.list.filter((entry) => Boolean(entry.service.id && chosen.value.has(entry.service.id))).length
   return { all: count === group.list.length, some: count > 0 && count < group.list.length, count }
 }
 const filtered = computed(() => Boolean(search.value.trim()))
+const checked = (event: Event) => event.target instanceof HTMLInputElement && event.target.checked
 </script>
 
 <template>
@@ -62,7 +62,7 @@ const filtered = computed(() => Boolean(search.value.trim()))
         <button type="button" class="ghost small-button" :disabled="disabled || !visibleChosen" @click="set(idsOf(visible), false)">{{ filtered ? 'Select none shown' : 'Select none' }}</button>
       </div>
     </div>
-    <p class="picker-count tnum" role="status">{{ selected.length }} of {{ services.length }} {{ services.length === 1 ? 'service' : 'services' }} chosen<template v-if="filtered"> · {{ visible.length }} shown</template></p>
+    <p class="picker-count tnum" role="status">{{ selected.length }} of {{ services.length }} {{ services.length === 1 ? 'service' : 'services' }} chosen<template v-if="filtered">, {{ visible.length }} shown</template></p>
 
     <div class="picker-list" tabindex="-1">
       <p v-if="!visible.length" class="field-hint">No services match “{{ search }}”.</p>
@@ -74,20 +74,20 @@ const filtered = computed(() => Boolean(search.value.trim()))
             :indeterminate.prop="stateOf(group).some"
             :disabled="disabled"
             :aria-label="`Select all ${group.label} services`"
-            @change="set(idsOf(group.list), $event.target.checked)"
+            @change="set(idsOf(group.list), checked($event))"
           />
           <strong>{{ group.label }}</strong>
           <small class="muted">{{ stateOf(group).count }} of {{ group.list.length }}</small>
         </label>
         <ul class="service-picks">
           <li v-for="entry in group.list" :key="entry.service.id">
-            <label class="pick"><input type="checkbox" :checked="chosen.has(entry.service.id)" :disabled="disabled" @change="set([entry.service.id], $event.target.checked)" /><span>{{ entry.name }} <small class="muted">{{ entry.service.duration_minutes }} min</small></span></label>
+            <label class="pick"><input type="checkbox" :checked="Boolean(entry.service.id && chosen.has(entry.service.id))" :disabled="disabled" @change="entry.service.id && set([entry.service.id], checked($event))" /><span>{{ entry.name }} <small class="muted">{{ entry.service.duration_minutes }} min</small></span></label>
           </li>
         </ul>
       </section>
     </div>
 
-    <p v-if="estimate && selected.length" :id="`${uid}-estimate`" class="picker-estimate" :class="{ over: estimate.overMax }" role="status" aria-live="polite" data-team-preflight>
+    <p v-if="estimate && selected.length" :id="`${uid}-estimate`" class="picker-estimate" :class="{ over: estimate.overMax }" role="status" aria-live="polite">
       <strong>{{ estimate.services }} {{ estimate.services === 1 ? 'service' : 'services' }} x {{ estimate.members }} {{ estimate.members === 1 ? 'member' : 'members' }} = {{ estimate.pairs }} guest-page {{ estimate.pairs === 1 ? 'copy' : 'copies' }}</strong>
       if guests may choose any of your team for these (limit {{ estimate.max }}). {{ estimate.existing }} {{ estimate.existing === 1 ? 'copy exists' : 'copies exist' }} now, so that would bring you to {{ estimate.total }}.<template v-if="estimate.overMax"> That is over the limit: offer fewer services per person.</template>
       Choosing services here only decides what you can assign; copies are made in Services.
@@ -111,5 +111,5 @@ const filtered = computed(() => Boolean(search.value.trim()))
 .pick { min-height: 44px; padding: 0 var(--space-3) 0 var(--space-5); display: flex; align-items: center; gap: var(--space-3); cursor: pointer; font-weight: 400; }
 .pick small { white-space: nowrap; }
 .picker-estimate { margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); background: var(--surface-soft); font-size: var(--text-sm); line-height: 1.5; }
-.picker-estimate.over { color: var(--danger); background: #fff1f0; }
+.picker-estimate.over { color: var(--danger); background: var(--danger-soft); }
 </style>

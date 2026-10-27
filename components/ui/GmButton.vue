@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // `disabledReason`: when set the button is aria-disabled (still focusable), clicks are blocked, and the reason is shown
 // in a GmHint (hover / focus / tap). Add `reason-visible` to also print it under the button.
 // Native `disabled` stays for plain disabled states without a reason (busy states use `pending`).
@@ -6,23 +6,25 @@ import { computed, useId } from 'vue'
 import GmHint from './GmHint.vue'
 
 defineOptions({ inheritAttrs: false })
-const props = defineProps({
-  variant: { type: String, default: 'primary', validator: value => ['primary', 'secondary', 'ghost', 'danger'].includes(value) },
-  size: { type: String, default: 'md', validator: value => ['sm', 'md'].includes(value) },
-  type: { type: String, default: 'button', validator: value => ['button', 'submit', 'reset'].includes(value) },
-  disabled: Boolean,
-  pending: Boolean,
-  pendingLabel: { type: String, default: 'Working…' },
-  disabledReason: { type: String, default: '' },
-  reasonVisible: Boolean,
-})
+const props = withDefaults(defineProps<{
+  variant?: 'primary' | 'secondary' | 'ghost' | 'danger'
+  size?: 'sm' | 'md'
+  type?: 'button' | 'submit' | 'reset'
+  disabled?: boolean
+  pending?: boolean
+  pendingLabel?: string
+  disabledReason?: string
+  reasonVisible?: boolean
+  dataTour?: string
+  ariaLabelProp?: string
+}>(), { variant: 'primary', size: 'md', type: 'button', disabled: false, pending: false, pendingLabel: 'Working…', disabledReason: '', reasonVisible: false })
 
-const emit = defineEmits(['click'])
+const emit = defineEmits<{ click: [event: MouseEvent] }>()
 const reasonId = `gm-button-reason-${useId()}`
 const reasoned = computed(() => Boolean(props.disabledReason))
 const blocked = computed(() => props.disabled || props.pending || reasoned.value)
 
-function activate(event) {
+function activate(event: MouseEvent) {
   if (blocked.value) {
     event.preventDefault()
     // Reasoned clicks must bubble to the hint wrapper so a tap shows the reason.
@@ -44,6 +46,8 @@ function activate(event) {
       :aria-disabled="pending || reasoned || undefined"
       :aria-busy="pending || undefined"
       :aria-describedby="reasoned ? (reasonVisible ? reasonId : describedby) : undefined"
+      :aria-label="ariaLabelProp"
+      :data-tour="dataTour"
       @click="activate"
     >
       <span class="gm-button__content" :class="{ 'gm-button__content--hidden': pending }" :aria-hidden="pending || undefined">

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Anchored inline confirmation. The default slot is the TRIGGER; the popover renders right next to it
 // (above by default, flips below when there is no room, shifted to stay on screen), so it is always visible
 // near the control that was clicked, including inside a scrolling GmDialog and on phones.
@@ -12,34 +12,25 @@
 // choice), Esc cancels, Tab stays inside the popover, and focus returns to what was focused before it opened.
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
-const props = defineProps({
-  open: { type: Boolean, default: false },
-  title: { type: String, required: true },
-  message: { type: String, default: '' },
-  confirmLabel: { type: String, default: 'Confirm' },
-  cancelLabel: { type: String, default: 'Cancel' },
-  tone: { type: String, default: 'default', validator: value => ['default', 'danger'].includes(value) },
-  placement: { type: String, default: 'top', validator: value => ['top', 'bottom'].includes(value) },
-  align: { type: String, default: 'end', validator: value => ['start', 'end'].includes(value) },
-  busy: { type: Boolean, default: false }, // locks the popover while a save/delete is running
-})
-const emit = defineEmits(['update:open', 'confirm', 'cancel'])
+const props = withDefaults(defineProps<{ open?: boolean; title: string; message?: string; confirmLabel?: string; cancelLabel?: string; tone?: 'default' | 'danger'; placement?: 'top' | 'bottom'; align?: 'start' | 'end'; busy?: boolean }>(), { open: false, message: '', confirmLabel: 'Confirm', cancelLabel: 'Cancel', tone: 'default', placement: 'top', align: 'end', busy: false })
+const emit = defineEmits<{ 'update:open': [value: boolean]; confirm: []; cancel: [] }>()
 
 const uid = useId()
 const titleId = `gm-confirm-title-${uid}`
 const bodyId = `gm-confirm-body-${uid}`
-const root = ref(null)
-const pop = ref(null)
-const cancelButton = ref(null)
+const root = ref<HTMLElement | null>(null)
+const pop = ref<HTMLElement | null>(null)
+const cancelButton = ref<HTMLButtonElement | null>(null)
 const shift = ref(0)
 const flipped = ref(false)
-let opener = null
+let opener: HTMLElement | null = null
 
 const side = computed(() => (props.placement === 'top') !== flipped.value ? 'top' : 'bottom')
 
-function close(event) {
+function close(event: 'confirm' | 'cancel') {
   emit('update:open', false)
-  emit(event)
+  if (event === 'confirm') emit('confirm')
+  else emit('cancel')
 }
 function cancel() {
   if (props.busy) return
@@ -62,7 +53,8 @@ function fit() {
   if (rect.left < margin) dx = margin - rect.left
   else if (rect.right > window.innerWidth - margin) dx = window.innerWidth - margin - rect.right
   shift.value = dx
-  const wrapper = root.value.getBoundingClientRect()
+  const wrapper = root.value?.getBoundingClientRect()
+  if (!wrapper) return
   const preferTop = props.placement === 'top'
   const fitsTop = wrapper.top - rect.height - 8 >= margin
   const fitsBottom = wrapper.bottom + rect.height + 8 <= window.innerHeight - margin
@@ -73,7 +65,7 @@ function fit() {
 watch(() => props.open, async open => {
   if (typeof document === 'undefined') return
   if (open) {
-    opener = document.activeElement
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     window.addEventListener('keydown', keydown, true)
     document.addEventListener('pointerdown', outside, true)
     await nextTick()
@@ -84,7 +76,7 @@ watch(() => props.open, async open => {
   } else {
     stop()
     await nextTick()
-    const target = opener?.isConnected ? opener : root.value?.querySelector('button, a[href], [tabindex]')
+    const target = opener?.isConnected ? opener : root.value?.querySelector<HTMLElement>('button, a[href], [tabindex]')
     target?.focus?.({ preventScroll: true })
     opener = null
   }
@@ -95,7 +87,7 @@ function stop() {
 }
 onBeforeUnmount(stop)
 
-function keydown(event) {
+function keydown(event: KeyboardEvent) {
   if (!props.open) return
   if (event.key === 'Escape') {
     // Capture phase on window: runs before an enclosing dialog's own Escape handling.
@@ -105,14 +97,14 @@ function keydown(event) {
     return
   }
   if (event.key === 'Tab' && pop.value?.contains(document.activeElement)) {
-    const controls = [...pop.value.querySelectorAll('button:not(:disabled)')]
+    const controls = [...pop.value.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]
     const first = controls[0], last = controls.at(-1)
     if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
     else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
   }
 }
-function outside(event) {
-  if (props.busy || root.value?.contains(event.target)) return
+function outside(event: PointerEvent) {
+  if (props.busy || root.value?.contains(event.target as Node | null)) return
   cancel()
 }
 </script>
@@ -147,7 +139,7 @@ function outside(event) {
 .gm-confirm__pop {
   position: absolute; z-index: 60; box-sizing: border-box; inline-size: 320px; max-inline-size: calc(100vw - 24px); padding: 14px 16px;
   border: 1px solid var(--line, #dfe3ec); border-radius: var(--radius, 14px); background: var(--surface, #fff); color: var(--ink, #172033);
-  box-shadow: var(--shadow-lg, 0 12px 32px rgb(0 0 0 / 0.18)); text-align: left; white-space: normal;
+  box-shadow: var(--shadow-3, 0 12px 32px rgb(0 0 0 / 0.18)); text-align: left; white-space: normal;
   transform: translateX(var(--gm-confirm-shift, 0px));
 }
 .gm-confirm__pop--top { bottom: calc(100% + 8px); }

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 defineProps({
   name: { type: String, required: true },
   size: { type: Number, default: 20 },
@@ -19,7 +19,15 @@ defineProps({
     stroke-linecap="round"
     stroke-linejoin="round"
   >
-    <template v-if="name === 'dashboard'">
+    <template v-if="name === 'today'">
+      <path d="M5 3v18" />
+      <rect x="9" y="5" width="11" height="6" rx="1.5" />
+      <rect x="9" y="14" width="7" height="5" rx="1.5" />
+    </template>
+    <template v-else-if="name === 'chart'">
+      <path d="M4 20h16M7 16v-4M12 16V7M17 16v-6" />
+    </template>
+    <template v-else-if="name === 'dashboard'">
       <rect
         x="3"
         y="3"

@@ -1,269 +1,510 @@
-<script setup>
+<script setup lang="ts">
+// Today: the front desk. The day on a time rail (one lane per person, a now-line), what is next, and what needs the owner.
 import { computed, inject, onBeforeUnmount, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
-import GmButton from '../components/ui/GmButton.vue'
-import { copyText, isActiveBooking, isStaffCopy } from '../booking.js'
-import { isDemo } from '../runtime.js'
-import { useSetupState } from '../setup.js'
-import { displayTimeZone } from '../time-display.js'
-import { displayName } from '../team-ui.js'
+import {
+  copyText,
+  hasTeam,
+  isActiveBooking,
+  isActiveTimeOff,
+  isTimeOff,
+  messageQueue,
+  ownerStaff,
+  staffForBooking,
+  teamMembers,
+} from '../booking.ts'
+import { useSetupState } from '../setup.ts'
+import { isDemo } from '../runtime.ts'
+import { localFields, parseWeeklyWindows } from '../scheduling.ts'
+import { displayTimeZone } from '../time-display.ts'
+import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.ts'
+import { composeMessage, whatsappShareUrl } from '../messaging.ts'
+import { hourMarks, minutesOf, placeSpans, spanSize } from '../rail.ts'
+import { readTourSeen, writeTourSeen } from '../tour.ts'
 
-const state = inject('bookingState')
+interface MinuteWindow { start: number; end: number }
+interface RailBooking { booking: BookingRecord; start: number; end: number }
+interface Lane { id: string; label: string; color: string; open: MinuteWindow[]; off: MinuteWindow[]; items: RailBooking[] }
+
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const toast = inject<ToastApi | null>('toast', null)
+const startTour = inject<(() => Promise<void> | void) | null>('startTour', null)
 const setup = useSetupState(state)
-const toast = inject('toast', null)
+
 const now = ref(Date.now())
-const copied = ref(false)
-const copyError = ref('')
-let copiedTimer = 0
 const clockTimer = window.setInterval(() => { now.value = Date.now() }, 30_000)
+onBeforeUnmount(() => window.clearInterval(clockTimer))
 
-onBeforeUnmount(() => {
-  window.clearInterval(clockTimer)
-  window.clearTimeout(copiedTimer)
-})
+// One zone for the page: the owner's own schedule (never a team member's), else the profile's.
+const owner = computed(() => ownerStaff(state))
+const zone = computed(() => displayTimeZone(scheduleOf(state, owner.value)?.timezone || state.profile?.timezone || state.schedules.find((item) => item.timezone)?.timezone))
+const todayKey = computed(() => localFields(now.value, zone.value).date)
+const weekday = computed(() => new Date(`${todayKey.value}T12:00:00.000Z`).getUTCDay())
+const nowMinute = computed(() => minutesOf(localFields(now.value, zone.value).time))
+const team = computed(() => hasTeam(state))
 
-const schedule = computed(() => state.schedules?.[0] || null)
-const scheduleZone = computed(() => displayTimeZone(schedule.value?.timezone))
-const activeServiceList = computed(() =>
-  (state.services || []).filter((service) => !isStaffCopy(service) && service.active !== false && service.visibility === 'public'),
-)
-const upcomingBookings = computed(() =>
-  (state.bookings || [])
-    .filter((booking) => isActiveBooking(booking) && Date.parse(booking.starts_at) > now.value)
-    .sort((left, right) => Date.parse(left.starts_at) - Date.parse(right.starts_at)),
-)
-const nextSevenDays = computed(() => {
-  const limit = now.value + 7 * 24 * 60 * 60 * 1000
-  return upcomingBookings.value.filter((booking) => Date.parse(booking.starts_at) <= limit).length
-})
+const ms = (value: TimestampInput) => Date.parse(String(value ?? ''))
+const realBookings = computed(() => state.bookings.filter((item) => !isTimeOff(item)))
+const fmtTime = (value: TimestampInput) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: zone.value }).format(ms(value))
+const fmtMinute = (minute: number) => {
+  const date = new Date(Date.UTC(2000, 0, 1, Math.floor(minute / 60), minute % 60))
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(date)
+}
+const dateHeading = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long', timeZone: zone.value }).format(now.value))
 
-const weeklyWindows = computed(() => {
+function windowsFor(schedule: ScheduleRecord | null): MinuteWindow[] {
+  if (!schedule) return []
   try {
-    const parsed = JSON.parse(schedule.value?.weekly_windows_json || '[]')
-    return Array.isArray(parsed) ? parsed : []
+    return parseWeeklyWindows(schedule.weekly_windows_json)
+      .filter((item) => item.weekday === weekday.value)
+      .map((item) => ({ start: item.startMinute, end: item.endMinute }))
   } catch {
     return []
   }
-})
-const weeklyHours = computed(() => {
-  const minutes = weeklyWindows.value.reduce(
-    (total, window) => total + Math.max(0, Number(window.endMinute) - Number(window.startMinute)),
-    0,
-  )
-  const hours = minutes / 60
-  return Number.isInteger(hours) ? String(hours) : hours.toFixed(1)
-})
-const weekdays = [
-  { label: 'Monday', weekday: 1 }, { label: 'Tuesday', weekday: 2 }, { label: 'Wednesday', weekday: 3 },
-  { label: 'Thursday', weekday: 4 }, { label: 'Friday', weekday: 5 }, { label: 'Saturday', weekday: 6 },
-  { label: 'Sunday', weekday: 0 },
-]
-const availabilityRows = computed(() => weekdays.map(({ label, weekday }) => {
-  const windows = weeklyWindows.value
-    .filter((window) => Number(window.weekday) === weekday)
-    .sort((left, right) => Number(left.startMinute) - Number(right.startMinute))
-  return {
-    label,
-    windows: windows.map((window) => `${minuteLabel(window.startMinute)}–${minuteLabel(window.endMinute)}`),
-  }
-}))
+}
+// Clamp a stored instant to minutes within today (time off can span several days).
+function minuteToday(value: TimestampInput, fallback: number) {
+  const fields = localFields(value, zone.value)
+  if (fields.date < todayKey.value) return 0
+  if (fields.date > todayKey.value) return 24 * 60
+  const minute = minutesOf(fields.time)
+  return Number.isFinite(minute) ? minute : fallback
+}
+const onToday = (booking: BookingRecord) => localFields(booking.starts_at, zone.value).date === todayKey.value
 
+const todays = computed(() => realBookings.value
+  .filter((item) => item.status !== 'cancelled' && isActiveBooking(item) && onToday(item))
+  .sort((left, right) => ms(left.starts_at) - ms(right.starts_at)))
+
+const lanes = computed<Lane[]>(() => {
+  const people = team.value ? teamMembers(state) : [owner.value]
+  const map = new Map<string, Lane>()
+  for (const member of people) {
+    const id = String(member.id || '')
+    map.set(id, {
+      id,
+      label: memberName(member),
+      color: memberColor(member),
+      open: windowsFor(scheduleOf(state, member)),
+      off: [],
+      items: [],
+    })
+  }
+  const laneFor = (booking: BookingRecord) => {
+    if (!team.value) return map.get(String(owner.value.id || ''))
+    const member = staffForBooking(state, booking)
+    const id = String(member.id || '')
+    if (!map.has(id)) map.set(id, { id, label: memberName(member), color: memberColor(member), open: [], off: [], items: [] })
+    return map.get(id)
+  }
+  for (const booking of todays.value) {
+    const start = minuteToday(booking.starts_at, 0)
+    const end = Math.max(start + 15, minuteToday(booking.ends_at, start + 30))
+    laneFor(booking)?.items.push({ booking, start, end })
+  }
+  for (const block of state.bookings.filter(isActiveTimeOff)) {
+    const startDay = localFields(block.starts_at, zone.value).date
+    const endDay = localFields(new Date(ms(block.ends_at) - 1), zone.value).date
+    if (startDay > todayKey.value || endDay < todayKey.value) continue
+    laneFor(block)?.off.push({ start: minuteToday(block.starts_at, 0), end: minuteToday(block.ends_at, 24 * 60) })
+  }
+  return [...map.values()]
+})
+
+// The visible hours: everyone's open hours and every booking, at least 8:00 to 18:00.
+const firstHour = computed(() => {
+  const starts = lanes.value.flatMap((lane) => [...lane.open.map((item) => item.start), ...lane.items.map((item) => item.start)])
+  return Math.max(0, Math.floor(Math.min(8 * 60, ...starts) / 60))
+})
+const lastHour = computed(() => {
+  const ends = lanes.value.flatMap((lane) => [...lane.open.map((item) => item.end), ...lane.items.map((item) => item.end)])
+  return Math.min(24, Math.ceil(Math.max(18 * 60, ...ends) / 60))
+})
+// An empty day keeps the open-hours shape but at half height, so the empty message and Next up are not pushed off screen.
+const hourPx = computed(() => (todays.value.length ? 56 : 28))
+const railHeight = computed(() => (lastHour.value - firstHour.value) * hourPx.value)
+const hours = computed(() => hourMarks(firstHour.value, lastHour.value - 1))
+const y = (minute: number) => ((minute - firstHour.value * 60) / 60) * hourPx.value
+// Short labels ("10 AM"), the same as the week view in Bookings.
+const hourLabel = (hour: number) => new Date(Date.UTC(2000, 0, 1, hour)).toLocaleTimeString(undefined, { hour: 'numeric', timeZone: 'UTC' })
+const blockStyle = (window: MinuteWindow) => ({ top: `${Math.max(0, y(window.start))}px`, height: `${Math.max(2, y(Math.min(window.end, lastHour.value * 60)) - Math.max(0, y(window.start)))}px` })
+const placed = (lane: Lane) => placeSpans(lane.items.map((item) => ({ start: item.start, end: item.end, item })), 30)
+const nowVisible = computed(() => nowMinute.value >= firstHour.value * 60 && nowMinute.value <= lastHour.value * 60)
+
+const serviceFor = (booking: BookingRecord) => state.services.find((item) => item.id === booking.service_id)
+const statusWord = (booking: BookingRecord) => (booking.status === 'completed' ? 'came' : booking.status === 'no_show' ? 'no-show' : '')
+const slotClass = (entry: { start: number; end: number; item: RailBooking }) => [
+  { 'is-done': entry.item.booking.status === 'completed', 'is-noshow': entry.item.booking.status === 'no_show' },
+  `is-${spanSize(entry.end - entry.start)}`,
+]
+const slotLabel = (entry: RailBooking, lane: Lane) =>
+  `${fmtTime(entry.booking.starts_at)} to ${fmtTime(entry.booking.ends_at)}, ${entry.booking.guest_name || 'Client'}, ${displayName(entry.booking.service_name)}${team.value ? `, with ${lane.label}` : ''}${statusWord(entry.booking) ? `, ${statusWord(entry.booking)}` : ''}`
+const openLink = (booking: BookingRecord) => ({ path: '/bookings', query: { open: booking.id || '' } })
+
+// ---- summary line ----
+const openToday = computed(() => lanes.value.filter((lane) => lane.open.length))
+const ownerHours = computed(() => lanes.value[0]?.open ?? [])
+const summary = computed(() => {
+  const count = todays.value.length
+  const parts: string[] = []
+  if (!team.value) {
+    parts.push(ownerHours.value.length ? `Open ${ownerHours.value.map((item) => `${fmtMinute(item.start)} to ${fmtMinute(item.end)}`).join(' and ')}.` : 'Not open today.')
+  } else {
+    parts.push(openToday.value.length ? `${openToday.value.length} of ${lanes.value.length} ${lanes.value.length === 1 ? 'person' : 'people'} working.` : 'Nobody is scheduled today.')
+  }
+  parts.push(count ? `${count} ${count === 1 ? 'appointment' : 'appointments'}.` : 'Nothing booked yet.')
+  return parts.join(' ')
+})
+
+// ---- next up ----
+const nextUp = computed(() => realBookings.value
+  .filter((item) => item.status === 'confirmed' && ms(item.ends_at || item.starts_at) > now.value)
+  .sort((left, right) => ms(left.starts_at) - ms(right.starts_at))[0] || null)
+const nextInProgress = computed(() => Boolean(nextUp.value && ms(nextUp.value.starts_at) <= now.value))
+const nextWhen = computed(() => {
+  const booking = nextUp.value
+  if (!booking) return ''
+  if (nextInProgress.value) return `In progress, until ${fmtTime(booking.ends_at)}`
+  const minutes = Math.round((ms(booking.starts_at) - now.value) / 60_000)
+  const time = fmtTime(booking.starts_at)
+  if (onToday(booking)) return minutes < 60 ? `${time}, in ${Math.max(1, minutes)} min` : `${time} today`
+  return `${new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'short', timeZone: zone.value }).format(ms(booking.starts_at))}, ${time}`
+})
+const nextMember = computed(() => (nextUp.value && team.value ? staffForBooking(state, nextUp.value) : null))
+const nextMessage = computed(() => {
+  const booking = nextUp.value
+  if (!booking || nextInProgress.value) return null
+  const message = composeMessage('reminder24', booking, { profile: state.profile, service: serviceFor(booking), staff: nextMember.value })
+  return message.whatsapp ? message : null
+})
+
+// ---- needs you ----
+const pastUnmarked = computed(() => realBookings.value.filter((item) => item.status === 'confirmed' && ms(item.ends_at || item.starts_at) <= now.value).length)
+const dueMessages = computed(() => {
+  try {
+    return messageQueue(state, { now: now.value, timezone: zone.value }).due.filter((item) => item.message.enabled !== false).length
+  } catch {
+    return 0
+  }
+})
 const publicUrl = computed(() => state.profile?.public_link_url || '')
 const linkExpired = computed(() => {
   const expiry = Date.parse(state.profile?.public_link_expires_at || '')
   return Boolean(publicUrl.value) && Number.isFinite(expiry) && expiry <= now.value
 })
-const dateLabel = computed(() => new Intl.DateTimeFormat(undefined, {
-  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: scheduleZone.value,
-}).format(now.value))
+const needs = computed(() => {
+  const list: Array<{ key: string; text: string; detail: string; to: string | { path: string; query?: Record<string, string>; hash?: string }; due?: boolean }> = []
+  if (dueMessages.value) list.push({ key: 'messages', text: `${dueMessages.value} ${dueMessages.value === 1 ? 'message is' : 'messages are'} due`, detail: 'Reminders and thank-yous to open in your own apps', to: '/messages', due: true })
+  if (pastUnmarked.value) list.push({ key: 'past', text: `${pastUnmarked.value} past ${pastUnmarked.value === 1 ? 'appointment needs' : 'appointments need'} an outcome`, detail: 'Mark whether they came, so history and insights stay right', to: { path: '/bookings', query: { tab: 'past' } } })
+  if (linkExpired.value && !isDemo.value) list.push({ key: 'link', text: 'Your booking link has expired', detail: 'Guests see an expired-link page until you make a new one', to: { path: '/settings', hash: '#settings-link' } })
+  return list
+})
 
-function minuteLabel(value) {
-  const minutes = Number(value)
-  const hours = Math.floor(minutes / 60)
-  return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`
+// ---- this week (Monday first) ----
+const addDays = (key: string, days: number) => {
+  const [year = 1970, month = 1, day = 1] = key.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
 }
-function displayOptions(options) {
-  return { ...options, timeZone: scheduleZone.value }
-}
-function bookingDate(booking) {
-  return new Date(booking.starts_at).toLocaleDateString(undefined, displayOptions({ month: 'short', day: 'numeric' }))
-}
-function bookingTime(booking) {
-  return new Date(booking.starts_at).toLocaleTimeString(undefined, displayOptions({ hour: 'numeric', minute: '2-digit' }))
-}
-function priceLabel(service) {
-  if (!Number(service.price)) return 'Free'
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency', currency: service.currency || 'NGN', maximumFractionDigits: 0,
-    }).format(Number(service.price))
-  } catch {
-    return `${service.currency || 'NGN'} ${Number(service.price).toLocaleString()}`
+const week = computed(() => {
+  const monday = addDays(todayKey.value, -((weekday.value + 6) % 7))
+  const counts = new Map<string, number>()
+  for (const booking of realBookings.value) {
+    if (booking.status === 'cancelled' || !isActiveBooking(booking)) continue
+    const key = localFields(booking.starts_at, zone.value).date
+    counts.set(key, (counts.get(key) || 0) + 1)
   }
-}
-function serviceTone(index) {
-  return ['indigo', 'sage', 'sand'][index % 3]
-}
-function statusLabel(status) {
-  const value = String(status || 'confirmed')
-  return value === 'no_show' ? 'No-show' : `${value.charAt(0).toUpperCase()}${value.slice(1)}`
-}
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const key = addDays(monday, index)
+    const date = new Date(`${key}T12:00:00.000Z`)
+    return {
+      key,
+      label: date.toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' }),
+      day: date.getUTCDate(),
+      count: counts.get(key) || 0,
+      today: key === todayKey.value,
+      past: key < todayKey.value,
+    }
+  })
+  const most = Math.max(1, ...days.map((item) => item.count))
+  return { days, most, total: days.reduce((sum, item) => sum + item.count, 0) }
+})
+
+// ---- share ----
 async function copyLink() {
   if (!publicUrl.value) return
-  copyError.value = ''
   try {
     await copyText(publicUrl.value)
-    copied.value = true
     toast?.success('Booking link copied')
-    window.clearTimeout(copiedTimer)
-    copiedTimer = window.setTimeout(() => { copied.value = false }, 1600)
   } catch {
-    copyError.value = 'Your browser blocked copying. Select the link and copy it manually.'
-    toast?.error('Could not copy the booking link')
+    toast?.error('Your browser blocked copying. Open Settings to copy the link.')
   }
+}
+const whatsappShare = computed(() => whatsappShareUrl(`You can book a time${state.profile?.display_name ? ` with ${state.profile.display_name}` : ''} here: ${publicUrl.value}`))
+
+// ---- first-run tour offer (inline, Live only) ----
+const offerOpen = ref(!isDemo.value && !readTourSeen())
+function takeTour() {
+  offerOpen.value = false
+  void startTour?.()
+}
+function dismissTour() {
+  writeTourSeen()
+  offerOpen.value = false
 }
 </script>
 
 <template>
-  <section class="owner-overview">
-    <header class="overview-header">
-      <div>
-        <h1>Overview</h1>
-        <p>{{ dateLabel }}</p>
+  <section class="today" aria-labelledby="today-title">
+    <header class="today-head">
+      <div class="today-heading">
+        <h1 id="today-title"><span class="visually-hidden">Today, </span>{{ dateHeading }}</h1>
+        <p class="today-summary">{{ summary }}</p>
       </div>
-      <RouterLink class="primary overview-new" :to="{ path: '/bookings', query: { new: '1' } }">
-        <AppIcon name="plus" :size="16" />New booking
-      </RouterLink>
+      <div class="page-header-actions">
+        <details v-if="publicUrl && !linkExpired" class="menu" data-menu>
+          <summary class="secondary"><AppIcon name="link" :size="16" />Share booking link</summary>
+          <div class="menu-panel">
+            <button type="button" @click="copyLink"><AppIcon name="copy" :size="16" />Copy link</button>
+            <a :href="whatsappShare" target="_blank" rel="noopener noreferrer"><AppIcon name="messages" :size="16" />Share in WhatsApp</a>
+            <a :href="publicUrl" target="_blank" rel="noopener noreferrer"><AppIcon name="external" :size="16" />Open booking page</a>
+            <RouterLink :to="{ path: '/settings', hash: '#settings-link' }"><AppIcon name="settings" :size="16" />QR code and website button</RouterLink>
+          </div>
+        </details>
+        <RouterLink class="primary" :to="{ path: '/bookings', query: { new: '1' } }"><AppIcon name="plus" :size="16" />New booking</RouterLink>
+      </div>
     </header>
 
-    <div v-if="!setup.isComplete && !isDemo" class="overview-setup"><div><strong>Finish setting up your booking page</strong><p>{{ setup.completed }} of {{ setup.total }} steps complete. {{ setup.nextStep.description }}</p></div><RouterLink class="secondary button-link" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink></div>
-    <p v-if="isDemo" class="muted demo-note">Sample owner data is read-only.</p>
-
-    <section class="metrics" data-tour="tour-overview-checklist" aria-label="Booking summary">
-      <RouterLink to="/bookings" class="metric"><span>Upcoming</span><strong>{{ upcomingBookings.length }}</strong></RouterLink>
-      <RouterLink to="/bookings" class="metric"><span>Next 7 days</span><strong>{{ nextSevenDays }}</strong></RouterLink>
-      <RouterLink to="/services" class="metric"><span>Active services</span><strong>{{ activeServiceList.length }}</strong></RouterLink>
-      <RouterLink to="/availability" class="metric"><span>Weekly hours</span><strong>{{ weeklyHours }}</strong></RouterLink>
-    </section>
-
-    <div class="overview-dashboard">
-      <section class="overview-section bookings-section">
-        <div class="section-head">
-          <h2>Upcoming bookings</h2>
-          <RouterLink to="/bookings">View calendar</RouterLink>
-        </div>
-        <div v-if="upcomingBookings.length" class="table-wrap">
-          <table class="booking-table">
-            <thead><tr><th>Client</th><th>Date &amp; time</th><th>Service</th><th>Status</th></tr></thead>
-            <tbody>
-              <tr v-for="(booking, index) in upcomingBookings.slice(0, 4)" :key="booking.id">
-                <td><RouterLink :to="{ path: '/bookings', query: { q: booking.reference || booking.guest_name } }">{{ booking.guest_name }}</RouterLink></td>
-                <td class="date">{{ bookingDate(booking) }} · {{ bookingTime(booking) }}</td>
-                <td><span class="service"><i :class="serviceTone(index)" />{{ displayName(booking.service_name) }}</span></td>
-                <td><span class="status-badge" :class="booking.status"><i />{{ statusLabel(booking.status) }}</span></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-else class="overview-empty">
-          <strong>No upcoming bookings</strong>
-          <span>Your next confirmed appointment will appear here.</span>
-          <RouterLink to="/bookings">Open bookings</RouterLink>
-        </div>
-      </section>
-
-      <section class="overview-section availability-section">
-        <div class="section-head">
-          <h2>Availability</h2>
-          <RouterLink class="compact-action" to="/availability">Edit availability</RouterLink>
-        </div>
-        <div class="availability-list">
-          <div v-for="day in availabilityRows" :key="day.label" class="availability-row" :class="{ closed: !day.windows.length }">
-            <span>{{ day.label }}</span><span>{{ day.windows.length ? day.windows.join(', ') : 'Closed' }}</span>
-          </div>
-        </div>
-        <p class="timezone">{{ scheduleZone }}</p>
-      </section>
+    <div v-if="!setup.isComplete && !isDemo" class="setup-row" role="region" aria-label="Finish setting up">
+      <span class="setup-progress tnum" aria-hidden="true"><i v-for="step in setup.steps" :key="step.key" :class="{ done: step.done }" /></span>
+      <div>
+        <strong>Step {{ setup.completed + 1 }} of {{ setup.total }}: {{ setup.nextStep.label }}</strong>
+        <p>{{ setup.nextStep.description }}</p>
+      </div>
+      <RouterLink class="secondary small" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
     </div>
 
-    <div class="overview-lower">
-      <section class="overview-section services-section">
-        <div class="section-head">
-          <h2>Services at a glance</h2>
-          <RouterLink to="/services">Manage services</RouterLink>
-        </div>
-        <div v-if="activeServiceList.length">
-          <div v-for="service in activeServiceList.slice(0, 4)" :key="service.id" class="service-row">
-            <strong>{{ displayName(service.name) }}</strong>
-            <span>{{ service.duration_minutes }} min</span>
-            <span>{{ priceLabel(service) }}</span>
-            <span class="active">Active</span>
+    <div v-if="offerOpen" class="offer-row" role="region" aria-label="Product walkthrough">
+      <p><strong>New here?</strong> A short walkthrough points out where everything is. It does not change anything.</p>
+      <div class="cluster">
+        <button class="secondary small" type="button" @click="takeTour">Take the walkthrough</button>
+        <button class="ghost small" type="button" @click="dismissTour">Not now</button>
+      </div>
+    </div>
+    <p v-if="isDemo" class="demo-note">Sample business. You can look around; nothing here is saved.</p>
+
+    <div class="today-layout">
+      <!-- Next up comes first in the source so phones read it before the rail; on wide screens it sits at the top of the side column. -->
+      <section class="panel next-panel" aria-labelledby="next-title">
+        <div class="panel-head"><h2 id="next-title">{{ nextInProgress ? 'Now' : 'Next up' }}</h2></div>
+        <div v-if="nextUp" class="panel-body next-body">
+          <p class="next-when tnum">{{ nextWhen }}</p>
+          <p class="next-who">{{ nextUp.guest_name }}</p>
+          <p class="next-what">{{ displayName(nextUp.service_name) }}<template v-if="nextMember"> with {{ memberFirstName(nextMember) }}</template></p>
+          <div class="next-actions">
+            <a v-if="nextMessage" class="primary small" :href="nextMessage.whatsapp" target="_blank" rel="noopener noreferrer"><AppIcon name="messages" :size="16" />Open WhatsApp</a>
+            <RouterLink class="secondary small" :to="openLink(nextUp)">Open booking</RouterLink>
           </div>
+          <p v-if="nextMessage" class="fine">Opens in your WhatsApp with a reminder ready. You press send.</p>
         </div>
-        <div v-else class="overview-empty compact-empty">
-          <strong>No active services</strong><RouterLink to="/services">Add a service</RouterLink>
+        <div v-else class="panel-body next-body">
+          <p class="next-what">No upcoming appointments.</p>
+          <p class="fine">New bookings from your link appear here as soon as a guest books.</p>
         </div>
       </section>
 
-      <aside class="overview-section link-card" id="booking-link">
-        <h2>Booking link</h2>
-        <p>{{ isDemo ? 'Sample preview URL' : linkExpired ? 'This link has expired' : publicUrl ? 'Ready to share' : 'Create your public page' }}</p>
-        <input v-if="publicUrl" class="url" type="text" readonly :value="publicUrl" aria-label="Booking link" @focus="$event.target.select()" />
-        <div v-if="publicUrl" class="link-actions">
-          <GmButton variant="secondary" size="sm" @click="copyLink"><template #leading><AppIcon name="copy" :size="15" /></template>{{ copied ? 'Copied' : 'Copy link' }}</GmButton>
-          <a v-if="!linkExpired" class="secondary compact-action" :href="publicUrl" target="_blank" rel="noreferrer"><AppIcon name="external" :size="15" />View page</a>
-          <RouterLink v-else class="secondary compact-action" to="/settings">Create new link</RouterLink>
+      <section class="panel rail-panel" aria-labelledby="rail-title" data-tour="tour-overview-checklist">
+        <div class="panel-head">
+          <h2 id="rail-title">Schedule</h2>
+          <RouterLink to="/bookings">Open the week</RouterLink>
         </div>
-        <RouterLink v-else :to="isDemo ? '/demo/guest' : '/settings'" class="secondary compact-action">{{ isDemo ? 'Open guest preview' : 'Create booking link' }}</RouterLink>
-        <p v-if="copyError" class="notice error" role="alert">{{ copyError }}</p>
-        <div class="readiness"><strong>Client messages</strong><br />Prepare a message after booking. You choose when to send it.</div>
+        <p v-if="!todays.length" class="rail-empty">
+          <template v-if="!openToday.length">You are not open today. <RouterLink to="/availability">Set your hours</RouterLink></template>
+          <template v-else-if="publicUrl && !linkExpired">Nothing booked today yet. Share your link, or add a walk-in with New booking.</template>
+          <template v-else>Nothing booked today. Add a walk-in or phone booking with New booking.</template>
+        </p>
+        <div class="rail-scroll">
+          <div class="rail" :style="{ '--lanes': lanes.length, '--rail-height': `${railHeight}px` }">
+            <div v-if="team" class="rail-corner" aria-hidden="true" />
+            <div v-for="lane in team ? lanes : []" :key="`head-${lane.id}`" class="lane-head">
+              <i :style="{ background: lane.color }" aria-hidden="true" /><span class="truncate">{{ lane.label }}</span>
+              <small>{{ lane.items.length ? `${lane.items.length} booked` : lane.open.length ? 'Free' : 'Off' }}</small>
+            </div>
+            <div class="rail-axis" aria-hidden="true">
+              <span v-for="hour in hours" :key="hour" :style="{ top: `${y(hour * 60)}px` }">{{ hourLabel(hour) }}</span>
+            </div>
+            <div v-for="lane in lanes" :key="lane.id" class="lane" :aria-label="team ? `${lane.label}'s day` : 'Your day'" role="group">
+              <i v-for="hour in hours.slice(1)" :key="hour" class="hour-line" :style="{ top: `${y(hour * 60)}px` }" aria-hidden="true" />
+              <i v-for="window in lane.open" :key="`open-${window.start}`" class="open-block" :style="blockStyle(window)" aria-hidden="true" />
+              <RouterLink
+                v-for="window in lane.off"
+                :key="`off-${window.start}-${window.end}`"
+                class="off-block"
+                :style="blockStyle(window)"
+                to="/availability"
+                :aria-label="`Time off, ${fmtMinute(window.start)} to ${fmtMinute(Math.min(window.end, 1439))}`"
+              ><span>Time off</span></RouterLink>
+              <RouterLink
+                v-for="entry in placed(lane)"
+                :key="entry.item.booking.id"
+                class="slot rail-slot"
+                :class="slotClass(entry)"
+                :style="{
+                  top: `${y(entry.start)}px`,
+                  height: `${Math.max(28, y(entry.end) - y(entry.start) - 2)}px`,
+                  left: `calc(${(entry.column / entry.columns) * 100}% + 4px)`,
+                  width: `calc(${100 / entry.columns}% - 8px)`,
+                  '--slot-stem': team ? lane.color : undefined,
+                  '--slot-fill': team ? `color-mix(in srgb, ${lane.color} 10%, var(--surface))` : undefined,
+                }"
+                :to="openLink(entry.item.booking)"
+                :aria-label="slotLabel(entry.item, lane)"
+              >
+                <span class="tnum slot-time">{{ fmtTime(entry.item.booking.starts_at) }}</span>
+                <strong class="truncate">{{ entry.item.booking.guest_name }}</strong>
+                <small class="truncate">{{ displayName(entry.item.booking.service_name) }}</small>
+              </RouterLink>
+            </div>
+            <div v-if="nowVisible" class="now-line" :style="{ top: `${y(nowMinute)}px` }" aria-hidden="true"><span class="tnum">{{ fmtMinute(nowMinute) }}</span></div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="today-side" aria-label="Today at the desk">
+        <section class="panel" aria-labelledby="needs-title">
+          <div class="panel-head"><h2 id="needs-title">Needs you</h2></div>
+          <ul v-if="needs.length" class="needs">
+            <li v-for="item in needs" :key="item.key">
+              <RouterLink :to="item.to" class="need" :class="{ due: item.due }">
+                <span><strong>{{ item.text }}</strong><small>{{ item.detail }}</small></span>
+                <AppIcon name="chevron" :size="16" />
+              </RouterLink>
+            </li>
+          </ul>
+          <p v-else class="panel-body caught-up"><AppIcon name="check" :size="16" />All caught up.</p>
+        </section>
+
+        <section class="panel" aria-labelledby="week-title">
+          <div class="panel-head"><h2 id="week-title">This week</h2><RouterLink to="/bookings">{{ week.total }} booked</RouterLink></div>
+          <ol class="week-strip">
+            <li v-for="day in week.days" :key="day.key" :class="{ today: day.today, past: day.past }">
+              <span class="week-bar" aria-hidden="true"><i :style="{ height: `${day.count ? Math.max(12, (day.count / week.most) * 100) : 0}%` }" /></span>
+              <span class="week-day"><span>{{ day.label }}</span><b class="tnum">{{ day.day }}</b></span>
+              <span class="visually-hidden">{{ day.today ? 'Today, ' : '' }}{{ day.count }} {{ day.count === 1 ? 'booking' : 'bookings' }}</span>
+            </li>
+          </ol>
+        </section>
       </aside>
     </div>
   </section>
 </template>
 
 <style scoped>
-.owner-overview { display: grid; gap: 16px; color: #20242d; font-size: 13px; }
-.overview-header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #e5e7eb; }
-.overview-header h1 { margin: 0; font-size: 24px; line-height: 1.2; letter-spacing: -.025em; }
-.overview-header p { margin: 4px 0 0; color: #707580; font-size: 13px; }
-.overview-new { min-height: 40px; padding: 0 14px; display: inline-flex; align-items: center; gap: 7px; border-radius: 7px; text-decoration: none; }
-.demo-note { margin: 0; }
-.metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
-.metric { min-height: 76px; padding: 14px 16px; display: block; color: inherit; border-right: 1px solid #e5e7eb; text-decoration: none; }
-.metric:last-child { border-right: 0; }
-.metric span { display: block; color: #707580; font-size: 12px; }
-.metric strong { display: block; margin-top: 4px; font-size: 22px; letter-spacing: -.03em; }
-.overview-dashboard, .overview-lower { display: grid; grid-template-columns: minmax(0, 2fr) 320px; gap: 16px; }
-.overview-section { min-width: 0; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
-.section-head { min-height: 54px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e5e7eb; }
-.section-head h2, .link-card h2 { margin: 0; font-size: 16px; letter-spacing: -.015em; }
-.section-head a { display: inline-flex; align-items: center; color: #2336dc; font-size: 12px; font-weight: 650; text-decoration: none; }
-.table-wrap { overflow-x: auto; }
-.booking-table { width: 100%; min-width: 660px; border-collapse: collapse; table-layout: fixed; }
-.booking-table th { height: 34px; padding: 0 16px; color: #969ba5; text-align: left; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.booking-table td { height: 56px; padding: 0 16px; border-top: 1px solid #e5e7eb; }
-.booking-table th:nth-child(1) { width: 30%; }.booking-table th:nth-child(2) { width: 27%; }.booking-table th:nth-child(3) { width: 25%; }.booking-table th:nth-child(4) { width: 18%; }
-.booking-table td > a { color: #20242d; font-weight: 680; text-decoration: none; }
-.booking-table .date { color: #707580; font-variant-numeric: tabular-nums; }
-.service { display: flex; align-items: center; gap: 8px; color: #4d5460; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.service i { width: 8px; height: 8px; flex: none; border-radius: 2px; background: #6574e8; }.service i.sage { background: #59926f; }.service i.sand { background: #b77a46; }
-.status-badge { padding: 4px 8px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; color: #247552; background: #eaf6ef; font-size: 11px; font-weight: 700; }
-.status-badge i { width: 6px; height: 6px; border-radius: 50%; background: #38a169; }.status-badge.cancelled, .status-badge.no_show { color: #707580; background: #f1f2f4; }.status-badge.cancelled i, .status-badge.no_show i { background: #969ba5; }
-.availability-list { padding: 7px 16px 0; }
-.availability-row { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #f0f1f3; color: #4e5560; }
-.availability-row:last-child { border-bottom: 0; }.availability-row span:last-child { color: #707580; text-align: right; font-variant-numeric: tabular-nums; }.availability-row.closed span:last-child { color: #969ba5; }
-.timezone { margin: 8px 16px 13px; color: #969ba5; font-size: 11px; }
-.services-section { padding-bottom: 2px; }
-.service-row { min-height: 44px; padding: 0 16px; display: grid; grid-template-columns: minmax(0, 1.45fr) .75fr .85fr .55fr; align-items: center; gap: 10px; border-top: 1px solid #e5e7eb; font-size: 12px; }
-.service-row > span { color: #707580; }.service-row strong { overflow: hidden; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }.service-row .active { color: #247552; font-weight: 650; }
-.link-card { padding: 15px 16px; }.link-card > p { margin: 4px 0 12px; color: #707580; font-size: 12px; }
-.url { width: 100%; height: 38px; padding: 0 10px; overflow: hidden; border: 1px solid #e5e7eb; border-radius: 7px; color: #3e4652; background: #f5f6f8; font-family: var(--font-mono); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.link-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.compact-action { min-height: 38px; padding: 0 11px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid #d5d8de; border-radius: 7px; color: #353a45; background: #fff; font-weight: 650; text-decoration: none; }
-.readiness { margin-top: 10px; padding: 10px 12px; border-left: 3px solid #c7cdd8; border-radius: 0 7px 7px 0; background: #f8f9fb; color: #5e6470; font-size: 12px; line-height: 1.45; }.readiness strong { color: #414854; }
-.overview-empty { min-height: 230px; padding: 28px; display: grid; place-content: center; justify-items: center; gap: 7px; color: #707580; text-align: center; }.overview-empty strong { color: #20242d; font-size: 14px; }.overview-empty a { color: #2336dc; font-weight: 650; }.compact-empty { min-height: 130px; }
-@media (max-width: 1080px) { .overview-dashboard, .overview-lower { grid-template-columns: 1fr; }.availability-section, .link-card { width: 100%; }.metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }.metric:nth-child(2) { border-right: 0; }.metric:nth-child(-n+2) { border-bottom: 1px solid #e5e7eb; } }
-@media (max-width: 700px) { .overview-header { align-items: flex-start; flex-direction: column; padding-bottom: 16px; }.overview-new { width: 100%; justify-content: center; }.metrics { grid-template-columns: 1fr 1fr; }.metric { min-height: 68px; padding: 12px; }.metric strong { font-size: 20px; }.service-row { grid-template-columns: minmax(0, 1.2fr) .65fr .8fr; }.service-row .active { display: none; } }
-.overview-setup{margin:0 0 16px;padding:16px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border:1px solid var(--line);border-radius:8px;background:white}.overview-setup strong{font-size:14px}.overview-setup p{margin:4px 0 0;color:var(--muted);font-size:13px}
+.today { display: grid; gap: var(--space-4); }
+.today-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--space-3) var(--space-5); }
+.today-heading { min-width: 0; }
+.today-heading h1 { margin: 0; font-size: var(--text-display); line-height: 1.1; letter-spacing: -0.025em; }
+.today-summary { margin: var(--space-2) 0 0; color: var(--ink-soft); font-size: var(--text-md); }
+.today-head .menu > summary { display: inline-flex; }
+
+.setup-row, .offer-row {
+  padding: var(--space-3) var(--space-4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3) var(--space-4);
+  border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 2px var(--radius) var(--radius) 2px; background: var(--surface);
+}
+.setup-row > div { min-width: 0; flex: 1 1 260px; }
+.setup-row strong { font-size: var(--text-sm); }
+.setup-row p { margin: 2px 0 0; color: var(--muted); font-size: var(--text-sm); }
+.setup-progress { display: inline-flex; gap: 4px; }
+.setup-progress i { width: 18px; height: 6px; border-radius: 2px; background: var(--surface-sunken); }
+.setup-progress i.done { background: var(--accent); }
+.offer-row { border-left-color: var(--now); justify-content: space-between; }
+.offer-row p { margin: 0; font-size: var(--text-sm); }
+.demo-note { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+
+/* Wide: the rail spans the left column; Next up then the other panels stack on the right. */
+.today-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; grid-template-rows: auto 1fr; gap: var(--space-4); align-items: start; }
+.rail-panel { grid-column: 1; grid-row: 1 / 3; }
+.next-panel { grid-column: 2; grid-row: 1; }
+.today-side { grid-column: 2; grid-row: 2; display: grid; gap: var(--space-4); }
+
+/* Rail */
+.rail-panel { min-width: 0; overflow: hidden; }
+.rail-scroll { overflow-x: auto; }
+.rail {
+  --axis-w: 64px;
+  position: relative; display: grid; grid-template-columns: var(--axis-w) repeat(var(--lanes), minmax(150px, 1fr));
+  grid-template-rows: auto var(--rail-height); min-width: calc(var(--axis-w) + var(--space-2) + var(--lanes) * 150px); padding: var(--space-2) var(--space-3) var(--space-4) var(--space-2);
+}
+.rail-corner { grid-row: 1; grid-column: 1; }
+.lane-head { grid-row: 1; padding: 0 var(--space-2) var(--space-2); display: flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); font-weight: var(--weight-strong); min-width: 0; }
+.lane-head i { width: 10px; height: 10px; flex: none; border-radius: 2px; }
+.lane-head small { margin-left: auto; color: var(--muted); font-size: var(--text-xs); font-weight: var(--weight-regular); white-space: nowrap; }
+/* The hour labels stay in view while the lanes scroll sideways. */
+.rail-axis { position: sticky; left: 0; z-index: 4; grid-row: 2; grid-column: 1; background: var(--surface); }
+.rail-axis span { position: absolute; right: 8px; color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; transform: translateY(-50%); white-space: nowrap; }
+.lane { position: relative; grid-row: 2; min-width: 0; border-left: 1px solid var(--line); }
+.hour-line { position: absolute; left: 0; right: 0; height: 1px; background: var(--surface-sunken); }
+.open-block { position: absolute; left: 0; right: 0; background: var(--accent-faint); }
+.off-block {
+  position: absolute; left: 4px; right: 4px; z-index: 1; min-height: 24px; padding: 4px 8px; overflow: hidden; color: var(--ink-soft);
+  border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); font-size: var(--text-xs); font-weight: var(--weight-strong); text-decoration: none;
+  background: repeating-linear-gradient(135deg, var(--surface-sunken) 0 6px, var(--surface) 6px 12px);
+}
+.rail-slot { position: absolute; z-index: 2; padding-block: 4px; display: grid; grid-auto-rows: max-content; align-content: start; gap: 1px; overflow: hidden; text-decoration: none; font-size: var(--text-xs); line-height: 1.3; }
+.rail-slot:hover { box-shadow: var(--shadow-1); }
+.rail-slot > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-slot strong { font-size: var(--text-sm); }
+.rail-slot small { color: var(--ink-soft); }
+/* Text follows the drawn length: under 45 minutes time and name on one line; under 75 minutes the service goes below them. */
+.rail-slot:is(.is-short, .is-medium) { grid-template-columns: auto minmax(0, 1fr); align-items: baseline; column-gap: 6px; }
+.rail-slot.is-short { padding-block: 2px; }
+.rail-slot.is-short small { display: none; }
+.rail-slot.is-medium small { grid-column: 1 / -1; }
+.slot-time { color: var(--ink-soft); font-weight: var(--weight-strong); }
+.now-line { position: absolute; left: calc(var(--axis-w) + var(--space-2)); right: var(--space-3); z-index: 3; height: 0; border-top: 2px solid var(--now); pointer-events: none; }
+.now-line::before { content: ''; position: absolute; left: -5px; top: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--now); }
+.now-line span { position: absolute; right: 0; top: -22px; padding: 1px 6px; color: var(--ink); border-radius: var(--radius-xs); background: var(--now); font-size: var(--text-xs); font-weight: var(--weight-strong); }
+.rail-empty { margin: 0; padding: var(--space-3) var(--space-4); color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: var(--text-sm); }
+.rail-empty a { color: var(--accent); font-weight: var(--weight-strong); }
+
+/* Side panels */
+.next-body { display: grid; gap: 4px; }
+.next-when { margin: 0; color: var(--ink); font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.next-who { margin: 0; font-size: var(--text-lg); font-weight: var(--weight-strong); line-height: 1.25; overflow-wrap: anywhere; }
+.next-what { margin: 0; color: var(--ink-soft); font-size: var(--text-sm); }
+.next-actions { margin-top: var(--space-3); display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.fine { margin: var(--space-2) 0 0; color: var(--muted); font-size: var(--text-xs); }
+.needs { margin: 0; padding: 0; list-style: none; }
+.needs li + li { border-top: 1px solid var(--line); }
+.need { min-height: 64px; padding: var(--space-3) var(--space-4); display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); color: inherit; text-decoration: none; }
+.need:hover { background: var(--accent-faint); }
+.need > span { min-width: 0; display: grid; gap: 2px; }
+.need strong { font-size: var(--text-sm); }
+.need small { color: var(--muted); font-size: var(--text-xs); }
+.need > svg { flex: none; color: var(--muted); }
+.need.due strong::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--now); box-shadow: 0 0 0 3px var(--now-soft); vertical-align: 1px; }
+.caught-up { margin: 0; display: flex; align-items: center; gap: var(--space-2); color: var(--success); font-size: var(--text-sm); font-weight: var(--weight-strong); }
+.week-strip { margin: 0; padding: var(--space-3) var(--space-4) var(--space-4); display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; list-style: none; }
+.week-strip li { display: grid; justify-items: center; gap: 6px; }
+.week-bar { position: relative; width: 100%; height: 48px; display: block; border-radius: 2px; background: var(--surface-sunken); overflow: hidden; }
+.week-bar i { position: absolute; left: 0; right: 0; bottom: 0; border-top: 3px solid var(--accent); background: var(--accent-soft); }
+.week-day { display: grid; justify-items: center; color: var(--muted); font-size: var(--text-xs); line-height: 1.2; }
+.week-day b { color: var(--ink); font-size: var(--text-sm); }
+.week-strip li.today .week-day b { padding: 0 6px; border-radius: var(--radius-xs); background: var(--now); }
+.week-strip li.past { opacity: 0.6; }
+
+/* One column: source order, so Next up comes before the rail. */
+@media (max-width: 1100px) {
+  .today-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .rail-panel, .next-panel, .today-side { grid-column: auto; grid-row: auto; }
+  .today-side { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); align-items: start; }
+}
+@media (max-width: 700px) {
+  .today-heading h1 { font-size: var(--text-xl); }
+  .today-summary { font-size: var(--text-sm); }
+  .today-head .page-header-actions { width: 100%; }
+  .today-head .page-header-actions > * { flex: 1 1 auto; }
+  .today-head .menu > summary { width: 100%; justify-content: center; }
+  .today-side { grid-template-columns: 1fr; }
+  .rail { --axis-w: 52px; grid-template-columns: var(--axis-w) repeat(var(--lanes), minmax(140px, 1fr)); min-width: calc(var(--axis-w) + var(--space-2) + var(--lanes) * 140px); }
+}
 </style>
