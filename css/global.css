@@ -359,13 +359,19 @@ a.card:hover, .card.interactive:hover { border-color: var(--line-strong); }
 .notice.warning { color: var(--warning); border-color: var(--warning-line); border-left-color: var(--warning); background: var(--warning-soft); }
 .notice.info { border-color: var(--accent-line); border-left-color: var(--accent); background: var(--accent-faint); }
 .notice.info > svg { color: var(--accent); }
+/* Empty states are slot notices, like the Today setup row: the stem, what is empty and why, one next action. */
 .empty {
-  padding: var(--space-7) var(--space-5); display: grid; justify-items: center; gap: var(--space-2); border: 1px solid var(--line);
-  border-radius: var(--card-radius); background: var(--surface); text-align: center;
+  padding: var(--space-4) var(--space-5); display: grid; justify-items: start; gap: var(--space-1); border: 1px solid var(--line);
+  border-left: 4px solid var(--slot-stem); border-radius: 2px var(--radius) var(--radius) 2px; background: var(--surface); text-align: left;
 }
-.empty.compact { padding: var(--space-5); }
-.empty h2, .empty h3 { margin: 0; font-size: var(--text-lg); }
-.empty p { max-width: 52ch; margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.empty.compact { padding: var(--space-3) var(--space-4); }
+.empty h2, .empty h3, .empty h4 { margin: 0; font-size: var(--text-md); }
+.empty p { max-width: 64ch; margin: 0; color: var(--muted); font-size: var(--text-sm); }
+.empty .empty-actions { justify-content: flex-start; }
+.empty > :is(.primary, .secondary, .ghost) { margin-top: var(--space-2); }
+/* A disabled action's reason prints on its own line under the buttons (GmButton reason-visible). */
+.empty-actions .gm-button__reason { flex-basis: 100%; margin-top: 0; }
+.page-header-actions .gm-button__reason { flex-basis: 100%; margin-top: 0; text-align: right; }
 .empty-icon { width: 44px; height: 44px; display: grid; place-items: center; color: var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
 .empty-actions { margin-top: var(--space-2); display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); }
 .state-card { max-width: 560px; margin: var(--space-8) auto; display: grid; justify-items: center; gap: var(--space-3); text-align: center; }
@@ -583,11 +589,12 @@ body:has(.gm-dialog-overlay) .toast-region { inset: auto 0 calc(12px + env(safe-
 .share-row > :is(button, a):not(:first-child):hover { color: var(--accent); background: var(--accent-faint); }
 .sidebar-links { display: grid; gap: 2px; }
 .sidebar-link {
-  width: 100%; min-height: 40px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-3); color: var(--ink-soft); border: 0;
+  position: relative; width: 100%; min-height: 40px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-3); color: var(--ink-soft); border: 0;
   border-radius: var(--radius-sm); background: transparent; font: inherit; font-size: var(--text-sm); font-weight: var(--weight-medium); text-align: left; text-decoration: none;
 }
 .sidebar-link:hover { color: var(--ink); background: var(--surface-sunken); }
-.sidebar-link.is-current { color: var(--accent); background: var(--accent-soft); }
+.sidebar-link.is-current { color: var(--accent); background: var(--accent-soft); font-weight: var(--weight-strong); }
+.sidebar-link.is-current::before { content: ''; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent); }
 .runtime-label { min-height: 28px; padding: 0 var(--space-2); display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: var(--text-xs); }
 .runtime-label.is-error { color: var(--danger); font-weight: var(--weight-strong); }
 .runtime-text { min-width: 0; flex: 1; line-height: 1.3; }
@@ -872,11 +879,17 @@ body.bookins-tour-open [data-feedback-widget] { display: none !important; }
   :is(#main-content, .gm-dialog-content) :is(p, small, .field-hint) > :is(a, button).link-button::after { content: ''; position: absolute; inset: -12px -8px; }
 }
 
-/* Short desktop screens: tighter navigation so the footer stays reachable. */
+/* Short desktop screens (1280x720): tighter spacing, never smaller text, so all nine page links, credits and the
+   workspace stay in view. App.vue moves "Back to Apps" into the workspace menu at the same breakpoint. */
 @media (min-width: 901px) and (max-height: 820px) {
-  .sidebar { padding-top: var(--space-2); }
-  .ws-switcher { margin: var(--space-2) 0 var(--space-1); }
+  .sidebar { padding-top: var(--space-1); }
+  .sidebar-brand, .sidebar-identity { min-height: 40px; }
+  .ws-switcher { margin: var(--space-1) 0; }
+  .sidebar-navigation { padding-top: var(--space-1); padding-bottom: var(--space-1); }
   .side-nav a, .sidebar-link { min-height: 36px; }
-  .nav-section-label { margin-top: var(--space-3); }
-  .sidebar-footer { padding-top: var(--space-2); padding-bottom: var(--space-2); gap: 6px; }
+  .nav-section-label { margin: var(--space-2) var(--space-3) 2px; line-height: 1.25; }
+  .sidebar-footer { padding-top: 6px; padding-bottom: 6px; gap: var(--space-1); }
+  .sidebar-footer .share-row { min-height: 36px; }
+  .sidebar-footer .share-row > :is(a, button) { min-height: 34px; }
+  .runtime-label { min-height: 24px; }
 }

@@ -30,6 +30,7 @@ import {
 } from '../booking.ts'
 import { STAFF_COPY_MAX, STAFF_COPY_WARN, parseServiceIds } from '../team.ts'
 import { STAFF_COLORS, colorName, displayName, memberColor, memberFirstName, memberInitial, nextFreeColor, ownerSaveName, scheduleOf } from '../team-ui.ts'
+import { ownerDraftTimeZone } from '../time-display.ts'
 import {
   DAY_NAMES,
   applyScheduleToDays,
@@ -237,7 +238,7 @@ const pickEstimate = computed(() => {
 function scheduleSettings(existing: ScheduleRecord | null | undefined) {
   const source = existing || ownerSchedule.value
   return {
-    timezone: source?.timezone || state.profile?.timezone || 'Africa/Lagos',
+    timezone: source?.timezone || ownerDraftTimeZone(state.profile?.timezone),
     slotIntervalMinutes: hoursReady.value && Number(form.intervalMinutes) ? Number(form.intervalMinutes) : Number(source?.slot_interval_minutes) || 60,
     minimumNoticeMinutes: Number(source?.minimum_notice_minutes) || 60,
     bookingHorizonDays: Number(source?.booking_horizon_days) || 60,
@@ -376,7 +377,7 @@ function hideBrokenImage(event: Event) {
         <h1>Team</h1>
         <p class="lede">{{ team ? 'Everyone clients can book. Each person has their own calendar, so two people can be booked at the same time.' : 'Add the people who take appointments with you.' }}</p>
       </div>
-      <GmButton variant="primary" data-tour="tour-team-add" :disabled-reason="demoHint" @click="openAdd"><template #leading><AppIcon name="plus" :size="18" /></template>Add team member</GmButton>
+      <GmButton :variant="team ? 'primary' : 'secondary'" data-tour="tour-team-add" :disabled-reason="demoHint" @click="openAdd"><template #leading><AppIcon name="plus" :size="18" /></template>Add team member</GmButton>
     </header>
 
     <div v-if="isDemo" class="notice info" role="status"><AppIcon name="info" :size="18" /><span>A sample team. Switch to Live to manage your own.</span></div>
@@ -443,7 +444,6 @@ function hideBrokenImage(event: Event) {
       </p>
 
       <div v-if="!team" class="empty team-empty">
-        <span class="empty-icon"><AppIcon name="team" /></span>
         <h2>Working with other people?</h2>
         <p>Add someone to give them their own working hours, time off and bookings. Clients can then book either of you at the same time.</p>
         <div class="empty-actions">

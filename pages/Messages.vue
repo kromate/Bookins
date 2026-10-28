@@ -14,6 +14,7 @@ import { displayName, memberName } from '../team-ui.ts'
 import { isDemo } from '../runtime.ts'
 import { useSetupState } from '../setup.ts'
 import { errorMessage } from '../error-message.ts'
+import { ownerDefaultTimeZone } from '../time-display.ts'
 
 type QueueTab = 'due' | 'upcoming' | 'done'
 type DetailChannel = MessageChannel | 'gmail'
@@ -44,7 +45,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisible)
 })
 
-const scheduleZone = computed(() => state.schedules[0]?.timezone || state.profile?.timezone || 'UTC')
+const scheduleZone = computed(() => state.schedules[0]?.timezone || state.profile?.timezone || ownerDefaultTimeZone())
 const queue = computed(() => messageQueue(state, { now: now.value, timezone: scheduleZone.value }))
 const team = computed(() => hasTeam(state))
 
@@ -353,7 +354,7 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
       </div>
       <div class="page-header-actions">
         <RouterLink class="secondary" :to="{ path: '/settings', hash: '#settings-templates' }"><AppIcon name="edit" :size="16" />Edit wording</RouterLink>
-        <GmButton v-if="tab === 'due' && !batch" variant="primary" :disabled-reason="batchReason" @click="startBatch">
+        <GmButton v-if="tab === 'due' && !batch && filtered.due.length" variant="primary" :disabled-reason="batchReason" reason-visible @click="startBatch">
           <template #leading><AppIcon name="messages" :size="16" /></template>Open due messages one by one
         </GmButton>
       </div>
@@ -447,29 +448,25 @@ const batchNotOpenedCount = computed(() => Math.max(0, batchTotal.value - batchO
         <button class="secondary small" type="button" @click="clearFilters">Clear filters</button>
       </div>
       <div v-else-if="!hasAnyBooking" class="empty compact">
-        <span class="empty-icon"><AppIcon name="messages" :size="20" /></span>
         <h2>Messages appear once you have bookings</h2>
-        <p>Reminders show up here the day before and two hours before each visit, and thank-yous after a visit is marked as came.</p>
+        <p>Reminders show up here the day before and two hours before each visit, and thank-yous after a visit is marked as Came.</p>
         <div class="empty-actions">
           <RouterLink v-if="!isDemo && !setup.isComplete" class="primary small" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
           <RouterLink class="secondary small" to="/bookings">Open bookings</RouterLink>
         </div>
       </div>
       <div v-else-if="tab === 'due'" class="empty compact">
-        <span class="empty-icon"><AppIcon name="check" :size="20" /></span>
         <h2>Nothing to open right now</h2>
-        <p>Reminders appear the day before and two hours before a visit; thank-yous after a visit is marked as came.</p>
+        <p>Reminders appear the day before and two hours before a visit; thank-yous after a visit is marked as Came.</p>
         <div class="empty-actions">
           <button v-if="visibleQueue.upcoming.length" class="secondary small" type="button" @click="tab = 'upcoming'">See what is coming up ({{ visibleQueue.upcoming.length }})</button>
         </div>
       </div>
       <div v-else-if="tab === 'upcoming'" class="empty compact">
-        <span class="empty-icon"><AppIcon name="clock" :size="20" /></span>
         <h2>Nothing coming up</h2>
         <p>Messages for the next few days wait here until they are due.</p>
       </div>
       <div v-else class="empty compact">
-        <span class="empty-icon"><AppIcon name="messages" :size="20" /></span>
         <h2>Nothing opened yet</h2>
         <p>Messages you open, or mark as opened, are listed here so you can see what you already handled.</p>
         <div class="empty-actions">

@@ -14,7 +14,7 @@ import { contactTags, hasRealEmail, isTimeOff, recordOffer, saveContact, setMark
 import { contactOffers, isOptedOut } from '../records.ts'
 import { composeMessage, gmailComposeUrl } from '../messaging.ts'
 import { isDemo } from '../runtime.ts'
-import { displayTimeZone } from '../time-display.ts'
+import { ownerTimeZone } from '../time-display.ts'
 import { errorMessage } from '../error-message.ts'
 
 interface ContactView {
@@ -47,7 +47,7 @@ const query = ref('')
 const tagFilter = ref('')
 const optFilter = ref(false)
 const now = Date.now()
-const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
+const zone = computed(() => ownerTimeZone(state.schedules?.[0]?.timezone || state.profile?.timezone))
 const records = computed(() => state.contacts || [])
 const gmailFor = (mailto: string) => gmailComposeUrl(mailto)
 
@@ -398,7 +398,7 @@ function exportCsv() {
         <p class="lede">Everyone who has booked with you, with their visits, private notes and tags.</p>
       </div>
       <details class="menu" data-menu>
-        <summary class="secondary">More <AppIcon name="chevron" :size="15" /></summary>
+        <summary class="secondary">More<AppIcon class="chevron-down" name="chevron" :size="14" /></summary>
         <div class="menu-panel">
           <button type="button" :disabled="!contacts.length" @click="exportCsv"><AppIcon name="download" :size="16" />Export {{ contacts.length === allContacts.length ? 'all' : 'these' }} as CSV</button>
         </div>
@@ -439,18 +439,17 @@ function exportCsv() {
     </template>
 
     <div v-else class="empty">
-      <span class="empty-icon"><AppIcon name="contacts" /></span>
       <h2>{{ query || tagFilter || optFilter ? 'No clients match' : 'No clients yet' }}</h2>
       <p>{{
         query || tagFilter || optFilter
           ? 'Try a different name, phone number, email or tag.'
-          : 'A client appears here automatically after their first booking, with their history, private notes and tags. Share your booking link to get your first one.'
+          : `A client appears here automatically after their first booking, with their history, private notes and tags. ${setup.hasLink ? 'Share your booking link to get your first one.' : 'Finish setup to get a booking link you can share.'}`
       }}</p>
       <div class="empty-actions">
         <button v-if="query || tagFilter || optFilter" class="secondary" type="button" @click="query = ''; tagFilter = ''; optFilter = false">Clear filters</button>
         <template v-else>
           <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
-          <RouterLink v-else class="primary" to="/settings">{{ setup.hasProfile ? 'Create your booking link' : 'Set up your booking link' }}</RouterLink>
+          <RouterLink v-else class="primary" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
         </template>
       </div>
     </div>

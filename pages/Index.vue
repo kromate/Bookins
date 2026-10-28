@@ -16,7 +16,7 @@ import {
 import { useSetupState } from '../setup.ts'
 import { isDemo } from '../runtime.ts'
 import { localFields, parseWeeklyWindows } from '../scheduling.ts'
-import { displayTimeZone } from '../time-display.ts'
+import { ownerTimeZone } from '../time-display.ts'
 import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.ts'
 import { composeMessage, whatsappShareUrl } from '../messaging.ts'
 import { hourMarks, minutesOf, placeSpans, spanSize } from '../rail.ts'
@@ -35,9 +35,11 @@ const now = ref(Date.now())
 const clockTimer = window.setInterval(() => { now.value = Date.now() }, 30_000)
 onBeforeUnmount(() => window.clearInterval(clockTimer))
 
-// One zone for the page: the owner's own schedule (never a team member's), else the profile's.
+// One zone for the page: the owner's own schedule (never a team member's), else the profile's, else this device's until one is saved.
 const owner = computed(() => ownerStaff(state))
-const zone = computed(() => displayTimeZone(scheduleOf(state, owner.value)?.timezone || state.profile?.timezone || state.schedules.find((item) => item.timezone)?.timezone))
+const zone = computed(() => ownerTimeZone(scheduleOf(state, owner.value)?.timezone || state.profile?.timezone || state.schedules.find((item) => item.timezone)?.timezone))
+// While setup is unfinished, its next step is the one primary action on the page.
+const setupPending = computed(() => !setup.value.isComplete && !isDemo.value)
 const todayKey = computed(() => localFields(now.value, zone.value).date)
 const weekday = computed(() => new Date(`${todayKey.value}T12:00:00.000Z`).getUTCDay())
 const nowMinute = computed(() => minutesOf(localFields(now.value, zone.value).time))
@@ -270,17 +272,17 @@ function dismissTour() {
             <RouterLink :to="{ path: '/settings', hash: '#settings-link' }"><AppIcon name="settings" :size="16" />QR code and website button</RouterLink>
           </div>
         </details>
-        <RouterLink class="primary" :to="{ path: '/bookings', query: { new: '1' } }"><AppIcon name="plus" :size="16" />New booking</RouterLink>
+        <RouterLink :class="setupPending ? 'secondary' : 'primary'" :to="{ path: '/bookings', query: { new: '1' } }"><AppIcon name="plus" :size="16" />New booking</RouterLink>
       </div>
     </header>
 
-    <div v-if="!setup.isComplete && !isDemo" class="setup-row" role="region" aria-label="Finish setting up">
+    <div v-if="setupPending" class="setup-row" role="region" aria-label="Finish setting up">
       <span class="setup-progress tnum" aria-hidden="true"><i v-for="step in setup.steps" :key="step.key" :class="{ done: step.done }" /></span>
       <div>
-        <strong>Step {{ setup.completed + 1 }} of {{ setup.total }}: {{ setup.nextStep.label }}</strong>
+        <strong>Step {{ setup.completed + 1 }} of {{ setup.total }} before guests can book</strong>
         <p>{{ setup.nextStep.description }}</p>
       </div>
-      <RouterLink class="secondary small" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
+      <RouterLink class="primary small" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
     </div>
 
     <div v-if="offerOpen" class="offer-row" role="region" aria-label="Product walkthrough">
@@ -318,7 +320,8 @@ function dismissTour() {
           <RouterLink to="/bookings">Open the week</RouterLink>
         </div>
         <p v-if="!todays.length" class="rail-empty">
-          <template v-if="!openToday.length">You are not open today. <RouterLink to="/availability">Set your hours</RouterLink></template>
+          <template v-if="!openToday.length && !setup.hasAvailability">No weekly hours yet, so nothing can be booked. <RouterLink to="/availability">Set your hours</RouterLink></template>
+          <template v-else-if="!openToday.length">Today is outside the weekly hours. <RouterLink to="/availability">Change hours</RouterLink></template>
           <template v-else-if="publicUrl && !linkExpired">Nothing booked today yet. Share your link, or add a walk-in with New booking.</template>
           <template v-else>Nothing booked today. Add a walk-in or phone booking with New booking.</template>
         </p>

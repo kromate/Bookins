@@ -45,7 +45,7 @@ import { isDemo, registerDemoGuard } from '../runtime.ts'
 import { formatDay } from '../format-date.ts'
 import { errorMessage } from '../error-message.ts'
 
-import { displayTimeZone, timezoneOptions } from '../time-display.ts'
+import { displayTimeZone, ownerDraftTimeZone, timezoneOptions } from '../time-display.ts'
 
 interface EditorNotice { kind: 'error' | 'info'; text: string }
 interface NumericWindow { start: number; end: number }
@@ -100,7 +100,7 @@ const isOwnerView = computed(() => !team.value || isOwnerMember(currentMember.va
 const whose = computed(() => (isOwnerView.value ? 'your' : `${memberFirstName(currentMember.value)}'s`))
 const pendingMember = ref('')
 const form = reactive({
-  timezone: 'Africa/Lagos',
+  timezone: ownerDraftTimeZone(state.profile?.timezone),
   slotIntervalMinutes: 60,
   minimumNoticeMinutes: 60,
   bookingHorizonDays: 60,
@@ -230,7 +230,8 @@ function useBrowserZone() {
 }
 
 // ----- hydrate from state -----
-const FORM_DEFAULTS = { timezone: 'Africa/Lagos', slotIntervalMinutes: 60, minimumNoticeMinutes: 60, bookingHorizonDays: 60 }
+// Unsaved suggestion: a valid saved profile zone, else this device's (see ownerDraftTimeZone). Saved hours keep their own zone.
+const formDefaults = () => ({ timezone: ownerDraftTimeZone(state.profile?.timezone), slotIntervalMinutes: 60, minimumNoticeMinutes: 60, bookingHorizonDays: 60 })
 const formFromSchedule = (schedule: ScheduleRecord) => ({
   timezone: schedule.timezone || form.timezone,
   slotIntervalMinutes: Number(schedule.slot_interval_minutes),
@@ -269,7 +270,7 @@ function hydrate() {
     // No hours saved yet: a team member starts from a copy of the owner's hours (a suggestion until saved).
     const owner = !isOwnerView.value ? scheduleOf(state, ownerStaff(state)) : null
     copyDaysInto(days, makeDays())
-    Object.assign(form, FORM_DEFAULTS)
+    Object.assign(form, formDefaults())
     if (owner) {
       try {
         applyScheduleToDays(days, owner)
@@ -663,7 +664,8 @@ async function submit() {
             <h2 id="hours-title">{{ isOwnerView ? 'Weekly hours' : `${memberFirstName(currentMember)}'s weekly hours` }}</h2>
             <p class="panel-sub tnum">{{ activeDays }} {{ activeDays === 1 ? 'day' : 'days' }} open, {{ weeklyHours }} hours a week</p>
           </div>
-          <span class="save-state" :class="{ unsaved: isDraft || (dirty && !isDemo) }">{{ isDemo ? 'Sample' : isDraft ? 'Not saved' : dirty ? 'Unsaved changes' : 'Saved' }}</span>
+          <!-- A draft already says "Not saved yet" in the banner and the save bar, so this label only appears once hours exist. -->
+          <span v-if="!isDraft" class="save-state" :class="{ unsaved: dirty && !isDemo }">{{ isDemo ? 'Sample' : dirty ? 'Unsaved changes' : 'Saved' }}</span>
         </div>
         <WeeklyHoursEditor :days="days" :disabled="locked" :color="team ? memberColor(currentMember) : ''" @notice="onEditorNotice" />
       </section>

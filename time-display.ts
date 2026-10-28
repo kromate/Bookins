@@ -36,6 +36,24 @@ export function detectGuestTimeZone() {
   }
 }
 
+// Owner screens only; the public /book page keeps its own guest and host zones.
+let ownerDeviceZone: string | undefined
+/** The owner's zone before one is saved: this device's zone (validated, UTC if unavailable), read once per page load so it never shifts mid-edit. */
+export function ownerDefaultTimeZone() {
+  ownerDeviceZone ??= detectGuestTimeZone()
+  return ownerDeviceZone
+}
+
+/** Owner display zone. A saved value from the caller's own schedule/profile/booking chain is shown as displayTimeZone shows it (invalid stays UTC); only nothing saved uses ownerDefaultTimeZone(). */
+export function ownerTimeZone(saved: unknown) {
+  return saved ? displayTimeZone(saved) : ownerDefaultTimeZone()
+}
+
+/** Suggested zone for an unsaved owner draft (schedule or team hours): a valid saved profile zone, else ownerDefaultTimeZone(). */
+export function ownerDraftTimeZone(profileZone: unknown) {
+  return typeof profileZone === 'string' && profileZone && displayTimeZone(profileZone) === profileZone ? profileZone : ownerDefaultTimeZone()
+}
+
 const dateKeyFormatters = new Map<string, Intl.DateTimeFormat>()
 /** Calendar date (YYYY-MM-DD) of an instant as seen in the given IANA zone. */
 export function zonedDateKey(value: TimestampInput, timeZone: string) {

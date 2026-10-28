@@ -12,7 +12,7 @@ import { APPS_URL, loadAccounts, loadCredits, resetShellRuntime } from './compon
 // Owner-only feedback widget: loaded lazily and never on the public /book page.
 const GoalmaticFeedback = defineAsyncComponent(() => import('./components/GoalmaticFeedback.vue'))
 import { copyText, isActiveBooking, isLocalPreview, loadOwnerWorkspace, messageQueue } from './booking.ts'
-import { displayTimeZone } from './time-display.ts'
+import { ownerTimeZone } from './time-display.ts'
 import {
   demoSwitchError,
   isDemo,
@@ -102,6 +102,17 @@ onMounted(() => {
   navigationMedia.addEventListener('change', updateNavigationMedia)
 })
 onBeforeUnmount(() => navigationMedia?.removeEventListener('change', updateNavigationMedia))
+// Short desktop windows (such as 1280x720): "Back to Apps" moves into the workspace menu so every page link stays in view.
+const SHORT_DESKTOP = '(min-width: 901px) and (max-height: 820px)'
+const shortDesktop = ref(typeof window !== 'undefined' && Boolean(window.matchMedia?.(SHORT_DESKTOP).matches))
+let shortDesktopMedia: MediaQueryList | null = null
+const updateShortDesktop = (event: MediaQueryList | MediaQueryListEvent) => { shortDesktop.value = event.matches }
+onMounted(() => {
+  shortDesktopMedia = window.matchMedia(SHORT_DESKTOP)
+  updateShortDesktop(shortDesktopMedia)
+  shortDesktopMedia.addEventListener('change', updateShortDesktop)
+})
+onBeforeUnmount(() => shortDesktopMedia?.removeEventListener('change', updateShortDesktop))
 watch(narrowScreen, narrow => {
   if (!narrow) { moreOpen.value = false; menuOpen.value = false }
 })
@@ -306,7 +317,7 @@ const pendingRoutePath = computed(() => pendingPath.value.split('?')[0] || '/')
 const clockNow = ref(Date.now())
 const clockTimer = window.setInterval(() => { clockNow.value = Date.now() }, 30_000)
 onBeforeUnmount(() => window.clearInterval(clockTimer))
-const workZone = computed(() => displayTimeZone(state.schedules.find((item) => item?.timezone)?.timezone || state.profile?.timezone))
+const workZone = computed(() => ownerTimeZone(state.schedules.find((item) => item?.timezone)?.timezone || state.profile?.timezone))
 const startMs = (booking: BookingRecord) => Date.parse(String(booking.starts_at || ''))
 const stripClock = computed(() => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: workZone.value }).format(clockNow.value))
 const stripDate = computed(() => new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', timeZone: workZone.value }).format(clockNow.value))
@@ -723,6 +734,7 @@ onMounted(async () => {
         @switched="onWorkspaceSwitched"
       >
         <RouterLink v-if="isDemo" to="/demo/guest" role="menuitem" class="ws-link" @click="menuOpen = false; closeWorkspaceMenus()">Guest view (sample)</RouterLink>
+        <a v-if="shortDesktop" :href="APPS_URL" role="menuitem" class="ws-link" target="_blank" rel="noopener" @click="closeWorkspaceMenus()"><AppIcon name="back" :size="15" /><span class="ws-mode-copy">Back to Apps</span></a>
       </WorkspaceMenu>
 
       <div class="sidebar-navigation">
@@ -756,9 +768,9 @@ onMounted(async () => {
         </div>
         <CreditsPill v-if="!isDemo" id-prefix="sidebar-credits" />
         <div class="sidebar-links">
-          <RouterLink class="sidebar-link" :class="{ 'is-current': isCurrent('/settings') }" to="/settings" @click="menuOpen = false"><AppIcon name="settings" :size="18" />Settings</RouterLink>
+          <RouterLink class="sidebar-link" :class="{ 'is-current': isCurrent('/settings') }" to="/settings" :aria-current="isCurrent('/settings') ? 'page' : undefined" @click="menuOpen = false"><AppIcon name="settings" :size="18" />Settings</RouterLink>
           <button class="sidebar-link tour-help-button bookins-walkthrough-trigger" type="button" @click="startTour"><AppIcon name="help" :size="18" />Take a walkthrough</button>
-          <a class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="18" />Back to Apps</a>
+          <a v-if="!shortDesktop" class="sidebar-link" :href="APPS_URL" target="_blank" rel="noopener"><AppIcon name="back" :size="18" />Back to Apps</a>
         </div>
         <div v-if="runtimeStatus" class="runtime-label" :class="`is-${runtimeStatus.tone}`" role="status">
           <span class="runtime-dot" :class="runtimeStatus.tone" aria-hidden="true" />

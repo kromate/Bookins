@@ -720,7 +720,7 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
         </details>
         <GmButton
           data-tour="tour-services-new"
-          variant="primary"
+          :variant="baseEntries.length && !(needsAvailability && !isDemo) ? 'primary' : 'secondary'"
           :disabled-reason="isDemo ? 'The demo is read-only. Switch to your own workspace to add services.' : ''"
           :disabled="saving || deleting"
           @click="open()"
@@ -820,12 +820,11 @@ watch(importOpen, (value) => { if (!value) resumeImport.value = false })
     </div>
 
     <div v-else class="empty" data-tour="tour-services-list">
-      <span class="empty-icon"><AppIcon name="services" /></span>
       <h2>Add your first service</h2>
       <p>A clear name, how long it takes and your price, so guests know exactly what they are booking. Many services already? Import them from a spreadsheet.</p>
       <div class="empty-actions">
-        <GmButton variant="primary" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="saving || deleting" @click="open()"><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton>
-        <GmButton variant="secondary" :disabled-reason="importDisabledReason" @click="importOpen = true"><template #leading><AppIcon name="download" :size="17" /></template>Import from a spreadsheet</GmButton>
+        <GmButton :variant="needsAvailability && !isDemo ? 'secondary' : 'primary'" :disabled-reason="isDemo ? 'The demo is read-only.' : ''" :disabled="saving || deleting" @click="open()"><template #leading><AppIcon name="plus" :size="17" /></template>New service</GmButton>
+        <GmButton variant="secondary" :disabled-reason="importDisabledReason" reason-visible @click="importOpen = true"><template #leading><AppIcon name="download" :size="17" /></template>Import from a spreadsheet</GmButton>
       </div>
     </div>
 

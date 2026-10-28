@@ -33,7 +33,7 @@ import { isDemo, registerDemoGuard } from '../runtime.ts'
 import { errorMessage } from '../error-message.ts'
 import type { RouteLocationRaw } from 'vue-router'
 
-import { displayTimeZone, timezoneOptions } from '../time-display.ts'
+import { displayTimeZone, ownerDefaultTimeZone, timezoneOptions } from '../time-display.ts'
 
 interface ProfileForm { displayName: string; bio: string; timezone: string; photoUrl: string }
 interface LinkResult { url: string; expiresAt?: string }
@@ -66,7 +66,7 @@ const confirmRevoke = ref(false)
 const linkHeading = ref<HTMLElement | null>(null)
 const copied = ref(false)
 const error = ref('')
-const form = reactive({ displayName: '', bio: '', timezone: 'Africa/Lagos', photoUrl: '' })
+const form = reactive({ displayName: '', bio: '', timezone: ownerDefaultTimeZone(), photoUrl: '' })
 const appearance = reactive(normalizeBookingAppearance(state.profile?.booking_page_settings_json))
 const appearanceBaseline = ref(JSON.stringify(normalizeBookingAppearance(state.profile?.booking_page_settings_json)))
 const profilePhotoFailed = ref(false)
@@ -94,7 +94,7 @@ const hasPublicService = computed(() => state.services.some((item) => item.activ
 const canShare = computed(() => Boolean(state.profile?.id && state.schedules.length && hasPublicService.value))
 const missingForLink = computed(() => {
   const missing: string[] = []
-  if (!state.profile?.id) missing.push('save your profile (a display name)')
+  if (!state.profile?.id) missing.push('save your profile with a business name')
   if (!state.schedules.length) missing.push('set your weekly hours')
   if (!hasPublicService.value) missing.push('add an active, public service')
   return missing
@@ -143,7 +143,7 @@ const STALE_MESSAGE = 'Saved, but Bookins could not reload your workspace, so wh
 const storedProfileInput = (link: LinkResult) => ({
   displayName: state.profile?.display_name || '',
   bio: state.profile?.bio || '',
-  timezone: state.profile?.timezone || 'Africa/Lagos',
+  timezone: state.profile?.timezone || ownerDefaultTimeZone(),
   photoUrl: state.profile?.photo_url || '',
   publicLinkUrl: link.url,
   publicLinkExpiresAt: link.expiresAt,
@@ -162,7 +162,7 @@ function profileInput(profile: ProfileRecord | null | undefined = null): Profile
   return {
     displayName: profile?.display_name || '',
     bio: profile?.bio || '',
-    timezone: profile?.timezone || 'Africa/Lagos',
+    timezone: profile?.timezone || ownerDefaultTimeZone(),
     photoUrl: profile?.photo_url || '',
   }
 }
@@ -555,7 +555,7 @@ const sampleBooking = computed(() => {
     service_name: service?.name || 'Consultation',
     starts_at: start.toISOString(),
     ends_at: new Date(start.getTime() + (Number(service?.duration_minutes) || 30) * 60_000).toISOString(),
-    timezone: state.schedules[0]?.timezone || state.profile?.timezone || 'UTC',
+    timezone: state.schedules[0]?.timezone || state.profile?.timezone || ownerDefaultTimeZone(),
     reference: 'BK-SAMPLE',
   }
 })
@@ -750,7 +750,7 @@ async function saveTemplates() {
           </div>
           <div class="form-section">
             <div class="field"
-              ><label for="profile-name">Business name <GmHint text="The name guests see at the top of your booking page and in confirmations. Use your own name or your business name." label="About display name" /></label
+              ><label for="profile-name">Business name <GmHint text="The name guests see at the top of your booking page and in confirmations. Use your own name or your business name." label="About the business name" /></label
               ><input
                 id="profile-name"
                 v-model.trim="form.displayName"
@@ -800,7 +800,7 @@ async function saveTemplates() {
               alt="Profile preview"
               @error="profilePhotoFailed = true"
             /><div
-              ><strong>{{ form.displayName || 'Your display name' }}</strong
+              ><strong>{{ form.displayName || 'Your business name' }}</strong
               ><small>{{ form.timezone }}</small></div
             ></div
           >
@@ -926,7 +926,7 @@ async function saveTemplates() {
                 <li :class="{ done: state.profile?.id }">
                   <AppIcon :name="state.profile?.id ? 'check' : 'chevron'" :size="14" />
                   <span>Saved profile</span>
-                  <button v-if="!state.profile?.id" class="ghost small-button" type="button" @click="goToSection('settings-profile')">Save profile</button>
+                  <button v-if="!state.profile?.id" class="ghost small-button" type="button" @click="goToSection('settings-profile')">Go to profile</button>
                 </li>
                 <li :class="{ done: state.schedules.length }">
                   <AppIcon :name="state.schedules.length ? 'check' : 'chevron'" :size="14" />
@@ -1090,9 +1090,9 @@ async function saveTemplates() {
           <dl class="delivery-list">
             <div><dt>On-screen confirmation</dt><dd><span class="state on">Always on</span>Guests see their confirmation right after booking.</dd></div>
             <div><dt>Messages from your own apps</dt><dd><span class="state on">Always on</span>You open each one and press send yourself.</dd></div>
-            <div><dt>Google Calendar</dt><dd><span class="state">Optional</span>Add bookings when you choose; linked events follow moves and cancellations. Your workspace approval policy applies. Clients are never invited.</dd></div>
-            <div><dt>Daily agenda email to you</dt><dd><span class="state">Optional</span>Emails your day's bookings to your own account address only, never to guests. A queued run is not proof that the email arrived.</dd></div>
-            <div><dt>Automatic guest emails, online payments</dt><dd><span class="state off">Not available</span>Prices are arranged between you and the client.</dd></div>
+            <div><dt>Google Calendar</dt><dd><span class="state">Optional</span>Add bookings to your calendar when you choose. Events you added follow moves and cancellations. Goalmatic may ask you to approve changes first, depending on your workspace settings. Clients are never invited.</dd></div>
+            <div><dt>Daily agenda email to you</dt><dd><span class="state">Optional</span>Emails your day's bookings to your own Goalmatic account address, never to clients. Bookins cannot see whether it arrived, so check your inbox.</dd></div>
+            <div><dt>Automatic guest emails, online payments</dt><dd><span class="state off">Not available</span>Bookins does not email clients for you or take payments. Message clients from your own apps, and agree prices with them directly.</dd></div>
           </dl>
           <AgendaSettings />
         </article>

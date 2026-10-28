@@ -3,6 +3,7 @@ import { computed, inject, onMounted, ref } from 'vue'
 import GmButton from './ui/GmButton.vue'
 import GmTimePicker from './ui/GmTimePicker.vue'
 import { isDemo } from '../runtime.ts'
+import { ownerDefaultTimeZone } from '../time-display.ts'
 
 interface AgendaStatus extends UnknownRecord { flowId?: string; cron?: string; enabled?: boolean; timezone?: string; executionId?: string }
 const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
@@ -15,8 +16,9 @@ const runKey = ref('')
 const RUN_CACHE_KEY = 'bookins:agenda-pending-run:v1'
 const validTime = computed(() => /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time.value))
 const time = ref('07:00')
-const timezone = computed(() => state.profile?.timezone || 'Africa/Lagos')
-// B14: say so when the Lagos fallback is in use rather than a time zone the owner chose.
+// Only sent when the owner presses Enable or Save; the same unsaved default the profile form shows until a zone is saved.
+const timezone = computed(() => state.profile?.timezone || ownerDefaultTimeZone())
+// B14: say so when the default is in use rather than a time zone the owner chose.
 const zoneIsDefault = computed(() => !state.profile?.timezone)
 const available = computed(() => !isDemo.value && !localPreview && typeof window.GoalmaticApp?.execute === 'function')
 const flowUrl = computed(() => status.value?.flowId ? `https://goalmatic.io/flows/${encodeURIComponent(status.value.flowId)}` : 'https://goalmatic.io/flows')
@@ -78,7 +80,7 @@ onMounted(load)
     <p v-if="!available" class="muted">Open the connected App in Live mode to manage your agenda.</p>
     <template v-else>
       <p v-if="pending === 'load'" role="status">Checking agenda status…</p>
-      <p v-else-if="status" class="agenda-status">{{ status.enabled ? 'On' : 'Paused' }}<span v-if="status.enabled">, every day at {{ time }} ({{ status.timezone }})</span></p>
+      <p v-else-if="status" class="agenda-status"><span class="chip dot" :class="status.enabled ? 'success' : 'neutral'">{{ status.enabled ? 'On' : 'Paused' }}</span><span v-if="status.enabled">Every day at {{ time }} ({{ status.timezone }})</span></p>
       <label for="agenda-time">Send each day at <GmTimePicker id="agenda-time" v-model="time" label="Daily agenda time" :disabled="Boolean(pending)" required /></label>
       <p class="field-hint">Time is in {{ timezone }}<template v-if="zoneIsDefault">, the default until you save a time zone in your business details above</template>. Turning this on schedules a recurring email to you.</p>
       <div class="agenda-actions">
@@ -95,11 +97,12 @@ onMounted(load)
 </template>
 
 <style scoped>
-.agenda-settings { display: grid; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--line); }
+/* Body text matches the delivery list above (14px); the status reads as a chip with a dot, not a second heading. */
+.agenda-settings { display: grid; gap: 12px; margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--line); font-size: var(--text-sm); }
 .agenda-settings p { margin: 0; }
 .agenda-settings label { display: grid; gap: 8px; max-width: 240px; }
 .agenda-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .agenda-actions a { display: inline-flex; align-items: center; text-decoration: none; }
-.agenda-status { font-weight: var(--weight-strong); }
-.agenda-status span { color: var(--muted); font-weight: var(--weight-regular, 400); }
+.agenda-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.agenda-status > span:not(.chip) { color: var(--ink-soft); }
 </style>

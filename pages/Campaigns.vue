@@ -15,7 +15,7 @@ import GmTextSuggest from '../components/ui/GmTextSuggest.vue'
 import { formatDay } from '../format-date.ts'
 import { isDemo } from '../runtime.ts'
 import { useSetupState } from '../setup.ts'
-import { displayTimeZone } from '../time-display.ts'
+import { ownerTimeZone } from '../time-display.ts'
 import {
   SEGMENT_PRESETS,
   campaignQueue,
@@ -67,7 +67,7 @@ const setup = useSetupState()
 const route = useRoute()
 const router = useRouter()
 
-const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
+const zone = computed(() => ownerTimeZone(state.schedules?.[0]?.timezone || state.profile?.timezone))
 const campaigns = computed(() => state.campaigns || [])
 const teamOn = computed(() => hasTeam(state))
 const currency = computed(() => state.services?.find((item) => item.currency)?.currency || 'NGN')
@@ -707,7 +707,7 @@ async function copyBookingLink() {
         <h1>Campaigns</h1>
         <p class="lede">Choose clients from your booking history, write one message, then open it for each person in your own WhatsApp, SMS or mail app. Bookins does not send anything.</p>
       </div>
-      <GmButton variant="primary" data-tour="tour-campaigns-builder" @click="startNew"><template #leading><AppIcon name="plus" :size="18" /></template>New campaign</GmButton>
+      <GmButton :variant="campaigns.length ? 'primary' : 'secondary'" data-tour="tour-campaigns-builder" @click="startNew"><template #leading><AppIcon name="plus" :size="18" /></template>New campaign</GmButton>
     </header>
 
     <!-- Saved campaigns -->
@@ -750,14 +750,13 @@ async function copyBookingLink() {
         </li>
       </ul>
       <div v-else class="empty">
-        <span class="empty-icon"><AppIcon name="campaigns" /></span>
         <h3>No campaigns yet</h3>
         <p>A campaign is a saved group of clients plus a message. {{ hasHistory ? 'Start with a ready-made group, like clients who are due to rebook.' : 'Once clients have booked with you, you can message them from here.' }}</p>
         <div class="empty-actions">
           <button v-if="hasHistory && defaultPreset" class="primary" type="button" @click="startNew(); defaultPreset && applyPreset(defaultPreset)">Start with "{{ defaultPreset.name }}"</button>
           <template v-else>
             <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
-            <RouterLink v-else class="primary" to="/settings">Create your booking link</RouterLink>
+            <RouterLink v-else class="primary" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
           </template>
         </div>
       </div>
@@ -809,11 +808,10 @@ async function copyBookingLink() {
         </div>
 
         <div v-if="!hasHistory" class="empty compact">
-          <span class="empty-icon"><AppIcon name="contacts" /></span>
           <h4>No clients to message yet</h4>
           <p>Campaigns are built from the people who have booked with you. Share your booking link, and once clients book they will appear here.</p>
           <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
-          <RouterLink v-else class="primary" to="/settings">Create your booking link</RouterLink>
+          <RouterLink v-else class="primary" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
         </div>
 
         <template v-else>
@@ -898,7 +896,6 @@ async function copyBookingLink() {
           <p v-if="segment.optedOut.length" class="field-hint">Greyed rows asked to stop. Change this on their card in <RouterLink to="/contacts">Contacts</RouterLink>.</p>
           </details>
           <div v-if="!segment.total && !segment.optedOut.length" class="empty compact">
-            <span class="empty-icon"><AppIcon name="search" /></span>
             <h4>No one matches these filters</h4>
             <p>Try fewer filters or a wider time window.</p>
             <button v-if="filterCount" class="secondary" type="button" @click="clearFilters">Clear filters</button>
@@ -966,7 +963,6 @@ async function copyBookingLink() {
         <p v-if="saveError" class="notice error" role="alert"><AppIcon name="alert" :size="18" />{{ saveError }}</p>
 
         <div v-if="!draft.id" class="empty compact">
-          <span class="empty-icon"><AppIcon name="lock" /></span>
           <h4>Save to start reaching clients</h4>
           <p>Saving lets Bookins remember whose message you have opened.</p>
         </div>
@@ -990,7 +986,6 @@ async function copyBookingLink() {
           <p v-if="queueView.capped" class="notice warning" role="status"><AppIcon name="alert" :size="18" />One campaign is capped at {{ CAMPAIGN_CAP }} people to keep it manageable. This queue shows the first {{ CAMPAIGN_CAP }} of {{ queueView.total }}. Narrow the audience with filters (for example a longer time since their last visit) and cover the rest in another campaign.</p>
 
           <div v-if="!recipients.length" class="empty compact">
-            <span class="empty-icon"><AppIcon name="user" /></span>
             <h4>No one to reach this way</h4>
             <p>{{ sendTab === 'email' ? 'Nobody in this audience has a real email address.' : sendTab === 'csv' ? 'The audience is empty. Adjust the filters above.' : 'Nobody in this audience has a phone number we can open.' }}</p>
           </div>

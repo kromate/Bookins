@@ -43,7 +43,7 @@ import {
 import { displayName, memberColor, memberFirstName, memberName, scheduleOf } from '../team-ui.ts'
 import { composeMessage, gmailComposeUrl } from '../messaging.ts'
 import { listOpenings, localFields, scheduleFromRecord, wallClockInstant } from '../scheduling.ts'
-import { displayTimeZone, zoneDisplayLabel } from '../time-display.ts'
+import { displayTimeZone, ownerTimeZone, zoneDisplayLabel } from '../time-display.ts'
 import { isDemo, registerDemoGuard } from '../runtime.ts'
 import { errorMessage } from '../error-message.ts'
 import { hourMarks, minutesOf, placeSpans, spanSize } from '../rail.ts'
@@ -312,8 +312,8 @@ const bulkLabel = (outcome: CalendarOutcome) => {
 }
 const calendarOpen = ref(false)
 
-// One zone for the calendar: the owner's own schedule, never a team member's (B7).
-const scheduleZone = computed(() => displayTimeZone(scheduleOf(state, ownerStaff(state))?.timezone || state.schedules?.[0]?.timezone))
+// One zone for the calendar: the owner's own schedule, never a team member's (B7), else the profile's, else this device's until one is saved.
+const scheduleZone = computed(() => ownerTimeZone(scheduleOf(state, ownerStaff(state))?.timezone || state.schedules?.[0]?.timezone || state.profile?.timezone))
 const zone = (booking: BookingRecord) => displayTimeZone(booking.timezone || scheduleZone.value)
 const displayTimeOptions = (options: Intl.DateTimeFormatOptions, booking: BookingRecord): Intl.DateTimeFormatOptions => ({ ...options, timeZone: zone(booking) })
 
@@ -1430,9 +1430,10 @@ const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealE
             <button class="icon-button" type="button" aria-label="Next week" @click="weekOffset += 1"><AppIcon name="chevron" :size="16" /></button>
             <strong class="tnum">{{ weekRange }}</strong>
             <button v-if="weekOffset !== 0" class="ghost small" type="button" @click="weekOffset = 0">This week</button>
-            <span class="week-meta">{{ calendarItems.length }} {{ calendarItems.length === 1 ? 'appointment' : 'appointments' }}</span>
+            <span class="week-meta">{{ calendarItems.length }} {{ calendarItems.length === 1 ? 'appointment' : 'appointments' }}, times in {{ scheduleZone }}</span>
             <label class="inline-check week-toggle"><input v-model="showCancelled" type="checkbox" />Show cancelled</label>
           </div>
+          <p v-if="!calendarItems.length" class="week-empty">{{ hasFilters ? 'No appointments match your filters this week.' : 'No appointments this week.' }} <button v-if="hasFilters" class="link-button" type="button" @click="clearFilters">Clear filters</button></p>
           <div v-if="phoneGrid" class="day-strip" role="group" aria-label="Day">
             <button v-for="day in weekDays" :key="`strip-${day.key}`" type="button" :class="{ today: day.today }" :aria-pressed="focusDay === day.index" :aria-label="`${day.full}, ${day.items.length} ${day.items.length === 1 ? 'appointment' : 'appointments'}`" @click="focusDay = day.index">
               <small>{{ day.weekday }}</small><b class="tnum">{{ day.day }}</b><i v-if="day.items.length" aria-hidden="true" />
@@ -1472,8 +1473,7 @@ const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealE
               </div>
             </div>
           </div>
-          <p v-if="!calendarItems.length" class="week-empty">{{ hasFilters ? 'No appointments match your filters this week.' : 'No appointments this week.' }} <button v-if="hasFilters" class="link-button" type="button" @click="clearFilters">Clear filters</button></p>
-          <footer class="week-foot"><span>Times in {{ scheduleZone }}</span><span class="legend-shapes"><span class="status completed">Came</span><span class="status no_show">No-show</span><span class="status cancelled">Cancelled</span></span></footer>
+          <footer class="week-foot"><span class="legend-shapes"><span class="status completed">Came</span><span class="status no_show">No-show</span><span class="status cancelled">Cancelled</span></span></footer>
         </div>
 
         <!-- List: the front-desk ledger -->
@@ -1565,7 +1565,6 @@ const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealE
           </div>
 
           <div v-else class="empty">
-            <span class="empty-icon"><AppIcon name="bookings" /></span>
             <h2>{{ hasFilters ? 'No bookings match your filters' : !hasAnyBookings ? 'No bookings yet' : `No ${tabs.find((tab) => tab.id === activeTab)?.label.toLowerCase() || activeTab} bookings` }}</h2>
             <p v-if="hasFilters">Try a client name, phone, service, reference, or a wider date range.</p>
             <p v-else-if="!hasAnyBookings">{{ setup.hasLink ? 'Share your booking link and bookings appear here as soon as a guest books. You can also add a walk-in or phone booking yourself.' : `Guests book through your booking link, which is ready once setup is done. Next: ${(setup.nextStep?.label || 'finish setup').toLowerCase()}. You can also add a booking yourself.` }}</p>
@@ -1781,7 +1780,6 @@ const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealE
       </div>
 
       <div v-else-if="newBlocked" class="empty">
-        <span class="empty-icon"><AppIcon name="bookings" /></span>
         <h2>{{ newBlocked.title }}</h2>
         <p>{{ newBlocked.text }}</p>
         <div class="empty-actions">
@@ -1970,7 +1968,7 @@ const contactLine = (booking: BookingRecord) => booking.guest_phone || (hasRealE
 .calendar-booking .week-staff { font-weight: var(--weight-strong); }
 .calendar-now { position: absolute; left: 0; right: 0; z-index: 3; border-top: 2px solid var(--now); pointer-events: none; }
 .calendar-now::before { content: ''; position: absolute; left: -5px; top: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--now); }
-.week-empty { margin: 0; padding: var(--space-3) var(--space-4); color: var(--ink-soft); border-top: 1px solid var(--line); font-size: var(--text-sm); }
+.week-empty { margin: 0; padding: var(--space-3) var(--space-4); color: var(--ink-soft); border-bottom: 1px solid var(--line); font-size: var(--text-sm); }
 .week-foot { min-height: 44px; padding: 0 var(--space-4); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4); color: var(--muted); border-top: 1px solid var(--line); font-size: var(--text-xs); }
 .legend-shapes { display: inline-flex; flex-wrap: wrap; gap: var(--space-3); }
 .legend-shapes .status { font-size: var(--text-xs); }

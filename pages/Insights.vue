@@ -7,7 +7,7 @@ import { hasTeam, isActiveTimeOff, isTimeOff, scheduleForStaff, segmentContacts,
 import { serviceBaseId } from '../team.ts'
 import { displayName, memberName } from '../team-ui.ts'
 import { localFields, parseWeeklyWindows, wallClockInstant } from '../scheduling.ts'
-import { displayTimeZone } from '../time-display.ts'
+import { displayTimeZone, ownerTimeZone } from '../time-display.ts'
 
 interface AnalyticBooking extends BookingRecord {
   start: number
@@ -62,7 +62,7 @@ const now = ref(Date.now())
 const clock = window.setInterval(() => { now.value = Date.now() }, 60_000)
 onBeforeUnmount(() => window.clearInterval(clock))
 
-const zone = computed(() => displayTimeZone(state.schedules?.[0]?.timezone))
+const zone = computed(() => ownerTimeZone(state.schedules?.[0]?.timezone || state.profile?.timezone))
 const madeIn = computed(() => (period.value ? `in the last ${period.value} days` : 'over all time'))
 const periodLabel = computed(() => (period.value ? `the last ${period.value} days` : 'all time'))
 
@@ -391,12 +391,11 @@ const percent = (value: number | null) => (value === null ? 'Not enough data' : 
     </header>
 
     <div v-if="!all.length" class="empty" data-tour="tour-insights-summary">
-      <span class="empty-icon"><AppIcon name="chart" :size="22" /></span>
       <h2>No bookings to look at yet</h2>
       <p>Insights fill in after your first appointments: how busy you are, who comes back, and your busiest hours.</p>
       <div class="empty-actions">
         <button v-if="setup.hasLink" class="primary" type="button" @click="copyBookingLink">Copy your booking link</button>
-        <RouterLink v-else class="primary" to="/settings">Create your booking link</RouterLink>
+        <RouterLink v-else class="primary" :to="setup.nextStep.to">{{ setup.nextStep.label }}</RouterLink>
         <RouterLink class="secondary" :to="{ path: '/bookings', query: { new: '1' } }">Add a booking yourself</RouterLink>
       </div>
     </div>
