@@ -1,7 +1,7 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
-import { BILLING_URL, creditsBalance, describeCredits, loadCredits } from './shell-runtime.js'
+import { BILLING_URL, creditsBalance, describeCredits, loadCredits } from './shell-runtime.ts'
 
 defineProps({ idPrefix: { type: String, default: 'credits' } })
 

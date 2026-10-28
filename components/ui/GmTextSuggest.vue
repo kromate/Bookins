@@ -1,33 +1,21 @@
-<script setup>
+<script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { PopoverAnchor, PopoverContent, PopoverPortal, PopoverRoot } from 'radix-vue'
 
 defineOptions({ inheritAttrs: false })
 
-const props = defineProps({
-  modelValue: { type: String, default: '' },
-  modelModifiers: { type: Object, default: () => ({}) },
-  options: { type: Array, default: () => [] },
-  id: { type: String, default: '' },
-  label: { type: String, default: '' },
-  placeholder: { type: String, default: '' },
-  disabled: Boolean,
-  maxlength: { type: [Number, String], default: undefined },
-  name: { type: String, default: undefined },
-  autocomplete: { type: String, default: undefined },
-  portalTarget: { type: [String, Object], default: 'body' },
-})
-const emit = defineEmits(['update:modelValue', 'change', 'enter', 'update:open'])
+const props = withDefaults(defineProps<{ modelValue?: string; modelModifiers?: { trim?: boolean }; options?: string[]; id?: string; label?: string; placeholder?: string; disabled?: boolean; maxlength?: number | string; name?: string; autocomplete?: string; portalTarget?: string | HTMLElement }>(), { modelValue: '', modelModifiers: () => ({}), options: () => [], id: '', label: '', placeholder: '', disabled: false, portalTarget: 'body' })
+const emit = defineEmits<{ 'update:modelValue': [value: string]; change: [value: string]; enter: []; 'update:open': [value: boolean] }>()
 
 const generatedId = `gm-text-suggest-${useId()}`
 const controlId = computed(() => props.id || generatedId)
-const input = ref(null)
+const input = ref<HTMLInputElement | null>(null)
 const open = ref(false)
 const activeIndex = ref(-1)
-const resolvedPortalTarget = ref(props.portalTarget)
+const resolvedPortalTarget = ref<string | HTMLElement>(props.portalTarget)
 const listId = `${controlId.value}-options`
 const normalizedOptions = computed(() => {
-  const unique = new Map()
+  const unique = new Map<string, string>()
   for (const option of props.options) {
     const value = String(option || '').trim()
     if (value && !unique.has(value.toLocaleLowerCase())) unique.set(value.toLocaleLowerCase(), value)
@@ -49,11 +37,12 @@ watch(matches, (options) => {
 })
 watch(() => props.portalTarget, (target) => { resolvedPortalTarget.value = target })
 onMounted(() => {
-  if (props.portalTarget === 'body') resolvedPortalTarget.value = input.value?.closest('.gm-dialog-content') || 'body'
+  const dialog = input.value?.closest<HTMLElement>('.gm-dialog-content')
+  if (props.portalTarget === 'body') resolvedPortalTarget.value = dialog || 'body'
 })
 onBeforeUnmount(() => { open.value = false })
 
-function setValue(value) {
+function setValue(value: string) {
   const next = props.modelModifiers.trim ? value.trim() : value
   emit('update:modelValue', next)
   emit('change', next)
@@ -61,16 +50,17 @@ function setValue(value) {
 function openSuggestions() {
   if (!props.disabled && matches.value.length) open.value = true
 }
-function choose(option) {
+function choose(option: string) {
   setValue(option)
   open.value = false
   nextTick(() => input.value?.focus({ preventScroll: true }))
 }
-function onInput(event) {
+function onInput(event: Event) {
+  if (!(event.target instanceof HTMLInputElement)) return
   setValue(event.target.value)
   openSuggestions()
 }
-function onKeydown(event) {
+function onKeydown(event: KeyboardEvent) {
   if (props.disabled) return
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     if (!matches.value.length) return
@@ -90,7 +80,8 @@ function onKeydown(event) {
   if (event.key !== 'Enter') return
   event.preventDefault()
   if (open.value && activeIndex.value >= 0) {
-    choose(matches.value[activeIndex.value])
+    const option = matches.value[activeIndex.value]
+    if (option) choose(option)
     return
   }
   open.value = false
@@ -128,7 +119,6 @@ function onKeydown(event) {
       <PopoverContent
         v-if="matches.length"
         class="gm-text-suggest-content"
-        :aria-label="label || 'Suggestions'"
         :side-offset="6"
         :collision-padding="12"
         @open-auto-focus.prevent

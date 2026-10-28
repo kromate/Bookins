@@ -1,8 +1,8 @@
 {
   "name": "Bookins",
   "siteId": "bdb60277-0253-4c0a-b8c4-9a380231c548",
-  "color": "#2336DC",
-  "logoUrl": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F91b66e0702cc9691553368ed63c236179e7436b4ea2375d22210225bafc7b35f%2Ficon-512.png?alt=media&token=8a6bd8fd-0d28-45fa-8c7c-e00c5e9b5ce9",
+  "color": "#2E3FA8",
+  "logoUrl": "https://firebasestorage.googleapis.com/v0/b/goalmatics-prod.firebasestorage.app/o/sites%2Fbdb60277-0253-4c0a-b8c4-9a380231c548%2Fapp-brand%2Fapp-icon%2F2654f6023e99ab2ea810b577844abcdc683733e3f1784a81793c5ad82f11c8ab%2Ficon-512.png?alt=media&token=27ef14de-0df7-4fc6-af1f-242269f9e6fc",
   "excludedRoutes": [
     "/book"
   ]

@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // Accessible hint / tooltip.
 //  - Icon variant (default): a 44px "?" button. Hover, focus and tap show the text; Esc, blur, scroll or an outside tap hides it.
 //  - Wrap variant (`wrap`): wraps any control (typically an aria-disabled or disabled button) so the reason is shown
@@ -7,23 +7,15 @@
 // the `describedby` slot prop on the control, or pass `describe-wrapper` for non-focusable content).
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 
-const props = defineProps({
-  text: { type: String, default: '' },
-  id: { type: String, default: '' },
-  label: { type: String, default: '' }, // accessible name for the "?" button; defaults to "More info"
-  wrap: { type: Boolean, default: false },
-  placement: { type: String, default: 'top', validator: value => ['top', 'bottom'].includes(value) },
-  describeWrapper: { type: Boolean, default: false }, // makes the wrapper focusable (for non-focusable children)
-  disabled: { type: Boolean, default: false }, // suppress the bubble (e.g. control is enabled)
-})
+const props = withDefaults(defineProps<{ text?: string; id?: string; label?: string; wrap?: boolean; placement?: 'top' | 'bottom'; describeWrapper?: boolean; disabled?: boolean }>(), { text: '', id: '', label: '', wrap: false, placement: 'top', describeWrapper: false, disabled: false })
 
 const autoId = useId()
 const bubbleId = computed(() => props.id || `gm-hint-${autoId}`)
 const open = ref(false)
-const root = ref(null)
-const bubble = ref(null)
+const root = ref<HTMLElement | null>(null)
+const bubble = ref<HTMLElement | null>(null)
 const pos = ref({ left: 0, top: 0, ready: false })
-let closeTimer = null
+let closeTimer: ReturnType<typeof setTimeout> | null = null
 let hoverIntent = false
 
 const active = computed(() => open.value && !props.disabled)
@@ -54,11 +46,11 @@ async function place() {
 
 function show() {
   if (props.disabled) return
-  clearTimeout(closeTimer)
+  if (closeTimer) clearTimeout(closeTimer)
   open.value = true
 }
 function hide() {
-  clearTimeout(closeTimer)
+  if (closeTimer) clearTimeout(closeTimer)
   open.value = false
   pos.value = { ...pos.value, ready: false }
 }
@@ -79,19 +71,19 @@ function cleanup() {
   window.removeEventListener('scroll', hide, true)
   window.removeEventListener('resize', hide)
 }
-onBeforeUnmount(() => { clearTimeout(closeTimer); cleanup() })
+onBeforeUnmount(() => { if (closeTimer) clearTimeout(closeTimer); cleanup() })
 
-function outside(event) {
-  if (!root.value?.contains(event.target)) hide()
+function outside(event: PointerEvent) {
+  if (!root.value?.contains(event.target as Node | null)) hide()
 }
-function key(event) {
+function key(event: KeyboardEvent) {
   if (event.key === 'Escape' && open.value) {
     hide() // Hints close without closing a surrounding dialog only when the hint itself has focus.
     if (root.value?.contains(document.activeElement)) event.stopPropagation()
   }
 }
 
-function onEnter(event) {
+function onEnter(event: PointerEvent) {
   if (event.pointerType === 'touch') return
   hoverIntent = true
   show()
@@ -100,16 +92,16 @@ function onLeave() {
   hoverIntent = false
   if (!root.value?.contains(document.activeElement)) hide()
 }
-function onFocusIn(event) {
+function onFocusIn(event: FocusEvent) {
   // Only keyboard focus opens the hint; a mouse click focuses first and would flash it open then shut.
-  if (event.target.matches?.(':focus-visible')) show()
+  if (event.target instanceof Element && event.target.matches(':focus-visible')) show()
 }
-function onFocusOut(event) {
-  if (!root.value?.contains(event.relatedTarget) && !hoverIntent) hide()
+function onFocusOut(event: FocusEvent) {
+  if (!root.value?.contains(event.relatedTarget as Node | null) && !hoverIntent) hide()
 }
-function onClick(event) {
+function onClick(event: MouseEvent | PointerEvent) {
   if (props.disabled) return
-  const touchOrKeyboard = event.detail === 0 || event.pointerType === 'touch' || !hoverIntent
+  const touchOrKeyboard = event.detail === 0 || ('pointerType' in event && event.pointerType === 'touch') || !hoverIntent
   if (props.wrap) {
     show()
     if (touchOrKeyboard) closeTimer = setTimeout(hide, 5000)
@@ -175,7 +167,7 @@ function onClick(event) {
 .gm-hint__trigger:focus-visible > span { outline: 3px solid var(--accent, #2336dc); outline-offset: 2px; }
 .gm-hint__bubble {
   position: fixed; z-index: 120; box-sizing: border-box; max-width: min(260px, calc(100vw - 16px)); padding: 8px 12px;
-  border-radius: 10px; background: var(--ink, #172033); color: #fff; box-shadow: var(--shadow-lg, 0 8px 24px rgb(0 0 0 / 0.2));
+  border-radius: 10px; background: var(--ink, #172033); color: #fff; box-shadow: var(--shadow-3, 0 8px 24px rgb(0 0 0 / 0.2));
   font: 500 var(--text-sm, 14px)/1.45 var(--font-ui, system-ui); text-align: left; white-space: normal; text-transform: none; letter-spacing: normal; pointer-events: none;
 }
 </style>

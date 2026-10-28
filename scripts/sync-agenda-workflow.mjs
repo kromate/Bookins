@@ -1,10 +1,11 @@
-// Writes scripts/agenda-transform.src.js (with message defaults and country tables injected from
-// messaging.js) into the `owner-daily-agenda` workflow of .goalmatic/app.json.
-//   node scripts/sync-agenda-workflow.mjs          # update the manifest
+// Transpiles scripts/agenda-transform.src.ts, injects message defaults and country tables from
+// messaging.ts, and writes the result into the `owner-daily-agenda` workflow of .goalmatic/app.json.
+//   node --import tsx scripts/sync-agenda-workflow.mjs          # update the manifest
 //   import { buildAgendaTransform } from './scripts/sync-agenda-workflow.mjs'   # used by tests
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { COUNTRY_CODES, DEFAULT_TEMPLATES, TIMEZONE_COUNTRIES } from '../messaging.js'
+import ts from 'typescript'
+import { COUNTRY_CODES, DEFAULT_TEMPLATES, TIMEZONE_COUNTRIES } from '../messaging.ts'
 
 const root = new URL('../', import.meta.url)
 
@@ -13,7 +14,16 @@ const root = new URL('../', import.meta.url)
 const literal = (text) => JSON.stringify(text).replaceAll('{', '\\u007b').replaceAll('}', '\\u007d')
 
 export function buildAgendaTransform() {
-  const source = readFileSync(new URL('scripts/agenda-transform.src.js', root), 'utf8')
+  const typedSource = readFileSync(new URL('scripts/agenda-transform.src.ts', root), 'utf8')
+  const source = ts.transpileModule(typedSource, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.None,
+      removeComments: false,
+    },
+    fileName: 'agenda-transform.src.ts',
+    reportDiagnostics: true,
+  }).outputText
   const defaults = `{ subject: ${literal(DEFAULT_TEMPLATES.reminder24.subject)}, body: ${literal(DEFAULT_TEMPLATES.reminder24.body)} }`
   return source
     .split('\n')

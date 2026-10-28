@@ -72,7 +72,7 @@ Settings > Delivery status shows the installed agenda schedule through `workflow
 
 The workflow is installed paused. It reads the 200 newest bookings, the profile and services, and emails today's appointments, recent bookings and tomorrow's reminder links to the account owner. It does not email guests. Links reflect the records at execution time; check Messages after moving or cancelling a booking.
 
-`scripts/sync-agenda-workflow.mjs` synchronizes `scripts/agenda-transform.src.js` into the manifest. The source avoids characters rewritten by the platform's workflow importer.
+`yarn sync:agenda` transpiles `scripts/agenda-transform.src.ts` and synchronizes its standalone JavaScript into the manifest. The emitted source avoids characters rewritten by the platform's workflow importer.
 
 ## Data and manifest
 
@@ -80,19 +80,23 @@ v0.6.0 adds optional Tables `staff` (capability `staff-data`) and `campaigns` (c
 
 ## Source layout (v0.6.0)
 
-Pure, unit-tested logic lives at the repo root so pages stay thin: `scheduling.js` (slots and overlap), `services.js` and `csv.js` (service CSV), `team.js` (staff-as-schedule), `messaging.js` (templates, queue, links), `campaigns.js` (segments and queues), `service-meta.js` (the description trailer), `records.js` (shared record predicates), `weekly-hours.js` and `team-ui.js` (hours editing helpers), `guest-page.js` (guest page helpers). Screens: `pages/*.vue`; shared UI in `components/` (`ServiceImportDialog`, `ServiceTeamFields`, `WeeklyHoursEditor`, `ProductTour`, `WorkspaceMenu`, `CreditsPill`, `ui/Gm*`).
+Pure, unit-tested TypeScript logic lives at the repo root so pages stay thin: `scheduling.ts` (slots and overlap), `services.ts` and `csv.ts` (service CSV), `team.ts` (staff-as-schedule), `messaging.ts` (templates, queue, links), `campaigns.ts` (segments and queues), `service-meta.ts` (the description trailer), `records.ts` (shared record predicates), `weekly-hours.ts` and `team-ui.ts` (hours editing helpers), `guest-page.ts` (guest page helpers). Screens: `pages/*.vue`; shared UI in `components/` (`ServiceImportDialog`, `ServiceTeamFields`, `WeeklyHoursEditor`, `ProductTour`, `WorkspaceMenu`, `CreditsPill`, `ui/Gm*`). The adjacent `.js` modules are exact compatibility reexports for the unchanged Node test imports; they contain no application logic.
 
 ## Tests
 
 ```bash
-node --test tests/*.test.js        # also run with TZ=UTC, America/New_York, Pacific/Auckland
+yarn test        # also run with TZ=UTC, America/New_York, Pacific/Auckland
 ```
 
 ## Build
 
 ```bash
 yarn build
+yarn check:source
+yarn export:source
 ```
+
+`build`, `check:source`, and `export:source` enforce the strict TypeScript and Vue template contract. Source export writes a deterministic local candidate and receipt under ignored `.audit/` files; it performs no upload or publication.
 
 ## Source and releases
 
@@ -100,11 +104,18 @@ yarn build
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for records, trust boundaries, and release limits.
 
-### Approved design and guest self-service (local implementation)
+### Brand and interface (local implementation)
 
-Overview, the weekly Bookings calendar, `/bookings?new=1`, the owner sidebar, and
-`/book` use the reviewed Bookins design. The booking form keeps its save actions
-visible on short screens; public details use a wide summary/form layout.
+Bookins uses the "Day Rail, booked slot" identity: an indigo time rail with a
+marigold slot (now, today and due only), system fonts, and one token stylesheet
+(`css/global.css`). Today shows the day as a rail with every person's lane;
+Bookings, Availability, Team and Services draw times to scale with the same slot
+shape. `/book` belongs to the host: the host's name leads, and Bookins only signs
+the footer. Rules, tokens and assets: [docs/BRAND.md](docs/BRAND.md). Brand PNGs are
+rendered locally under `public/bookins/`; the hosted icon and social image still
+need uploading through the App settings before release.
+
+### Guest self-service (local implementation)
 
 New bookings can receive a private management link when the installed grant
 supports `booking-create-managed`. This link allows only that booking to be read,

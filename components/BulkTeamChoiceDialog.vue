@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 // "Let guests choose a team member for..." in bulk: one guest-page copy per (service, person), made with the same
 // createStaffServices flow as the single-service form (own hours, "With Amaka" on the booking page, cap confirm).
 import { computed, inject, ref, watch } from 'vue'
@@ -17,30 +17,31 @@ import {
   serviceDisplayMeta,
   staffServiceCopyEstimate,
   teamMembers,
-} from '../booking.js'
-import { isOwnerMember, parseServiceIds } from '../team.js'
-import { memberColor } from '../team-ui.js'
-import { isDemo } from '../runtime.js'
+} from '../booking.ts'
+import { isOwnerMember, parseServiceIds } from '../team.ts'
+import { memberColor } from '../team-ui.ts'
+import { isDemo } from '../runtime.ts'
+import { errorMessage } from '../error-message.ts'
 
 const props = defineProps({ open: { type: Boolean, default: false } })
-const emit = defineEmits(['update:open', 'busy'])
-const state = inject('bookingState')
-const refresh = inject('refreshBookings', async () => true)
-const toast = inject('toast', null)
+const emit = defineEmits<{ 'update:open': [value: boolean]; busy: [value: boolean] }>()
+const state = inject<WorkspaceState>('bookingState', { profile: null, schedules: [], services: [], bookings: [], contacts: [], staff: [], campaigns: [] })
+const refresh = inject<RefreshWorkspace>('refreshBookings', async () => true)
+const toast = inject<ToastApi | null>('toast', null)
 
-const scope = ref('all') // 'all' | 'categories'
-const pickedCategories = ref([])
-const pickedMembers = ref([])
+const scope = ref<'all' | 'categories'>('all')
+const pickedCategories = ref<string[]>([])
+const pickedMembers = ref<string[]>([])
 const running = ref(false)
 const progress = ref({ done: 0, total: 0 })
 const capPrompt = ref(false)
 const error = ref('')
-let stopRequested = false
+const stopRequested = ref(false)
 
 const baseServices = computed(() => (state.services || []).filter((item) => !isStaffCopy(item)))
 const categories = computed(() => {
   // Same order as the Services page: by the lowest sort order in the category, uncategorised last.
-  const found = new Map()
+  const found = new Map<string, { key: string; count: number; rank: number; label: string }>()
   for (const service of baseServices.value) {
     const meta = serviceDisplayMeta(service)
     const key = meta.category || ''
@@ -58,12 +59,12 @@ const scoped = computed(() =>
 )
 
 const people = computed(() => teamMembers(state).filter((member) => !isOwnerMember(member)))
-const needsHours = (member) => !scheduleForStaff(state, member)
-const chosenPeople = computed(() => people.value.filter((member) => pickedMembers.value.includes(member.id) && !needsHours(member)))
+const needsHours = (member: StaffRecord) => !scheduleForStaff(state, member)
+const chosenPeople = computed(() => people.value.filter((member) => Boolean(member.id && pickedMembers.value.includes(member.id)) && !needsHours(member)))
 
 // Which (service, person) pairs can be made: the person needs hours and an interval at least as long as the service.
-const intervalOf = (member) => Number(scheduleForStaff(state, member)?.slot_interval_minutes || 0)
-const tooLongFor = (member) => scoped.value.filter((service) => Number(service.duration_minutes) > intervalOf(member))
+const intervalOf = (member: StaffRecord) => Number(scheduleForStaff(state, member)?.slot_interval_minutes || 0)
+const tooLongFor = (member: StaffRecord) => scoped.value.filter((service) => Number(service.duration_minutes) > intervalOf(member))
 const preflight = computed(() => {
   const services = scoped.value
   const members = chosenPeople.value
@@ -74,7 +75,7 @@ const preflight = computed(() => {
   for (const service of services) {
     const eligible = members.filter((member) => Number(service.duration_minutes) <= intervalOf(member))
     skipped += members.length - eligible.length
-    const estimate = staffServiceCopyEstimate(state, { serviceIds: [service.id], staffIds: eligible.map((member) => member.id) })
+    const estimate = staffServiceCopyEstimate(state, { serviceIds: service.id ? [service.id] : [], staffIds: eligible.flatMap((member) => member.id ? [member.id] : []) })
     adding += estimate.adding
     existing = estimate.existing
   }
@@ -109,23 +110,24 @@ const reason = computed(() => {
 function reset() {
   scope.value = 'all'
   pickedCategories.value = []
-  pickedMembers.value = people.value.filter((member) => !needsHours(member)).map((member) => member.id)
+  pickedMembers.value = people.value.filter((member) => !needsHours(member)).flatMap((member) => member.id ? [member.id] : [])
   progress.value = { done: 0, total: 0 }
   error.value = ''
   capPrompt.value = false
-  stopRequested = false
+  stopRequested.value = false
 }
 watch(() => props.open, (value) => { if (value && !running.value) reset() }, { immediate: true })
 watch(running, (value) => emit('busy', value))
 
-const withId = (list, id, checked) => {
+const withId = (list: string[], id: string, checked: boolean) => {
   const next = new Set(list)
   if (checked) next.add(id)
   else next.delete(id)
   return [...next]
 }
-const toggleCategory = (key, checked) => { pickedCategories.value = withId(pickedCategories.value, key, checked) }
-const toggleMember = (id, checked) => { pickedMembers.value = withId(pickedMembers.value, id, checked) }
+const toggleCategory = (key: string, checked: boolean) => { pickedCategories.value = withId(pickedCategories.value, key, checked) }
+const toggleMember = (id: string | undefined, checked: boolean) => { if (id) pickedMembers.value = withId(pickedMembers.value, id, checked) }
+const checkboxValue = (event: Event) => event.target instanceof HTMLInputElement && event.target.checked
 
 function requestSubmit() {
   if (reason.value || running.value) return
@@ -137,9 +139,9 @@ async function run() {
   if (reason.value || running.value) return
   running.value = true
   error.value = ''
-  stopRequested = false
+  stopRequested.value = false
   const services = scoped.value
-  const staffIds = chosenPeople.value.map((member) => member.id)
+  const staffIds = chosenPeople.value.flatMap((member) => member.id ? [member.id] : [])
   progress.value = { done: 0, total: services.length }
   const tally = { created: 0, updated: 0, skipped: 0 }
   try {
@@ -147,15 +149,15 @@ async function run() {
     const staff = []
     for (const member of state.staff || []) {
       const ids = parseServiceIds(member)
-      if (staffIds.includes(member.id) && ids.length) {
-        const next = [...new Set([...ids, ...services.map((service) => service.id)])]
+      if (member.id && staffIds.includes(member.id) && ids.length) {
+        const next = [...new Set([...ids, ...services.flatMap((service) => service.id ? [service.id] : [])])]
         if (next.length !== ids.length) await saveStaff(member, { serviceIds: next })
         staff.push({ ...member, service_ids_json: JSON.stringify(next) })
       } else staff.push(member)
     }
     let known = [...(state.services || [])]
     for (const service of services) {
-      if (stopRequested) break
+      if (stopRequested.value) break
       const made = await createStaffServices({ ...state, services: known, staff }, service, staffIds, { confirmOverCap: true })
       known = [...known, ...made.created]
       tally.created += made.created.length
@@ -164,16 +166,16 @@ async function run() {
       progress.value = { ...progress.value, done: progress.value.done + 1 }
     }
     await refresh()
-    const stopped = stopRequested
+    const stopped = stopRequested.value
     emit('update:open', false)
     const parts = [`${tally.created} guest-page ${tally.created === 1 ? 'copy' : 'copies'} created`]
     if (tally.updated) parts.push(`${tally.updated} refreshed`)
     if (tally.skipped) parts.push(`${tally.skipped} skipped because the person has no hours or a shorter interval than the service`)
     const text = `${stopped ? `Stopped after ${progress.value.done} of ${services.length} services. ` : ''}${parts.join(', ')}.`
-    if (tally.skipped || stopped) toast?.info?.(text, { duration: 9000 })
+    if (tally.skipped || stopped) toast?.(text, { kind: 'info', duration: 9000 })
     else toast?.success(text)
   } catch (reason) {
-    error.value = reason?.message || 'The copies could not be created.'
+    error.value = errorMessage(reason, 'The copies could not be created.')
     toast?.error(`${progress.value.done} of ${services.length} services were done before this stopped: ${error.value} Run it again to finish; nothing is duplicated.`)
     await refresh()
   } finally {
@@ -199,7 +201,6 @@ function requestClose() {
     <form novalidate @submit.prevent="requestSubmit">
       <div class="modal-header">
         <div>
-          <p class="eyebrow">Many services at once</p>
           <h2>Let guests choose a team member</h2>
           <p class="muted">Each person gets a copy of each service on their own working hours, so your booking page offers "With Amaka". Past bookings and your own service are unchanged.</p>
         </div>
@@ -216,7 +217,7 @@ function requestClose() {
         </div>
         <ul v-if="scope === 'categories'" class="checks">
           <li v-for="category in categories" :key="category.key || '__none'">
-            <label class="check"><input type="checkbox" :checked="pickedCategories.includes(category.key)" :disabled="running" @change="toggleCategory(category.key, $event.target.checked)" /><span>{{ category.label }} <small>{{ category.count }} {{ category.count === 1 ? 'service' : 'services' }}</small></span></label>
+            <label class="check"><input type="checkbox" :checked="pickedCategories.includes(category.key)" :disabled="running" @change="toggleCategory(category.key, checkboxValue($event))" /><span>{{ category.label }} <small>{{ category.count }} {{ category.count === 1 ? 'service' : 'services' }}</small></span></label>
           </li>
         </ul>
       </fieldset>
@@ -227,7 +228,7 @@ function requestClose() {
         <ul v-else class="checks">
           <li v-for="member in people" :key="member.id">
             <label class="check" :class="{ blocked: needsHours(member) }">
-              <input type="checkbox" :checked="pickedMembers.includes(member.id) && !needsHours(member)" :disabled="running || needsHours(member)" @change="toggleMember(member.id, $event.target.checked)" />
+              <input type="checkbox" :checked="Boolean(member.id && pickedMembers.includes(member.id)) && !needsHours(member)" :disabled="running || needsHours(member)" @change="toggleMember(member.id, checkboxValue($event))" />
               <span><i class="swatch" :style="{ background: memberColor(member) }" aria-hidden="true" />{{ member.name }}<small v-if="member.role"> {{ member.role }}</small><small v-if="needsHours(member)" class="issue"> Set working hours on the Team page first.</small></span>
             </label>
           </li>
@@ -267,7 +268,7 @@ function requestClose() {
 
 <style scoped>
 .block { margin: 0 0 var(--space-4); padding: 0; border: 0; min-width: 0; }
-.block legend { margin-bottom: var(--space-2); padding: 0; font-weight: 700; }
+.block legend { margin-bottom: var(--space-2); padding: 0; font-weight: var(--weight-strong); }
 .checks { margin: var(--space-2) 0 0; padding: 0; list-style: none; display: grid; gap: 2px; max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .check { min-height: 44px; padding: 0 var(--space-3); display: flex; align-items: center; gap: var(--space-3); cursor: pointer; font-weight: 400; }
 .check input { flex: none; width: 20px; height: 20px; accent-color: var(--accent); }
@@ -276,8 +277,8 @@ function requestClose() {
 .issue { color: var(--danger); font-size: var(--text-sm); }
 .swatch { width: 10px; height: 10px; margin-right: 6px; border-radius: 50%; display: inline-block; }
 .preflight { margin-bottom: var(--space-3); padding: var(--space-3); display: grid; gap: 4px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); font-size: var(--text-sm); line-height: 1.5; }
-.preflight.warn { border-color: #d9a400; background: #fff9e6; }
-.preflight.bad { border-color: var(--danger); background: #fff1f0; }
+.preflight.warn { border-color: var(--warning); background: var(--warning-soft); }
+.preflight.bad { border-color: var(--danger); background: var(--danger-soft); }
 .progress { margin-bottom: var(--space-3); display: grid; gap: 4px; font-size: var(--text-sm); }
 .progress progress { width: 100%; }
 .reason { margin: var(--space-2) 0 0; color: var(--danger); }

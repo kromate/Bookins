@@ -1,14 +1,17 @@
-<script setup>
+<script setup lang="ts">
 // Generated from Feedback Studio's shared integration. Update it with sync-app-feedback.mjs.
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import brand from '../feedback.config.json'
-import { mountFeedbackWidget, postFeedback, sanitizePublicWidgetConfig } from './feedback-widget-runtime.js'
+import { mountFeedbackWidget, postFeedback, sanitizePublicWidgetConfig } from './feedback-widget-runtime.facade.ts'
+import type { FeedbackWidgetConfig, FeedbackWidgetHandle } from './feedback-widget-runtime.facade.ts'
 
 const host = 'https://feedback-studio.apps.goalmatic.io'
 const route = useRoute()
-const prepareLocal = inject('goalmaticFeedbackOptions', null)
-const localConfig = inject('goalmaticFeedbackConfig', null)
+interface Discovery { widgetId: string; submissionUrl: string; config: FeedbackWidgetConfig }
+type FeedbackPayload = UnknownRecord
+const prepareLocal = inject<((context: { user: UnknownRecord | null }) => UnknownRecord | null) | null>('goalmaticFeedbackOptions', null)
+const localConfig = inject<(() => UnknownRecord | null) | null>('goalmaticFeedbackConfig', null)
 const error = ref('')
 const visible = computed(() => !route.meta.public && !['/auth', '/_goalmatic', ...brand.excludedRoutes]
   .some(path => route.path === path || route.path.startsWith(`${path}/`)))
@@ -20,8 +23,9 @@ const coldConfig = sanitizePublicWidgetConfig({}, {
 })
 const cacheKey = `goalmatic-feedback-config:${brand.siteId}`
 
-function publicConfig(value) {
-  return sanitizePublicWidgetConfig({ ...value, delivery: 'builtin', capture: textOnlyCapture }, coldConfig)
+const record = (value: unknown): UnknownRecord | null => value && typeof value === 'object' && !Array.isArray(value) ? value as UnknownRecord : null
+function publicConfig(value: unknown): FeedbackWidgetConfig {
+  return sanitizePublicWidgetConfig({ ...(record(value) ?? {}), delivery: 'builtin', capture: textOnlyCapture }, coldConfig)
 }
 function cachedConfig() {
   try {
@@ -35,7 +39,12 @@ const effectiveConfig = computed(() => {
   const local = typeof localConfig === 'function' ? localConfig() : null
   return local ? publicConfig(local) : discoveredConfig.value
 })
-let widget, discovery, discoveryPromise, requestController, unsubscribe, discoveryGeneration = 0
+let widget: FeedbackWidgetHandle | null = null
+let discovery: Discovery | null = null
+let discoveryPromise: Promise<Discovery | null> | null = null
+let requestController: AbortController | null = null
+let unsubscribe: (() => void) | void
+let discoveryGeneration = 0
 let lastDiscoveryAttempt = 0
 
 function userContext() {
@@ -49,21 +58,24 @@ function userContext() {
   return Object.fromEntries(Object.entries(details).filter(([, value]) => value))
 }
 
-function validatedDiscovery(value) {
-  if (!value || value.version !== 1 || !/^fw_[A-Za-z0-9_-]{43}$/.test(value.widgetId || ''))
+function validatedDiscovery(value: unknown): Discovery {
+  const item = record(value)
+  if (!item || item.version !== 1 || !/^fw_[A-Za-z0-9_-]{43}$/.test(String(item.widgetId || '')))
     throw new Error('Feedback settings are unavailable right now.')
-  if (!value.config || value.config.delivery !== 'builtin') throw new Error('This App feedback receiver is not available.')
-  const nextConfig = publicConfig(value.config)
-  const endpoint = new URL(value.submissionUrl || '', host)
-  if (endpoint.origin !== host || endpoint.pathname !== `/api/app-runtime/widgets/submit/${value.widgetId}` || endpoint.search || endpoint.hash)
+  const config = record(item.config)
+  if (!config || config.delivery !== 'builtin') throw new Error('This App feedback receiver is not available.')
+  const nextConfig = publicConfig(config)
+  const widgetId = String(item.widgetId)
+  const endpoint = new URL(String(item.submissionUrl || ''), host)
+  if (endpoint.origin !== host || endpoint.pathname !== `/api/app-runtime/widgets/submit/${widgetId}` || endpoint.search || endpoint.hash)
     throw new Error('Feedback settings are unavailable right now.')
-  return { widgetId: value.widgetId, submissionUrl: endpoint.href, config: nextConfig }
+  return { widgetId, submissionUrl: endpoint.href, config: nextConfig }
 }
-function savePublicConfig(value) {
+function savePublicConfig(value: FeedbackWidgetConfig) {
   try { globalThis.localStorage?.setItem(cacheKey, JSON.stringify({ version: 1, config: value })) } catch { /* Public cache is optional. */ }
 }
 
-async function discover({ force = false, silent = true } = {}) {
+async function discover({ force = false, silent = true }: { force?: boolean; silent?: boolean } = {}): Promise<Discovery | null> {
   if (discovery && !force) return discovery
   if (discoveryPromise && !force) return discoveryPromise
   if (silent && !force && Date.now() - lastDiscoveryAttempt < 60_000) return discovery || null
@@ -83,8 +95,8 @@ async function discover({ force = false, silent = true } = {}) {
       const response = await fetch(`${host}/api/app-runtime/widgets/apps/${encodeURIComponent(brand.siteId)}`, {
         cache: 'no-cache', credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal,
       })
-      const body = await response.json().catch(() => null)
-      if (!response.ok) throw new Error(body?.message || 'Feedback settings could not be refreshed.')
+      const body: unknown = await response.json().catch(() => null)
+      if (!response.ok) throw new Error(String(record(body)?.message || 'Feedback settings could not be refreshed.'))
       const next = validatedDiscovery(body)
       if (generation !== discoveryGeneration || !visible.value) return null
       discovery = next
@@ -94,7 +106,8 @@ async function discover({ force = false, silent = true } = {}) {
       return next
     } catch (cause) {
       if (generation !== discoveryGeneration) return null
-      if (!silent) throw cause?.name === 'AbortError'
+      const causeRecord = record(cause)
+      if (!silent) throw causeRecord?.name === 'AbortError'
         ? new Error('Feedback settings took too long to refresh. Try sending again.')
         : cause instanceof TypeError ? new Error('Feedback could not connect. Check your connection and try again.') : cause
       return null
@@ -110,7 +123,7 @@ async function discover({ force = false, silent = true } = {}) {
   return promise
 }
 
-async function submit(payload) {
+async function submit(payload: FeedbackPayload) {
   const current = discovery || await discover({ silent: false })
   if (!current) throw new Error('Feedback settings could not be verified. Your draft is still here.')
   const endpoint = new URL(`/api/app-runtime/widgets/submit/${encodeURIComponent(current.widgetId)}`, host)
@@ -153,7 +166,7 @@ function mountReceiver() {
   } catch (cause) {
     widget?.destroy?.()
     widget = null
-    error.value = cause?.message || 'Feedback could not open.'
+    error.value = cause instanceof Error ? cause.message : 'Feedback could not open.'
   }
 }
 defineExpose({ open: () => { mountReceiver(); widget?.open() } })
